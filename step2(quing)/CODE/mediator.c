@@ -421,6 +421,7 @@ int count_total_requests(MediatorState *state) {
 /*
  * Check which pool contains the preferred VM (if set)
  * Returns 'A', 'B', or 0 if not found
+ * Thread-safe: locks queues during search
  */
 char find_preferred_vm_pool(MediatorState *state) {
     if (state->preferred_vm == 0) {
@@ -428,26 +429,37 @@ char find_preferred_vm_pool(MediatorState *state) {
     }
     
     Request *req;
+    char result = 0;
     
-    // Check Pool A
+    // Check Pool A (with mutex lock)
+    pthread_mutex_lock(&state->pool_a.lock);
     req = state->pool_a.head;
     while (req != NULL) {
         if (req->vm_id == state->preferred_vm) {
-            return 'A';
+            result = 'A';
+            break;
         }
         req = req->next;
     }
+    pthread_mutex_unlock(&state->pool_a.lock);
     
-    // Check Pool B
+    if (result != 0) {
+        return result;  // Found in Pool A
+    }
+    
+    // Check Pool B (with mutex lock)
+    pthread_mutex_lock(&state->pool_b.lock);
     req = state->pool_b.head;
     while (req != NULL) {
         if (req->vm_id == state->preferred_vm) {
-            return 'B';
+            result = 'B';
+            break;
         }
         req = req->next;
     }
+    pthread_mutex_unlock(&state->pool_b.lock);
     
-    return 0;  // Preferred VM not found in any pool
+    return result;  // Returns 'B' if found, 0 if not found
 }
 
 /*
