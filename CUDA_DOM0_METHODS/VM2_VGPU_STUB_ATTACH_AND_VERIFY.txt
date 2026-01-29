@@ -1,0 +1,80 @@
+Attach (register) vgpu-stub to VM2 on XCP-ng and verify in guest
+===============================================================
+
+Goal
+----
+Instantiate ONE vgpu-stub device instance inside VM2 by passing QEMU:
+  -device vgpu-stub
+via XCP-ng VM platform key (device-model-args), then verify:
+  - Host-side: qemu-dm cmdline contains vgpu-stub
+  - Guest-side: lspci shows the vgpu-stub PCI device (example ID 1af4:1111)
+
+VM2 identifiers (fill/confirm)
+------------------------------
+VM2_UUID=18e12484-8d39-57ff-75f2-42f95d69fd9c
+VM2_IP=10.25.33.12
+USER=david
+
+
+0) Host sanity: confirm QEMU knows the device type (dom0)
+---------------------------------------------------------
+/usr/lib64/xen/bin/qemu-system-i386 -device help | grep -i vgpu-stub
+
+Expected:
+  name "vgpu-stub", bus PCI
+
+
+1) Attach the device to VM2 (dom0)
+----------------------------------
+# Put the extra QEMU arg onto VM2:
+xe vm-param-set uuid=$VM2_UUID platform:device-model-args="-device vgpu-stub"
+
+# Read it back (must match exactly):
+xe vm-param-get uuid=$VM2_UUID param-name=platform param-key=device-model-args
+
+
+2) Start/reboot VM2 so qemu-dm picks up the new args (dom0)
+-----------------------------------------------------------
+# If VM2 is already running, reboot is simplest:
+xe vm-reboot uuid=$VM2_UUID force=true
+
+# IMPORTANT: `xe` uses the VM UUID, NOT the Xen domid shown by `xl list`.
+# Example: if `xl list` shows `ubuntu-fresh-2  107 ...`, then `107` is a domid.
+# To find the UUID for a domid:
+#   xe vm-list dom-id=107 params=uuid,name-label,power-state
+# Then reboot using the returned UUID:
+#   xe vm-reboot uuid=<that-uuid> force=true
+
+# If VM2 is halted:
+# xe vm-start uuid=$VM2_UUID
+
+
+3) Host-side proof: confirm qemu-dm actually got vgpu-stub (dom0)
+-----------------------------------------------------------------
+DOMID2="$(xe vm-param-get uuid=$VM2_UUID param-name=dom-id)"
+echo "DOMID2=$DOMID2"
+
+# Xenstore should show the args:
+xenstore-read "/local/domain/$DOMID2/platform/device-model-args"
+
+# qemu-dm cmdline should include vgpu-stub:
+ps auxww | egrep "qemu-dm-$DOMID2" | tr ' ' '\n' | grep -i vgpu-stub || echo "vgpu-stub NOT in qemu-dm cmdline"
+
+
+4) Guest-side proof: confirm it appears in lspci (from your workstation)
+------------------------------------------------------------------------
+ssh $USER@$VM2_IP 'lspci -nn | grep -i "1af4:1111" || true'
+
+# Optional deeper view (BARs/regions):
+ssh $USER@$VM2_IP 'lspci -nnv | grep -nA8 -B2 "1af4:1111" || true'
+
+
+If something fails
+------------------
+- If QEMU does not list vgpu-stub in step (0), the host QEMU binary does not include the device.
+- If xenstore has the arg but qemu-dm cmdline does not, the wrapper may not be using the key or the VM restarted and domid changed.
+- If host-side is correct but lspci shows nothing, check guest boot/SSH, and confirm vgpu-stub vendor/device ID matches what you compiled.
+
+
+
+

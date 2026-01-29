@@ -1,0 +1,23 @@
+STEP 2: Pool and Priority Metadata System
+Objective: Enable pool assignment (GPU A/B) and priority levels per VM
+Deliverables:
+Enhanced vgpu-stub device with properties: pool_id, priority, vm_id
+Rebuilt QEMU with property support
+VM startup process includes pool and priority assignment
+Verification: Commands include pool and priority information
+Success Criteria:
+- VMs start with pool assignment (A or B)
+- Each VM has priority level (low/medium/high)
+- Metadata flows securely through nfs channels
+- No metadata leakage between VMs
+Milestone: VMs can be assigned to pools with priorities
+"""""""""""""""""""
+I'm trying to follow the steps above thoroughly. I already have the VGPU-STUB device roughly configured in the current project state. Could you check its status first and help me configure the above part? If you give me an incorrect command or a command that is not compatible with the system and cause an error, I will copy and paste the error part here. Please do not give me any specific commands, but just tell me the instructions so that even a beginner can follow them. I will paste the contents into the device and proceed. Let me know when you are ready. And to avoid confusion at the end of your session, I will create a .txt file with today's date and log all the sessions. I will also create a .txt document that records the successful steps and logs them immediately. I will also create a .txt document that records errors so that errors are archived, eliminated, and the steps are archived in the success document after they are successfully resolved. Let me know when you are ready.
+
+
+
+
+"""""""""""""""""
+continue prompt
+
+I want you to first understand the contents of this registry and what needs to be done and what records need to be kept, and then let me know when you are ready.

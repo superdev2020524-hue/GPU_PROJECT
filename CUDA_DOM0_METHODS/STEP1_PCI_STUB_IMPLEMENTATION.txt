@@ -1,0 +1,1059 @@
+================================================================================
+STEP 1: MINIMAL XEN VGPU STUB PCI DEVICE IMPLEMENTATION GUIDE
+================================================================================
+Project: H100 GPU Mediation - Phase 1, Step 1 Only
+Platform: XCP-ng (Xen-based) with Apache CloudStack
+Objective: Create emulated PCI device visible in VM's lspci output
+Date: December 2025
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+1. Xen/XCP-ng PCI Device Emulation Architecture
+2. QEMU/Xen Device Model Integration Points
+3. PCI Device Specification (Minimal Stub)
+4. PCI Configuration Space Requirements
+5. Implementation Files and Code Structure
+6. CloudStack/XCP-ng Integration Path
+7. Build and Deployment Process
+8. Debugging and Troubleshooting Checklist
+
+================================================================================
+SECTION 1: XEN/XCP-NG PCI DEVICE EMULATION ARCHITECTURE
+================================================================================
+
+OVERVIEW
+--------
+Xen exposes emulated PCI devices to VMs through a multi-layer architecture:
+
+1. QEMU Device Model (qemu-dm or qemu-system-x86_64)
+   - Implements PCI bus emulation
+   - Handles PCI config space reads/writes
+   - Manages BAR (Base Address Register) mappings
+   - Provides MMIO (Memory-Mapped I/O) regions
+
+2. Xen Toolstack (libxl)
+   - Manages VM lifecycle
+   - Configures device attachments
+   - Sets up XenStore entries for device communication
+
+3. XenStore
+   - Key-value database for VM-host communication
+   - Stores device configuration
+   - Coordinates device backend/frontend connections
+
+4. Device Backend (Dom0)
+   - Implements device-specific logic
+   - Handles actual device operations
+   - Communicates with device frontend in VM
+
+ARCHITECTURE DIAGRAM
+--------------------
+
+┌─────────────────────────────────────────────────────────────┐
+│                    XCP-ng HOST (Dom0)                        │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  QEMU Device Model (qemu-dm)                        │   │
+│  │                                                      │   │
+│  │  ┌──────────────────────────────────────────────┐   │   │
+│  │  │  PCI Bus Emulation                           │   │   │
+│  │  │  - PCI config space handler                  │   │   │
+│  │  │  - BAR mapping                               │   │   │
+│  │  │  - Device enumeration                        │   │   │
+│  │  └──────────────┬───────────────────────────────┘   │   │
+│  │                 │                                    │   │
+│  │                 │ Device-specific callbacks         │   │
+│  │                 ↓                                    │   │
+│  │  ┌──────────────────────────────────────────────┐   │   │
+│  │  │  vGPU Stub Device Backend                     │   │   │
+│  │  │  - PCI config space implementation            │   │   │
+│  │  │  - BAR read/write handlers                    │   │   │
+│  │  │  - Shared memory setup                        │   │   │
+│  │  └──────────────────────────────────────────────┘   │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Xen Toolstack (libxl)                              │   │
+│  │  - xl create / xl config                            │   │
+│  │  - Device attachment logic                          │   │
+│  │  - XenStore initialization                         │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  XenStore                                            │   │
+│  │  /local/domain/<domid>/device/vgpu/0               │   │
+│  │  /local/domain/0/backend/vgpu/<domid>/0             │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          │ Hypervisor interface
+                          │ (PCI config space, MMIO)
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    GUEST VM                                 │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Linux Kernel PCI Subsystem                          │   │
+│  │  - Scans PCI bus                                     │   │
+│  │  - Reads config space                                │   │
+│  │  - Enumerates devices                                │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+│  Output: lspci shows vGPU stub device                       │
+└─────────────────────────────────────────────────────────────┘
+
+HOW PCI ENUMERATION WORKS
+--------------------------
+1. VM boots, Linux kernel PCI subsystem initializes
+2. Kernel performs PCI bus scan (reads config space at standard addresses)
+3. QEMU intercepts PCI config space reads (0xCF8/0xCFC ports or MMIO)
+4. QEMU calls device-specific config_read callback
+5. Device backend returns PCI config space data
+6. Kernel builds PCI device tree
+7. lspci reads /sys/bus/pci/devices and displays devices
+
+KEY POINT: The device must respond correctly to PCI config space reads
+           for Linux to enumerate it. No actual hardware is needed.
+
+================================================================================
+SECTION 2: QEMU/XEN DEVICE MODEL INTEGRATION POINTS
+================================================================================
+
+QEMU LOCATION IN XCP-NG
+-----------------------
+XCP-ng uses QEMU as the device model. The exact location depends on version:
+
+- Traditional: /usr/lib/xen/bin/qemu-dm (32-bit, deprecated)
+- Modern: /usr/lib/xen/bin/qemu-system-x86_64 (64-bit, recommended)
+- Alternative: QEMU running as separate process (QEMU upstream)
+
+For XCP-ng 8.x (Xen 4.13+), QEMU is typically:
+- Binary: /usr/lib/xen/bin/qemu-system-x86_64
+- Config: Managed via libxl
+- Device registration: Via QEMU device model API
+
+FILES TO MODIFY/EXTEND
+----------------------
+
+1. QEMU Device Model Source (if building custom QEMU)
+   Location: QEMU source tree
+   Files:
+   - hw/pci/pci.c (PCI bus core)
+   - hw/pci/pci_bridge.c (PCI bridge support)
+   - include/hw/pci/pci.h (PCI device structures)
+   - hw/xen/xen_pt.c (Xen passthrough, reference for device model)
+
+   OR (Recommended for XCP-ng):
+   - Create new device: hw/misc/vgpu-stub.c
+   - Register device: hw/misc/meson.build (if using meson) or Makefile.objs
+
+2. Xen Toolstack (libxl) - Device Configuration
+   Location: Xen source tree or XCP-ng packages
+   Files:
+   - tools/libxl/libxl_device.c (Generic device handling)
+   - tools/libxl/libxl_pci.c (PCI-specific, if exists)
+   - tools/libxl/xl_cmdimpl.c (xl command implementation)
+
+   OR (XCP-ng specific):
+   - /opt/xensource/libexec/xen-cmdline (XCP-ng toolstack)
+   - XAPI database entries for device configuration
+
+3. XenStore Integration
+   Location: Runtime (not source code)
+   Paths:
+   - /local/domain/<domid>/device/vgpu/0 (VM-side)
+   - /local/domain/0/backend/vgpu/<domid>/0 (Host-side)
+
+APPROACH OPTIONS
+----------------
+
+Option A: QEMU Device Model Extension (Recommended for Step 1)
+---------------------------------------------------------------
+Pros:
+- Clean integration with QEMU PCI subsystem
+- Automatic PCI enumeration
+- Standard QEMU device model
+- Well-documented API
+
+Cons:
+- Requires QEMU rebuild
+- More complex build process
+
+Implementation:
+- Create QEMU device: hw/misc/vgpu-stub.c
+- Register as PCI device in QEMU
+- Implement PCI config space callbacks
+- Minimal BAR (4KB memory region)
+
+Option B: Xen Device Model Plugin (Alternative)
+------------------------------------------------
+Pros:
+- Can be loaded as module
+- Less invasive to QEMU
+
+Cons:
+- More complex Xen integration
+- Less standard approach
+
+Option C: QEMU Command-Line Device Addition (Quick Test)
+---------------------------------------------------------
+Pros:
+- No code changes needed
+- Can test PCI enumeration immediately
+
+Cons:
+- Limited functionality
+- Not suitable for production
+
+For Step 1, we'll use Option A (QEMU device model extension) as it provides
+the cleanest foundation for future mediation work.
+
+================================================================================
+SECTION 3: PCI DEVICE SPECIFICATION (MINIMAL STUB)
+================================================================================
+
+DEVICE IDENTIFICATION
+---------------------
+We need to choose IDs that:
+- Don't conflict with real hardware
+- Are recognizable as a virtual device
+- Allow Linux to enumerate without issues
+
+VENDOR ID: 0x1AF4 (Red Hat, Inc.)
+----------------------------------
+Rationale:
+- Commonly used for virtual devices (virtio uses this)
+- Well-supported in Linux
+- No conflicts with NVIDIA (0x10DE) or other real GPUs
+- Clear indication this is a virtual device
+
+Alternative: 0x5853 (XenSource) - also valid for virtual devices
+
+DEVICE ID: 0x1111 (Custom)
+--------------------------
+Rationale:
+- Easy to remember and identify
+- Not used by standard devices
+- Can be changed if conflicts arise
+
+Alternative: 0xCAFE, 0xDEAD, 0xBEEF (common test IDs)
+
+CLASS CODE: 0x120000 (Processing Accelerator, General Purpose) ✅ RECOMMENDED
+--------------------------------------------------------------------------
+Rationale:
+- Designed for compute accelerators (perfect for CUDA workloads)
+- No display functionality expected (avoids VGA/DRM driver conflicts)
+- Semantically correct for compute-focused vGPU
+- Matches real-world compute GPU classifications
+- Clear intent: "This is a compute device, not a display device"
+- Better foundation for future CUDA mediation work
+
+Why NOT VGA (0x030000):
+- VGA suggests display functionality (which we don't have)
+- May trigger Linux to try loading VGA/DRM drivers
+- Could interfere with real display adapters
+- Misleading for a compute-only device
+
+Alternative: 0x030002 (3D Controller) - Still GPU-related but display-focused
+Alternative: 0x0C0000 (Serial Bus Controller) - Too generic
+
+SUBCLASS: 0x00 (General Purpose)
+-------------------------------
+REVISION: 0x01
+--------------
+HEADER TYPE: 0x00 (Standard PCI device, single function)
+----------------------------------------
+
+MINIMAL PCI CONFIGURATION SPACE LAYOUT
+--------------------------------------
+
+Offset  Size  Field Name          Value          Required
+------  ----  -----------          -----          --------
+0x00    2     Vendor ID            0x1AF4         YES
+0x02    2     Device ID            0x1111         YES
+0x04    2     Command              0x0000         YES (initially disabled)
+0x06    2     Status               0x0010         YES (capabilities list)
+0x08    1     Revision ID          0x01           YES
+0x09    1     Class Code (base)    0x12           YES (Processing Accelerator)
+0x0A    1     Class Code (sub)     0x00           YES (General Purpose)
+0x0B    1     Class Code (prog)    0x00           YES (Generic interface)
+0x0C    1     Cache Line Size      0x00           NO (optional)
+0x0D    1     Latency Timer        0x00           NO (optional)
+0x0E    1     Header Type          0x00           YES (standard device)
+0x0F    1     BIST                 0x00           NO (optional)
+0x10    4     BAR0                 <MMIO addr>    YES (for communication)
+0x14    4     BAR1                 0x00000000     NO (optional, can be 0)
+0x18    4     BAR2                 0x00000000     NO
+0x1C    4     BAR3                 0x00000000     NO
+0x20    4     BAR4                 0x00000000     NO
+0x24    4     BAR5                 0x00000000     NO
+0x28    4     Cardbus CIS          0x00000000     NO
+0x2C    2     Subsystem Vendor ID  0x1AF4         YES (recommended)
+0x2E    2     Subsystem Device ID 0x1111         YES (recommended)
+0x30    4     Expansion ROM Base   0x00000000     NO
+0x34    4     Capabilities Ptr     0x40           YES (if using capabilities)
+0x38    4     Reserved             0x00000000     NO
+0x3C    1     Interrupt Line       0xFF           NO (no INTx)
+0x3D    1     Interrupt Pin        0x00           NO (no INTx)
+0x3E    1     Min_Gnt              0x00           NO
+0x3F    1     Max_Lat              0x00           NO
+
+CAPABILITIES LIST (Optional but Recommended)
+--------------------------------------------
+Offset 0x40: PCI Express Capability (if using PCIe)
+- Capability ID: 0x10 (PCI Express)
+- Next pointer: 0x00 (last capability)
+- Version: 0x2 (PCIe 2.0)
+
+For Step 1, capabilities are optional. Linux will enumerate the device
+without them, but they improve compatibility.
+
+BAR (BASE ADDRESS REGISTER) SPECIFICATION
+------------------------------------------
+For Step 1, we need at least one BAR for MMIO communication.
+
+BAR0: Memory-Mapped I/O Region
+------------------------------
+Type: 32-bit Memory Space (bit 0 = 0)
+Size: 4KB (0x1000 bytes) minimum
+Purpose: Communication region between VM and host
+
+BAR Layout (4KB example):
+Offset  Size    Purpose
+------  ----    -------
+0x000   4       Command Register (VM writes commands here)
+0x004   4       Status Register (Host writes status here)
+0x008   4       Data Offset (Pointer to data region)
+0x00C   4       Data Length (Size of data)
+0x010   4       Request ID (For request/response matching)
+0x014   4       Reserved
+0x018   4       Reserved
+0x01C   4       Reserved
+0x020   992     Data Region (Command parameters, responses)
+
+For Step 1, BAR can be minimal - just enough for Linux to map it.
+Actual communication can be deferred to shared memory in later steps.
+
+================================================================================
+SECTION 4: PCI CONFIGURATION SPACE REQUIREMENTS FOR LINUX ENUMERATION
+================================================================================
+
+MINIMUM REQUIRED FIELDS
+-----------------------
+Linux PCI subsystem requires these fields to successfully enumerate a device:
+
+1. Vendor ID (offset 0x00) - MUST be non-zero, non-0xFFFF
+2. Device ID (offset 0x02) - MUST be non-zero, non-0xFFFF
+3. Header Type (offset 0x0E) - MUST be valid (0x00, 0x01, or 0x02)
+4. Class Code (offsets 0x09-0x0B) - Should be valid PCI class
+
+OPTIONAL BUT RECOMMENDED
+-------------------------
+5. Status Register (offset 0x06) - Should indicate capabilities if present
+6. Subsystem Vendor/Device ID (0x2C, 0x2E) - Helps with driver matching
+7. BAR0 (offset 0x10) - Needed if device provides MMIO
+
+CONFIGURATION SPACE READ BEHAVIOR
+----------------------------------
+Linux performs these reads during enumeration:
+
+1. Initial Scan:
+   - Reads 0x00-0x0F (first 16 bytes) for all possible devices
+   - Checks for valid vendor/device IDs
+
+2. Device Discovery:
+   - Reads full config space (0x00-0xFF) for valid devices
+   - Checks header type
+   - Reads class code
+
+3. Resource Assignment:
+   - Reads BARs (0x10-0x24) to determine memory requirements
+   - Performs BAR sizing (writes 0xFFFFFFFF, reads back)
+
+4. Driver Matching:
+   - Reads subsystem IDs (0x2C, 0x2E)
+   - Reads class code for driver selection
+
+IMPLEMENTATION REQUIREMENTS
+---------------------------
+Your PCI config space handler must:
+
+1. Return consistent values:
+   - Same read should return same value (unless intentionally changed)
+   - No random data
+
+2. Handle BAR sizing correctly:
+   - When 0xFFFFFFFF is written to BAR, read back should show size mask
+   - Example: 4KB BAR (0x1000) should return 0xFFFFF000 when sized
+
+3. Respect read-only vs read-write fields:
+   - Vendor/Device ID: Read-only
+   - Command register: Read-write
+   - Status register: Mostly read-only (some bits writable)
+
+4. Handle unaligned reads:
+   - Linux may read 1, 2, or 4 bytes
+   - Must handle byte, word, and dword reads correctly
+
+CODE EXAMPLE: MINIMAL CONFIG SPACE HANDLER
+------------------------------------------
+
+typedef struct {
+    uint16_t vendor_id;
+    uint16_t device_id;
+    uint16_t command;
+    uint16_t status;
+    uint8_t  revision_id;
+    uint8_t  class_code[3];
+    uint8_t  header_type;
+    uint32_t bar[6];
+    uint16_t subsystem_vendor_id;
+    uint16_t subsystem_device_id;
+    uint8_t  capabilities_ptr;
+} VGPUStubPCIConfig;
+
+static VGPUStubPCIConfig vgpu_config = {
+    .vendor_id = 0x1AF4,
+    .device_id = 0x1111,
+    .command = 0x0000,
+    .status = 0x0010,  // Capabilities list bit set
+    .revision_id = 0x01,
+    .class_code = {0x03, 0x00, 0x00},  // Display, VGA
+    .header_type = 0x00,
+    .bar = {
+        0x00000000,  // BAR0 - will be set by QEMU
+        0x00000000,  // BAR1-5 unused
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+    },
+    .subsystem_vendor_id = 0x1AF4,
+    .subsystem_device_id = 0x1111,
+    .capabilities_ptr = 0x00,  // No capabilities for Step 1
+};
+
+static uint32_t vgpu_pci_config_read(PCIDevice *pci_dev, uint32_t addr, int len)
+{
+    VGPUStubState *s = VGPU_STUB(pci_dev);
+    uint32_t val = 0;
+    
+    if (addr >= sizeof(VGPUStubPCIConfig)) {
+        return 0xFFFFFFFF;  // Invalid address
+    }
+    
+    // Handle BAR sizing
+    if (addr >= 0x10 && addr < 0x28) {
+        int bar_num = (addr - 0x10) / 4;
+        if (bar_num == 0 && s->bar_size_set) {
+            // Return size mask for BAR0
+            return ~(s->bar_size - 1);
+        }
+    }
+    
+    // Read from config structure
+    memcpy(&val, ((uint8_t *)&vgpu_config) + addr, len);
+    
+    // Mask based on read length
+    if (len == 1) {
+        val &= 0xFF;
+    } else if (len == 2) {
+        val &= 0xFFFF;
+    }
+    
+    return val;
+}
+
+static void vgpu_pci_config_write(PCIDevice *pci_dev, uint32_t addr,
+                                   uint32_t val, int len)
+{
+    VGPUStubState *s = VGPU_STUB(pci_dev);
+    
+    if (addr >= sizeof(VGPUStubPCIConfig)) {
+        return;  // Invalid address
+    }
+    
+    // Handle BAR sizing (write 0xFFFFFFFF to determine size)
+    if (addr >= 0x10 && addr < 0x28) {
+        int bar_num = (addr - 0x10) / 4;
+        if (bar_num == 0 && val == 0xFFFFFFFF) {
+            s->bar_size_set = true;
+            return;  // Don't actually write, just signal sizing
+        }
+    }
+    
+    // Handle writable fields
+    switch (addr) {
+    case 0x04:  // Command register
+        if (len == 2) {
+            vgpu_config.command = val & 0xFFFF;
+        }
+        break;
+    case 0x10:  // BAR0
+        if (!s->bar_size_set) {
+            vgpu_config.bar[0] = val;
+        }
+        break;
+    default:
+        // Most fields are read-only
+        break;
+    }
+}
+
+================================================================================
+SECTION 5: IMPLEMENTATION FILES AND CODE STRUCTURE
+================================================================================
+
+QEMU DEVICE IMPLEMENTATION
+---------------------------
+
+File: hw/misc/vgpu-stub.c
+--------------------------
+This is the main device implementation file.
+
+Structure:
+----------
+1. Device state structure
+2. PCI device registration
+3. Config space handlers
+4. BAR MMIO handlers
+5. Device initialization
+
+Skeleton Code:
+--------------
+
+#include "qemu/osdep.h"
+#include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
+
+#define TYPE_VGPU_STUB "vgpu-stub"
+#define VGPU_STUB(obj) OBJECT_CHECK(VGPUStubState, (obj), TYPE_VGPU_STUB)
+
+typedef struct VGPUStubState {
+    PCIDevice parent_obj;
+    
+    MemoryRegion mmio;
+    uint32_t bar_size;
+    bool bar_size_set;
+    
+    // Communication state (for future use)
+    uint32_t command_reg;
+    uint32_t status_reg;
+} VGPUStubState;
+
+static uint64_t vgpu_mmio_read(void *opaque, hwaddr addr, unsigned size)
+{
+    VGPUStubState *s = opaque;
+    
+    // For Step 1, just return 0 or status
+    // Actual communication deferred to later steps
+    switch (addr) {
+    case 0x000:  // Command register
+        return s->command_reg;
+    case 0x004:  // Status register
+        return s->status_reg;
+    default:
+        return 0;
+    }
+}
+
+static void vgpu_mmio_write(void *opaque, hwaddr addr,
+                            uint64_t val, unsigned size)
+{
+    VGPUStubState *s = opaque;
+    
+    // For Step 1, just store writes
+    // Actual processing deferred to later steps
+    switch (addr) {
+    case 0x000:  // Command register
+        s->command_reg = val;
+        break;
+    default:
+        break;
+    }
+}
+
+static const MemoryRegionOps vgpu_mmio_ops = {
+    .read = vgpu_mmio_read,
+    .write = vgpu_mmio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
+
+static void vgpu_realize(PCIDevice *pci_dev, Error **errp)
+{
+    VGPUStubState *s = VGPU_STUB(pci_dev);
+    uint8_t *pci_conf = pci_dev->config;
+    
+    // Set PCI configuration space
+    pci_set_word(pci_conf + PCI_VENDOR_ID, 0x1AF4);
+    pci_set_word(pci_conf + PCI_DEVICE_ID, 0x1111);
+    pci_set_word(pci_conf + PCI_COMMAND, 0x0000);
+    pci_set_word(pci_conf + PCI_STATUS, PCI_STATUS_CAP_LIST);
+    pci_set_byte(pci_conf + PCI_REVISION_ID, 0x01);
+    pci_set_byte(pci_conf + PCI_CLASS_DEVICE + 0, 0x12);  // Processing Accelerator
+    pci_set_byte(pci_conf + PCI_CLASS_DEVICE + 1, 0x00);  // General Purpose
+    pci_set_byte(pci_conf + PCI_CLASS_DEVICE + 2, 0x00);  // Generic interface
+    pci_set_byte(pci_conf + PCI_HEADER_TYPE, PCI_HEADER_TYPE_NORMAL);
+    
+    // Set subsystem IDs
+    pci_set_word(pci_conf + PCI_SUBSYSTEM_VENDOR_ID, 0x1AF4);
+    pci_set_word(pci_conf + PCI_SUBSYSTEM_ID, 0x1111);
+    
+    // Initialize BAR0 (4KB MMIO region)
+    s->bar_size = 0x1000;  // 4KB
+    memory_region_init_io(&s->mmio, OBJECT(s), &vgpu_mmio_ops, s,
+                          "vgpu-stub-mmio", s->bar_size);
+    pci_register_bar(pci_dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
+    
+    // Initialize registers
+    s->command_reg = 0;
+    s->status_reg = 0;
+    s->bar_size_set = false;
+}
+
+static void vgpu_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+    
+    k->realize = vgpu_realize;
+    k->vendor_id = 0x1AF4;
+    k->device_id = 0x1111;
+    k->class_id = 0x120000;  // Processing Accelerator
+    set_bit(DEVICE_CATEGORY_MISC, dc->categories);  // MISC not DISPLAY
+    dc->desc = "Virtual GPU Stub Device (Compute Accelerator)";
+}
+
+static const TypeInfo vgpu_stub_info = {
+    .name = TYPE_VGPU_STUB,
+    .parent = TYPE_PCI_DEVICE,
+    .instance_size = sizeof(VGPUStubState),
+    .class_init = vgpu_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { INTERFACE_PCIE_DEVICE },
+        { },
+    },
+};
+
+static void vgpu_register_types(void)
+{
+    type_register_static(&vgpu_stub_info);
+}
+
+type_init(vgpu_register_types);
+
+File: hw/misc/meson.build (or Makefile.objs)
+---------------------------------------------
+Add device to build system:
+
+# For meson.build:
+softmmu_ss.add(when: 'CONFIG_VGPU_STUB', if_true: files('vgpu-stub.c'))
+
+# For Makefile.objs:
+obj-$(CONFIG_VGPU_STUB) += vgpu-stub.o
+
+File: include/hw/misc/vgpu-stub.h (optional)
+--------------------------------------------
+Header file for device (if needed by other components).
+
+XEN TOOLSTACK INTEGRATION
+-------------------------
+
+For XCP-ng, device attachment can be done via:
+
+1. xl config file (manual):
+   Add to VM config:
+   device_model_args = [ "-device", "vgpu-stub" ]
+
+2. XAPI (CloudStack integration):
+   Modify XAPI to add device during VM creation
+   Location: XCP-ng XAPI database
+
+3. libxl API (programmatic):
+   Use libxl_device_pci_add() or similar
+   May need custom device type support
+
+For Step 1, manual xl config is sufficient.
+
+================================================================================
+SECTION 6: CLOUDSTACK/XCP-NG INTEGRATION PATH
+================================================================================
+
+CLOUDSTACK INTEGRATION OVERVIEW
+--------------------------------
+CloudStack manages VMs through XCP-ng's XAPI interface. To attach the
+vGPU stub device automatically, you need to:
+
+1. Extend CloudStack's VM creation logic
+2. Add device to XCP-ng XAPI database
+3. Ensure device is present in VM's PCI configuration
+
+STEP 1 APPROACH (Manual First)
+-------------------------------
+For Step 1, we'll use manual attachment to verify the device works.
+CloudStack integration can come later.
+
+Manual Attachment Methods:
+--------------------------
+
+Method 1: xl config file
+-------------------------
+Create/edit VM config file (e.g., /etc/xen/vm-name.cfg):
+
+name = "test-vm"
+memory = 2048
+vcpus = 2
+disk = [ 'phy:/dev/sda1,xvda,w' ]
+vif = [ 'mac=00:16:3e:XX:XX:XX,bridge=xenbr0' ]
+
+# Add vGPU stub device
+device_model_args = [
+    "-device", "vgpu-stub"
+]
+
+Then create VM:
+xl create /etc/xen/vm-name.cfg
+
+Method 2: xl command line
+--------------------------
+xl create vm-config.cfg device_model_args='["-device","vgpu-stub"]'
+
+Method 3: xe command (XCP-ng XAPI)
+----------------------------------
+xe vm-param-set uuid=<vm-uuid> \
+    other-config:device_model_args='["-device","vgpu-stub"]'
+
+Note: XCP-ng may require device to be added via XAPI database directly.
+
+FUTURE CLOUDSTACK INTEGRATION (Post-Step 1)
+--------------------------------------------
+1. CloudStack Plugin:
+   - Add "vGPU" as resource type
+   - Modify VM creation template
+   - Add device to XAPI call
+
+2. XCP-ng XAPI Extension:
+   - Add vGPU device type to XAPI
+   - Create XAPI object: VGPU
+   - Link VGPU to VM object
+
+3. CloudStack UI:
+   - Add checkbox: "Enable vGPU"
+   - Pass parameter to XAPI
+
+For Step 1, manual attachment is sufficient to verify lspci shows the device.
+
+================================================================================
+SECTION 7: BUILD AND DEPLOYMENT PROCESS
+================================================================================
+
+BUILD REQUIREMENTS
+------------------
+1. QEMU source code (matching XCP-ng version)
+2. Xen development headers
+3. Standard build tools (gcc, make, pkg-config)
+4. XCP-ng build environment (if building packages)
+
+BUILD STEPS
+-----------
+
+Step 1: Obtain QEMU Source
+----------------------------
+XCP-ng typically includes QEMU. Find version:
+rpm -qa | grep qemu
+# or
+dpkg -l | grep qemu
+
+Download matching QEMU source or use XCP-ng's QEMU package source.
+
+Step 2: Add vGPU Stub Device
+-----------------------------
+1. Copy vgpu-stub.c to hw/misc/
+2. Update build system (meson.build or Makefile.objs)
+3. Add CONFIG_VGPU_STUB option to configure script
+
+Step 3: Configure and Build
+----------------------------
+./configure --target-list=x86_64-softmmu \
+    --enable-vgpu-stub \
+    [other XCP-ng specific options]
+
+make -j$(nproc)
+
+Step 4: Install
+---------------
+# Backup original QEMU
+cp /usr/lib/xen/bin/qemu-system-x86_64 \
+   /usr/lib/xen/bin/qemu-system-x86_64.backup
+
+# Install new QEMU
+cp x86_64-softmmu/qemu-system-x86_64 \
+   /usr/lib/xen/bin/qemu-system-x86_64
+
+# Set permissions
+chmod +x /usr/lib/xen/bin/qemu-system-x86_64
+
+Step 5: Restart XCP-ng Services
+--------------------------------
+# Restart device model (may require VM restart)
+systemctl restart xcp-ng-dom0  # If service exists
+# OR restart individual VMs
+
+DEPLOYMENT VERIFICATION
+-----------------------
+1. Check QEMU version:
+   /usr/lib/xen/bin/qemu-system-x86_64 -version
+
+2. Check device is registered:
+   /usr/lib/xen/bin/qemu-system-x86_64 -device help | grep vgpu-stub
+
+3. Create test VM with device attached
+
+4. Inside VM, run: lspci
+
+Expected output should include:
+01:00.0 VGA compatible controller: Red Hat, Inc. Device 1111
+
+================================================================================
+SECTION 8: DEBUGGING AND TROUBLESHOOTING CHECKLIST
+================================================================================
+
+PROBLEM: Device does not appear in lspci
+-----------------------------------------
+
+Checklist:
+----------
+
+□ 1. QEMU BUILD VERIFICATION
+   - Is device compiled into QEMU?
+   - Command: qemu-system-x86_64 -device help | grep vgpu-stub
+   - Expected: Should list "vgpu-stub"
+   - Fix: Rebuild QEMU with device enabled
+
+□ 2. DEVICE ATTACHMENT VERIFICATION
+   - Is device added to VM config?
+   - Check: xl list -l <vm-name> | grep device
+   - Check: VM config file has device_model_args
+   - Fix: Add device to config and recreate VM
+
+□ 3. QEMU COMMAND LINE VERIFICATION
+   - Is device on QEMU command line?
+   - Check: ps aux | grep qemu | grep vgpu-stub
+   - Check: /var/log/xen/qemu-dm-<vm-name>.log
+   - Fix: Ensure device_model_args is passed correctly
+
+□ 4. PCI CONFIG SPACE VERIFICATION
+   - Is config space handler working?
+   - Debug: Add logging to vgpu_pci_config_read()
+   - Check: QEMU monitor: info pci
+   - Fix: Verify config space returns correct values
+
+□ 5. BAR MAPPING VERIFICATION
+   - Is BAR properly initialized?
+   - Check: QEMU monitor: info qtree (look for vgpu-stub)
+   - Check: Memory region is registered
+   - Fix: Verify pci_register_bar() is called
+
+□ 6. VM KERNEL VERIFICATION
+   - Is VM kernel PCI subsystem working?
+   - Check: dmesg | grep -i pci
+   - Check: lspci -v (should show other devices)
+   - Fix: Ensure VM has PCI support enabled
+
+□ 7. XEN HYPERVISOR VERIFICATION
+   - Is Xen passing through PCI config space?
+   - Check: xl dmesg | grep -i pci
+   - Check: xl info (verify hypervisor version)
+   - Fix: Verify Xen is functioning correctly
+
+□ 8. DEVICE ID VERIFICATION
+   - Are vendor/device IDs correct?
+   - Check: If device appears with wrong IDs, driver won't match
+   - Fix: Verify IDs in code match expected values
+
+DEBUGGING COMMANDS
+------------------
+
+Host Side:
+----------
+# Check QEMU process
+ps aux | grep qemu-system-x86_64
+
+# Check QEMU logs
+tail -f /var/log/xen/qemu-dm-<vm-name>.log
+
+# Check Xen hypervisor messages
+xl dmesg | tail -50
+
+# Check XenStore for device
+xenstore-ls /local/domain/<domid>/device
+
+# QEMU monitor (if accessible)
+# Connect to QEMU monitor and run:
+# (qemu) info pci
+# (qemu) info qtree
+
+VM Side:
+--------
+# List PCI devices
+lspci
+lspci -v
+lspci -vvv  # Very verbose
+
+# Check kernel messages
+dmesg | grep -i pci
+dmesg | grep -i vgpu
+
+# Check PCI sysfs
+ls -la /sys/bus/pci/devices/
+find /sys/bus/pci/devices/ -name "vendor" -exec cat {} \;
+
+# Check for our device specifically
+lspci -d 1af4:1111
+
+COMMON ISSUES AND FIXES
+-----------------------
+
+Issue 1: "Device help doesn't show vgpu-stub"
+---------------------------------------------
+Cause: Device not compiled into QEMU
+Fix: Rebuild QEMU with CONFIG_VGPU_STUB enabled
+
+Issue 2: "Device on command line but not in lspci"
+---------------------------------------------------
+Cause: Config space handler not working or wrong IDs
+Fix: 
+- Add debug logging to config_read handler
+- Verify vendor/device IDs are correct
+- Check that config space returns non-0xFFFF values
+
+Issue 3: "Device appears but with wrong class"
+-----------------------------------------------
+Cause: Class code not set correctly
+Fix: Verify pci_set_byte() calls for class code
+
+Issue 4: "Device appears but no BAR"
+-------------------------------------
+Cause: BAR not registered or size is 0
+Fix: Verify pci_register_bar() is called in realize()
+
+Issue 5: "VM kernel panic on boot"
+------------------------------------
+Cause: Invalid PCI config space data
+Fix: Ensure all required fields are initialized correctly
+
+Issue 6: "Device appears in some VMs but not others"
+-----------------------------------------------------
+Cause: Device not added to all VM configs
+Fix: Verify device_model_args in each VM's config
+
+ADVANCED DEBUGGING
+------------------
+
+If basic checks don't work:
+
+1. Enable QEMU debug logging:
+   Add to QEMU command line: -d guest_errors,unimp
+
+2. Use QEMU monitor:
+   Connect to QEMU monitor and inspect device state
+
+3. Add printf() debugging:
+   Add logging to config_read, config_write, and realize functions
+
+4. Compare with working PCI device:
+   Look at how other QEMU PCI devices are implemented
+   Reference: hw/display/vga.c, hw/net/virtio-net.c
+
+5. Check Xen version compatibility:
+   Some Xen versions have different QEMU integration
+   Verify your approach matches XCP-ng's Xen version
+
+SUCCESS CRITERIA FOR STEP 1
+----------------------------
+✓ Device appears in VM's lspci output
+✓ Device shows correct vendor ID (1af4)
+✓ Device shows correct device ID (1111)
+✓ Device shows correct class (VGA compatible controller)
+✓ Device has at least one BAR (MMIO region)
+✓ No kernel errors in VM dmesg related to device
+✓ Device can be probed by Linux PCI subsystem
+
+Once these are met, Step 1 is complete. You can then proceed to
+implementing actual communication (shared memory, event channels)
+in subsequent steps.
+
+================================================================================
+APPENDIX A: MINIMAL TEST PROCEDURE
+================================================================================
+
+TEST 1: Verify Device Compilation
+---------------------------------
+1. Build QEMU with vgpu-stub device
+2. Run: qemu-system-x86_64 -device help
+3. Verify: "vgpu-stub" appears in list
+
+TEST 2: Verify Device Attachment
+---------------------------------
+1. Create VM config with device_model_args = ["-device", "vgpu-stub"]
+2. Start VM: xl create vm.cfg
+3. Check QEMU process: ps aux | grep vgpu-stub
+4. Verify: Process shows "-device vgpu-stub" in command line
+
+TEST 3: Verify Device Enumeration
+---------------------------------
+1. Boot VM
+2. Inside VM, run: lspci
+3. Verify: Device appears with vendor 1af4, device 1111
+4. Run: lspci -v
+5. Verify: Device shows class "VGA compatible controller"
+6. Verify: Device shows BAR (memory region)
+
+TEST 4: Verify No Errors
+------------------------
+1. Check VM dmesg: dmesg | grep -i error
+2. Verify: No PCI-related errors
+3. Check: /var/log/xen/qemu-dm-<vm>.log
+4. Verify: No QEMU errors related to vgpu-stub
+
+If all tests pass, Step 1 is complete!
+
+================================================================================
+APPENDIX B: REFERENCE - PCI CONFIG SPACE FIELD DESCRIPTIONS
+================================================================================
+
+Vendor ID (0x00): Identifies manufacturer
+Device ID (0x02): Identifies specific device
+Command (0x04): Controls device behavior (I/O enable, memory enable, etc.)
+Status (0x06): Reports device status and capabilities
+Revision ID (0x08): Device revision number
+Class Code (0x09-0x0B): Device class, subclass, programming interface
+Header Type (0x0E): PCI header format (0x00 = standard, 0x01 = PCI-to-PCI bridge)
+BARs (0x10-0x24): Base Address Registers for memory/I/O space
+Subsystem IDs (0x2C-0x2E): Subsystem vendor and device IDs
+Capabilities Ptr (0x34): Pointer to capabilities list
+Interrupt Line (0x3C): IRQ number (legacy, not used with MSI)
+Interrupt Pin (0x3D): Which INTx pin device uses (if any)
+
+================================================================================
+END OF STEP 1 IMPLEMENTATION GUIDE
+================================================================================
+
+This guide covers ONLY Step 1: Creating a minimal PCI stub device visible
+in lspci. Subsequent steps will add:
+- Shared memory communication
+- Event channels
+- Guest driver
+- Mediation daemon
+- CUDA execution
+
+For now, focus on getting the device to appear in lspci. Once that works,
+you have a solid foundation for the mediation layer.
+

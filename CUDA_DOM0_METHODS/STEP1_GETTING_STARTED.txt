@@ -1,0 +1,313 @@
+================================================================================
+STEP 1: GETTING STARTED GUIDE
+================================================================================
+
+This guide will help you implement Step 1: Creating a minimal vGPU stub PCI
+device that appears in VM's lspci output.
+
+================================================================================
+WHAT YOU'RE BUILDING
+================================================================================
+
+A minimal PCI device that:
+- Appears in VM's lspci output
+- Uses Processing Accelerator class (0x120000) - compute-focused, not display
+- Has a 4KB MMIO BAR for future communication
+- Does NOT require any functionality yet (just enumeration)
+
+SUCCESS = Device shows up in lspci inside the VM!
+
+================================================================================
+KEY TECHNICAL DECISIONS (Already Made for You)
+================================================================================
+
+1. PCI CLASS CODE: 0x120000 (Processing Accelerator)
+   ✓ Why: Compute-focused device (CUDA workloads), not display
+   ✓ Avoids VGA/DRM driver conflicts
+   ✓ Semantically correct for compute accelerators
+
+2. VENDOR/DEVICE ID: 0x1AF4:0x1111
+   ✓ Red Hat vendor ID (common for virtual devices)
+   ✓ Custom device ID (easy to identify)
+
+3. IMPLEMENTATION APPROACH: QEMU Device Model Extension
+   ✓ Clean integration with QEMU PCI subsystem
+   ✓ Standard approach for Xen/XCP-ng
+
+================================================================================
+DOCUMENTATION FILES
+================================================================================
+
+1. STEP1_PCI_STUB_IMPLEMENTATION.txt
+   → Complete technical guide (1051 lines)
+   → Architecture explanation
+   → Implementation details
+   → Debugging checklist
+
+2. STEP1_CODE_SKELETON.c
+   → Ready-to-use code skeleton
+   → Complete QEMU device implementation
+   → Comments explaining each section
+
+3. STEP1_QUICK_REFERENCE.txt
+   → Quick lookup for specifications
+   → Build steps
+   → Verification commands
+   → Troubleshooting checklist
+
+4. STEP1_CLASS_CODE_EXPLANATION.txt
+   → Why Processing Accelerator vs VGA
+   → Technical rationale
+
+================================================================================
+STEP-BY-STEP IMPLEMENTATION
+================================================================================
+
+PHASE 1: PREPARATION (Day 1)
+-----------------------------
+
+1. Understand the architecture:
+   ✓ Read: STEP1_PCI_STUB_IMPLEMENTATION.txt (Sections 1-2)
+   ✓ Understand how Xen/QEMU exposes PCI devices
+   ✓ Know where your code will live
+
+2. Set up development environment:
+   ✓ Access to XCP-ng host
+   ✓ QEMU source code (matching XCP-ng version)
+   ✓ Build tools (gcc, make, etc.)
+   ✓ Test VM ready
+
+3. Verify current state:
+   ✓ Check QEMU version: qemu-system-x86_64 -version
+   ✓ Check Xen version: xl info
+   ✓ Create a test VM to use later
+
+PHASE 2: CODE IMPLEMENTATION (Day 2-3)
+---------------------------------------
+
+1. Get QEMU source:
+   - Find QEMU version used by XCP-ng
+   - Download matching source or use XCP-ng package source
+
+2. Add device code:
+   - Copy STEP1_CODE_SKELETON.c to hw/misc/vgpu-stub.c
+   - Review the code and understand each section
+
+3. Update build system:
+   - Edit hw/misc/meson.build (QEMU 5.0+) OR
+   - Edit hw/misc/Makefile.objs (older QEMU)
+   - Add: softmmu_ss.add(when: 'CONFIG_VGPU_STUB', if_true: files('vgpu-stub.c'))
+   - Add configure option for CONFIG_VGPU_STUB
+
+4. Build QEMU:
+   ./configure --target-list=x86_64-softmmu --enable-vgpu-stub
+   make -j$(nproc)
+
+PHASE 3: DEPLOYMENT (Day 4)
+----------------------------
+
+1. Backup original QEMU:
+   cp /usr/lib/xen/bin/qemu-system-x86_64 \
+      /usr/lib/xen/bin/qemu-system-x86_64.backup
+
+2. Install new QEMU:
+   cp x86_64-softmmu/qemu-system-x86_64 \
+      /usr/lib/xen/bin/qemu-system-x86_64
+   chmod +x /usr/lib/xen/bin/qemu-system-x86_64
+
+3. Verify device is compiled:
+   qemu-system-x86_64 -device help | grep vgpu-stub
+   (Should show: vgpu-stub)
+
+PHASE 4: TESTING (Day 5)
+-------------------------
+
+1. Create test VM config:
+   Create /etc/xen/test-vgpu-vm.cfg:
+   
+   name = "test-vgpu-vm"
+   memory = 2048
+   vcpus = 2
+   disk = [ 'phy:/dev/VG_XenStorage-xxx/vm-disk,xvda,w' ]
+   vif = [ 'mac=00:16:3e:XX:XX:XX,bridge=xenbr0' ]
+   device_model_args = [ "-device", "vgpu-stub" ]
+
+2. Start VM:
+   xl create /etc/xen/test-vgpu-vm.cfg
+
+3. Check QEMU process:
+   ps aux | grep qemu | grep vgpu-stub
+   (Should show device on command line)
+
+4. Inside VM, verify:
+   lspci
+   (Should show: Processing accelerator: Red Hat, Inc. Device 1111)
+   
+   lspci -d 1af4:1111 -v
+   (Should show detailed device info)
+
+5. Check for errors:
+   dmesg | grep -i error
+   (Should show no PCI-related errors)
+
+================================================================================
+TROUBLESHOOTING WORKFLOW
+================================================================================
+
+If device doesn't appear in lspci, follow this order:
+
+1. Is device compiled?
+   qemu-system-x86_64 -device help | grep vgpu-stub
+   → NO: Rebuild QEMU with --enable-vgpu-stub
+
+2. Is device on command line?
+   ps aux | grep qemu | grep vgpu-stub
+   → NO: Check VM config, ensure device_model_args is set
+
+3. Check QEMU logs:
+   tail -f /var/log/xen/qemu-dm-<vm-name>.log
+   → Look for errors related to vgpu-stub
+
+4. Check Xen messages:
+   xl dmesg | tail -50
+   → Look for PCI-related errors
+
+5. Check VM kernel:
+   dmesg | grep -i pci
+   → Verify PCI subsystem is working
+
+6. Verify config space:
+   Add printf() debugging to vgpu_pci_config_read()
+   → Ensure it's returning correct values
+
+See STEP1_PCI_STUB_IMPLEMENTATION.txt Section 8 for detailed checklist.
+
+================================================================================
+COMMON MISTAKES TO AVOID
+================================================================================
+
+1. ❌ Wrong QEMU version
+   → Use QEMU source matching your XCP-ng version
+   → Check: rpm -qa | grep qemu (or dpkg -l | grep qemu)
+
+2. ❌ Forgetting to update build system
+   → Device won't compile if not in meson.build/Makefile.objs
+
+3. ❌ Wrong class code
+   → Use 0x12 (Processing Accelerator), not 0x03 (VGA)
+   → See STEP1_CLASS_CODE_EXPLANATION.txt for why
+
+4. ❌ Not backing up original QEMU
+   → Always backup before replacing!
+   → You may need to rollback
+
+5. ❌ Testing on production VMs first
+   → Always test on a disposable test VM
+
+================================================================================
+SUCCESS CRITERIA CHECKLIST
+================================================================================
+
+Before moving to Step 2, verify:
+
+□ Device appears in VM's lspci
+□ Shows vendor: 1af4 (Red Hat)
+□ Shows device: 1111
+□ Shows class: Processing accelerator (not VGA!)
+□ lspci -v shows BAR (memory region)
+□ No kernel errors in dmesg
+□ Device can be found with: lspci -d 1af4:1111
+
+If all checked, Step 1 is COMPLETE! ✅
+
+================================================================================
+WHAT'S NEXT (After Step 1)
+================================================================================
+
+Once Step 1 is working, you'll proceed to:
+
+Step 2: Shared Memory Ring Buffer
+  → Set up communication channel between VM and host
+  → Use Xen grant tables for shared memory
+
+Step 3: Event Channels
+  → Async notifications between VM and host
+  → Signal when commands are ready
+
+Step 4: Guest Driver
+  → Linux kernel module in VM
+  → Provides /dev/vgpu_stub device file
+  → User programs can open/write to it
+
+Step 5: Mediation Daemon
+  → Host-side daemon
+  → Receives commands from VMs
+  → Executes CUDA on real H100
+
+But for now, focus ONLY on Step 1: Getting the device to appear in lspci!
+
+================================================================================
+GETTING HELP
+================================================================================
+
+If you're stuck:
+
+1. Review the documentation:
+   - STEP1_PCI_STUB_IMPLEMENTATION.txt (detailed guide)
+   - STEP1_QUICK_REFERENCE.txt (quick lookup)
+   - STEP1_CLASS_CODE_EXPLANATION.txt (class code rationale)
+
+2. Check troubleshooting section:
+   - Section 8 in implementation guide
+   - Quick reference troubleshooting checklist
+
+3. Verify each step:
+   - Did you build QEMU correctly?
+   - Is device compiled in?
+   - Is it on the command line?
+   - Is config space handler working?
+
+4. Compare with working examples:
+   - Look at other QEMU PCI devices (hw/display/vga.c, hw/net/virtio-net.c)
+   - Understand the pattern
+
+5. Use debugging tools:
+   - QEMU monitor: info pci, info qtree
+   - XenStore: xenstore-ls
+   - Kernel: dmesg, lspci -vvv
+
+================================================================================
+QUICK START COMMANDS
+================================================================================
+
+# Check QEMU version
+qemu-system-x86_64 -version
+
+# Build QEMU (after adding device code)
+./configure --target-list=x86_64-softmmu --enable-vgpu-stub
+make -j$(nproc)
+
+# Verify device compiled
+qemu-system-x86_64 -device help | grep vgpu-stub
+
+# Install (backup first!)
+cp /usr/lib/xen/bin/qemu-system-x86_64 /usr/lib/xen/bin/qemu-system-x86_64.backup
+cp x86_64-softmmu/qemu-system-x86_64 /usr/lib/xen/bin/qemu-system-x86_64
+
+# Create test VM with device
+xl create vm.cfg device_model_args='["-device","vgpu-stub"]'
+
+# Check inside VM
+lspci | grep "Processing accelerator"
+
+================================================================================
+END OF GETTING STARTED GUIDE
+================================================================================
+
+Remember: Step 1 is ONLY about enumeration. The device doesn't need to DO
+anything yet - it just needs to appear in lspci. Once that works, you have
+a solid foundation for the mediation layer!
+
+Good luck! 🚀
+
+

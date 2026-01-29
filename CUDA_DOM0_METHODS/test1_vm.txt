@@ -1,0 +1,24 @@
+set -x
+VM_UUID=$(xe vm-install template-uuid=552bce37-51b2-445d-84f2-5f33fa112d7e new-name-label="ubuntu-fresh")
+echo "VM_UUID=$VM_UUID"
+
+# Put VM disks on Local storage
+xe vm-param-set uuid=$VM_UUID affinity=$(xe host-list --minimal)
+xe vm-param-set uuid=$VM_UUID other-config:install-repository=cdrom
+
+# Attach the Ubuntu Server ISO
+xe vm-cd-add uuid=$VM_UUID cd-uuid=86d22032-6eda-4869-b6db-26b9d8faf023
+
+# Ensure it boots from CD first
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+
+# Set RAM/CPU (adjust if you want)
+xe vm-memory-limits-set uuid=$VM_UUID static-min=4GiB static-max=4GiB dynamic-min=4GiB dynamic-max=4GiB
+xe vm-vcpu-max-set uuid=$VM_UUID max=4
+xe vm-vcpu-params-set uuid=$VM_UUID VCPUs-at-startup=4
+
+# Start VM
+xe vm-start uuid=$VM_UUID
+xe vm-param-get uuid=$VM_UUID param-name=dom-id
+set +x

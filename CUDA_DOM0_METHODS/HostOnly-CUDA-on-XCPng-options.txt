@@ -1,0 +1,181 @@
+HOST-ONLY CUDA ON XCP-ng (Xen dom0) — Feasible Options Checklist
+Date: 2025-12-19
+Scope: CUDA must run ONLY in dom0 (no passthrough, no vGPU, no VM CUDA).
+
+Important note on “feasibility”:
+- In many Xen/XCP-ng installs, dom0 CUDA kernel execution fails even when enumeration works.
+- The usual pattern is: device query OK → first real kernel launch fails (“operation/command not supported”).
+- Likely causes include dom0 virtualization mode (PV vs PVH), PAT/WC memory attribute limitations, and/or IOMMU/DMA mapping semantics.
+- I could not pull external citations because the web search tool is currently returning unrelated results. This document is a guided, practical, step-by-step options list.
+
+----------------------------------------------------------------------
+0) COLLECT BASELINE (DO THIS FIRST — REQUIRED)
+Goal: Identify whether you’re blocked by dom0 mode, binding, PAT/WC, IOMMU, or driver gating.
+
+Collect and save the outputs:
+A. Xen + dom0 mode:
+   - xl info
+   - /proc/cmdline  (dom0 kernel cmdline)
+   - Xen cmdline (from XCP-ng boot config / GRUB entries)
+
+B. Kernel + NVIDIA driver:
+   - uname -a
+   - nvidia-smi -q (at least header + driver + GPU section)
+   - lsmod | grep -i nvidia
+
+C. Errors:
+   - dmesg | grep -iE "NVRM|nvidia|Xid|xen|iommu|PAT|MTRR|DMAR|AMD-Vi"
+
+D. PCI binding:
+   - lspci -nnk (for the GPU) to see which driver owns it (nvidia vs pciback/vfio)
+
+Success signal:
+- We want a clean NVIDIA driver init AND no immediate “not supported” errors in dmesg when launching a minimal CUDA kernel.
+
+----------------------------------------------------------------------
+1) OPTION: SWITCH dom0 TO PVH (MOST PLAUSIBLE “IN-PLACE” FIX)
+Why this is feasible:
+- PV dom0 can impose restrictions that only show up during real GPU submission paths.
+- PVH dom0 is closer to “normal Linux on hardware” than PV dom0.
+
+Action:
+- Check whether your XCP-ng/Xen build supports PVH dom0.
+- If supported, configure dom0 to boot as PVH (commonly via Xen cmdline like: dom0=pvh).
+
+Success criteria:
+- Your exact same CUDA sample (vector add) runs in dom0 without “operation/command not supported”.
+- dmesg no longer shows NVIDIA refusing submission features.
+
+Rollback:
+- Revert Xen cmdline change; boot back to previous dom0 mode.
+
+Risks/notes:
+- Availability is version/build dependent in XCP-ng.
+- Might require matching kernel expectations in dom0.
+
+----------------------------------------------------------------------
+2) OPTION: ENSURE GPU IS OWNED BY dom0 NVIDIA DRIVER (NOT pciback/vfio)
+Why this is feasible:
+- If XCP-ng toolstack or boot config binds the GPU to a passthrough stub driver, you can still “see” the PCI device but compute will fail.
+
+Action:
+- Confirm lspci shows “Kernel driver in use: nvidia”.
+- Remove/disable any config that binds the GPU to pciback/vfio at boot.
+
+Success criteria:
+- nvidia-smi works AND a kernel launch works.
+- No “No devices were found” and no “unsupported command” at first kernel submit.
+
+Rollback:
+- Rebind to pciback/vfio if you had it intentionally for passthrough (you said you don’t want this long term).
+
+----------------------------------------------------------------------
+3) OPTION: VALIDATE PAT/WC (WRITE-COMBINING) IS THE BLOCKER
+Why this is feasible:
+- NVIDIA’s driver commonly needs correct caching attributes (often WC) for BAR/pushbuffer mappings.
+- Under Xen PV dom0, PAT/WC handling can be constrained, and failures may only appear at kernel launch.
+
+Action (diagnostic-driven, not blind tweaking):
+- Launch the failing CUDA kernel, then immediately inspect dmesg for PAT/MTRR/WC related messages.
+- If logs suggest PAT/WC issues, the “real fix” is typically dom0 mode/platform exposure (Option #1), not random kernel params.
+
+Success criteria:
+- After addressing the underlying issue (often PVH dom0), kernel launch works consistently.
+
+Rollback:
+- N/A (this option is mainly about confirming the mechanism).
+
+----------------------------------------------------------------------
+4) OPTION: IOMMU/DMA MAPPING PATH — “iommu=pt” + CONSISTENT PLATFORM SETTINGS
+Why this is feasible:
+- CUDA needs pinned memory + DMA mappings that can break under certain IOMMU configurations.
+- You already tried IOMMU toggles, but we can make this systematic and confirm what changes in logs.
+
+Action:
+- Record your current IOMMU state and Xen parameters.
+- Repeat one controlled test at a time (same driver, same CUDA sample), capturing dmesg deltas.
+
+Success criteria:
+- A specific IOMMU configuration yields successful kernel launches and stable runtime.
+
+Rollback:
+- Restore the known-good hypervisor stability settings if something impacts boot/storage/network.
+
+Note:
+- If none of the IOMMU variations change the failure mode, it pushes probability toward PAT/WC/dom0 mode or explicit driver gating.
+
+----------------------------------------------------------------------
+5) OPTION: CONFIRM “BARE METAL CUDA WORKS” BY BOOTING WITHOUT XEN (CONTROL TEST)
+Why this is feasible:
+- This cleanly separates “GPU/driver/CUDA stack is fine” from “Xen dom0 environment blocks compute”.
+
+Action:
+- Boot the same machine into a non-Xen Linux environment (temporarily) and run the same minimal CUDA kernel.
+
+Success criteria:
+- If bare metal works but Xen dom0 fails: the blocker is Xen/dom0 architecture/config, not your CUDA code or GPU hardware.
+
+Rollback:
+- Boot back into XCP-ng.
+
+This does NOT satisfy your final requirement by itself, but it is the fastest way to avoid wasting days on driver versions if the platform is the real block.
+
+----------------------------------------------------------------------
+6) OPTION: MINIMAL dom0 / REDUCE XCP-ng “EXTRAS” (IF YOU CAN CONTROL dom0 BUILD)
+Why this is feasible:
+- Some dom0 builds include patches/config choices optimized for virtualization management rather than “workstation/server compute”.
+
+Action:
+- If you have a supported way in your environment to run a more standard kernel/dom0 userspace under Xen while keeping XCP-ng installed, test that with the same driver/CUDA stack.
+
+Success criteria:
+- Kernel execution works in dom0 under Xen with the minimal dom0 stack.
+
+Rollback:
+- Restore stock XCP-ng dom0.
+
+Note:
+- This is often hard in XCP-ng because dom0 is part of the appliance-style host OS.
+
+----------------------------------------------------------------------
+7) OPTION: “RUN CUDA BEFORE XEN” (ONLY TRUE HOST-ONLY SOLUTION IF XEN BLOCKS COMPUTE)
+Why this is feasible:
+- If Xen fundamentally prevents the required low-level behavior for NVIDIA compute in dom0 on your stack, the only way to keep “host-only CUDA” is to run it outside Xen.
+
+Action:
+- Run CUDA workloads in a non-Xen boot path; then reboot into XCP-ng for virtualization duties.
+
+Success criteria:
+- CUDA always works when Xen isn’t running.
+
+Rollback:
+- N/A (this is an operational workaround, not a fix).
+
+Constraint note:
+- This violates the spirit of “CUDA while XCP-ng is installed and actively running,” but it is the only host-only path if Xen/dom0 support is not achievable.
+
+----------------------------------------------------------------------
+8) OPTION: DECLARE “FUNDAMENTALLY NOT POSSIBLE ON STOCK XCP-ng” (IF #1–#4 FAIL)
+When to choose this:
+- You confirm bare metal works (#5), but every Xen dom0 configuration still fails at first kernel launch, and logs indicate driver feature gating / PAT/WC / dom0 mode limitations you cannot change in XCP-ng.
+
+Outcome:
+- The requirement becomes “not achievable on this platform as-is”.
+- To make it achievable, the stack would need changes like:
+  - dom0 mode/support alignment (PVH dom0 availability + correct memory attribute semantics)
+  - platform exposure compatible with NVIDIA compute driver expectations
+  - (Potentially) NVIDIA explicitly supporting/validating Xen dom0 as a compute host
+
+----------------------------------------------------------------------
+WHAT I NEED FROM YOU (TO PICK THE RIGHT OPTION AND ORDER)
+Paste the baseline outputs from section 0 (A–D) plus:
+- Your GPU model (exact), XCP-ng version, Xen version, and NVIDIA driver version.
+Then I’ll tell you:
+- Which option is MOST likely to work first on your exact stack,
+- Which log lines confirm the blocker,
+- And a one-by-one “do this, then expect that” test plan.
+
+----------------------------------------------------------------------
+How to save this as a .TXT file
+- Copy everything in this document into a new file named (example):
+  HostOnly-CUDA-on-XCPng-options.txt

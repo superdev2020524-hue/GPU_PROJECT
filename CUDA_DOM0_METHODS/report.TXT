@@ -1,0 +1,181 @@
+================================================================================
+REPORT: XCP-ng (Xen dom0) VM→Host Mediator→CUDA Execution Proof-of-Concept
+================================================================================
+Source document: CUDA_DOM0_METHODS/BEGINNER_STEP_BY_STEP.txt
+Report purpose: Summarize the Phase 1 implementation and results in a format
+               suitable for review/audit/status reporting.
+
+Prepared for: Phase 1 (Beginner) proof-of-concept
+Scope: Dom0 host + Ubuntu VM(s) + NVIDIA H100 + command mediation + CUDA vector add
+
+================================================================================
+1) EXECUTIVE SUMMARY
+================================================================================
+This project produced a working proof-of-concept that:
+- Establishes a reliable VM↔host communication path (file-based, via NFS/sshfs)
+- Runs a host-side mediation daemon (dom0) that receives commands from the VM
+- Executes a real CUDA workload on the host GPU (NVIDIA H100) from dom0
+- Returns results back to the VM via a response file
+
+Result: SUCCESS (verified end-to-end with multiple command iterations)
+
+================================================================================
+2) TARGET ENVIRONMENT / ASSUMPTIONS
+================================================================================
+Host:
+- Hypervisor: XCP-ng (Xen dom0)
+- GPU: NVIDIA H100 present and visible to dom0 (nvidia-smi functional)
+- CUDA toolkit installed via NVIDIA runfile method (nvcc available)
+
+Guest:
+- Linux VM (example: Ubuntu), network reachable from host
+- NFS client tools installed (nfs-common on Ubuntu/Debian)
+
+Access:
+- Root access on dom0
+- Sudo/root access inside VM
+
+Network:
+- Host IP example used in validation: 10.25.33.10
+- VM(s) on same network with IP reachability (ICMP and NFS)
+
+================================================================================
+3) ARCHITECTURE OVERVIEW
+================================================================================
+3.1 Communication mechanism (Phase 1)
+- Transport: NFS (or sshfs alternative)
+- Shared path in VM: /mnt/vgpu
+- Host exports: /var/vgpu (recommended export path)
+- Dom0 working directory for mediator I/O: /dev/shm/vgpu
+  - /dev/shm/vgpu points at /var/vgpu so dom0 apps can use /dev/shm paths while
+    the VM mounts /var/vgpu over NFS.
+
+3.2 Command protocol (network-safe)
+- VM writes a command number to:   /mnt/vgpu/command.txt
+- Host mediator reads commands from: /dev/shm/vgpu/command.txt
+- Host mediator writes response to:  /dev/shm/vgpu/response.txt
+- VM reads response from:           /mnt/vgpu/response.txt
+
+3.3 CUDA execution (Phase 1)
+- CUDA workload executed in dom0 by the mediator process, gated by a sanity test:
+  - cudaGetDeviceCount
+  - cudaMalloc / cudaFree
+
+================================================================================
+4) IMPLEMENTATION SUMMARY (WHAT WAS BUILT)
+================================================================================
+4.1 Host-side programs (dom0)
+A) CUDA sanity test:
+- File: cuda_sanity.cu
+- Build: nvcc -O2 -o cuda_sanity cuda_sanity.cu
+- Purpose: Confirm dom0 can run CUDA runtime + allocate device memory
+
+B) CUDA workload function:
+- File: cuda_vector_add_real.cu
+- Provides: extern "C" int run_vector_add_test(char *result_msg, int max_len)
+- Implements:
+  - Device allocation (cudaMalloc)
+  - H2D copies
+  - vectorAdd kernel launch
+  - Synchronize + error check (cudaGetLastError)
+  - D2H copy + verify results
+
+C) Mediator daemon:
+- File: cuda_host_mediator.c
+- Build (links CUDA function into mediator binary):
+  - nvcc -O2 -o cuda_mediator cuda_host_mediator.c cuda_vector_add_real.cu
+- Responsibilities:
+  - Poll command.txt
+  - Execute GPU_INFO and VECTOR_ADD commands
+  - Write status+message to response.txt
+
+4.2 VM-side program (guest)
+- File: gpu_cuda_test.c
+- Build: gcc -o gpu_cuda_test gpu_cuda_test.c
+- Responsibilities:
+  - Write command code to command.txt
+  - Poll response.txt for a non-zero status
+  - Print response in the VM shell
+
+================================================================================
+5) OPERATIONAL PROCEDURE (HIGH-LEVEL)
+================================================================================
+5.1 Host setup
+- Verify GPU: nvidia-smi
+- Ensure CUDA toolkit installed: nvcc --version
+
+5.2 NFS export and mount
+- Host exports /var/vgpu (NFS)
+- VM mounts host export at /mnt/vgpu
+
+5.3 Run mediator and test from VM
+- Host: start ./cuda_mediator
+- VM: run ./gpu_cuda_test
+
+================================================================================
+6) VALIDATION RESULTS (EVIDENCE)
+================================================================================
+6.1 CUDA sanity in dom0
+Observed output:
+- CUDA devices: 1
+- CUDA sanity OK
+
+6.2 Mediator runtime evidence (dom0)
+Observed mediator output includes multiple successful cycles:
+- Command: VECTOR_ADD
+  - "Executing CUDA vector add on GPU..."
+  - "Result: Vector add PASSED: 1024 elements, 0 errors (CUDA on H100)"
+- Command: GPU_INFO
+  - Command received and response written
+
+Outcome:
+- Verified VM→host command delivery
+- Verified CUDA kernel execution in dom0 on the H100
+- Verified host→VM response delivery
+
+================================================================================
+7) TROUBLESHOOTING NOTES (COMMON FAILURES + FIXES)
+================================================================================
+7.1 NFS mount issues
+- If NFS mount fails, validate:
+  - VM can ping host
+  - Host exports visible: showmount -e <host-ip>
+  - Re-mount: sudo mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu
+
+7.2 "Permission denied" in VM when reading/writing files
+- Usually caused by:
+  - Not running as root/sudo in the VM
+  - Host file created with restrictive umask
+- Fix:
+  - Use sudo in VM (sudo ./gpu_cuda_test)
+  - Ensure exported files are writable by intended users
+
+7.3 nvcc compilation errors
+- Ensure CUDA toolkit installed (nvcc exists)
+- Ensure the CUDA function is declared with extern "C" for C linkage
+- Ensure variables are not redeclared in the same scope (example fixed: reuse
+  existing cudaError_t variable instead of redeclaring it).
+
+================================================================================
+8) LIMITATIONS / RISKS
+================================================================================
+- Dom0 CUDA may not work on all Xen/XCP-ng configurations.
+  - This is why the process includes an explicit cuda_sanity gate.
+- NFS/sshfs is a convenient Phase 1 transport; it is not a production-grade
+  vGPU mediation channel.
+- Export options like no_root_squash are risky; use only in a controlled lab.
+- Multi-VM simultaneous requests can race without per-VM queues/locking.
+
+================================================================================
+9) NEXT RECOMMENDED STEPS
+================================================================================
+- Add per-VM queues + locking to avoid race conditions under concurrency.
+- Add structured logging and metrics to the mediator.
+- Add additional CUDA kernels (matmul, bandwidth tests).
+- If dom0 CUDA is not viable on other hosts, implement a GPU-worker VM design:
+  VM → mediator → GPU-passthrough VM worker → mediator → VM.
+
+================================================================================
+END OF REPORT
+================================================================================
+

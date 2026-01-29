@@ -1,0 +1,102 @@
+================================================================================
+                    METHOD 22: FUSE Filesystem for /proc/cpuinfo
+                    Use FUSE to create fake /proc/cpuinfo without hypervisor flag
+================================================================================
+
+STATUS: [ ] NOT STARTED
+PRIORITY: MEDIUM
+COMPLEXITY: MEDIUM-HIGH (Requires FUSE programming)
+
+OBJECTIVE:
+----------
+Create a FUSE (Filesystem in Userspace) filesystem that intercepts reads to
+/proc/cpuinfo and returns a modified version without the hypervisor flag.
+
+NOTE: This may not work if CUDA uses CPUID directly, but it's worth trying
+as it's safer than kernel modules.
+
+STEPS:
+------
+
+STEP 1: Install FUSE development libraries
+------------------------------------------
+```bash
+# Install FUSE and development packages
+yum install fuse fuse-devel -y
+
+# Verify installation
+pkg-config --modversion fuse
+```
+
+STEP 2: Create FUSE filesystem source code
+-------------------------------------------
+See file: 22_cpuinfo_fuse.c
+
+STEP 3: Compile FUSE filesystem
+--------------------------------
+```bash
+# Compile
+gcc -o /tmp/cpuinfo_fuse 22_cpuinfo_fuse.c `pkg-config --cflags --libs fuse`
+
+# Verify compilation
+ls -la /tmp/cpuinfo_fuse
+```
+
+STEP 4: Create modified cpuinfo
+--------------------------------
+```bash
+# Read real cpuinfo and remove hypervisor flag
+cat /proc/cpuinfo | sed 's/ hypervisor//g' > /tmp/cpuinfo_clean
+
+# Verify
+grep -i hypervisor /tmp/cpuinfo_clean || echo "Hypervisor flag removed"
+```
+
+STEP 5: Mount FUSE filesystem
+------------------------------
+```bash
+# Create mount point
+mkdir -p /tmp/fake_proc
+
+# Mount FUSE filesystem
+/tmp/cpuinfo_fuse /tmp/fake_proc
+
+# In another terminal, verify it works
+cat /tmp/fake_proc/cpuinfo | grep -i hypervisor || echo "No hypervisor flag"
+```
+
+STEP 6: Test CUDA with FUSE
+-----------------------------
+```bash
+# Mount FUSE over /proc/cpuinfo (requires mount namespace or chroot)
+# This is tricky because /proc is already mounted
+
+# Option 1: Use mount namespace
+unshare --mount --pid --fork --mount-proc bash -c "
+    mount --bind /tmp/fake_proc/cpuinfo /proc/cpuinfo
+    export PATH=/mnt/cuda_install/cuda-12.3/bin:\$PATH
+    export LD_LIBRARY_PATH=/mnt/cuda_install/cuda-12.3/lib64:\$LD_LIBRARY_PATH
+    /tmp/detailed_cuda_error
+"
+
+# Option 2: Use LD_PRELOAD to intercept open() calls to /proc/cpuinfo
+# and redirect to FUSE mount (see Method 13 for LD_PRELOAD approach)
+```
+
+EXPECTED OUTCOME:
+-----------------
+CUDA reads /proc/cpuinfo from FUSE mount and doesn't see hypervisor flag.
+However, since CUDA uses CPUID directly, this may not work.
+
+RISKS:
+------
+- Medium risk (FUSE is userspace, safer than kernel)
+- May not work if CUDA uses CPUID directly
+- Requires FUSE programming knowledge
+
+NEXT METHOD: Method 16 (Kernel Module) if this doesn't work
+
+================================================================================
+                              END OF METHOD 22
+================================================================================
+

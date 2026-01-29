@@ -1,0 +1,78 @@
+================================================================================
+                    MEDIATOR.C COMPILATION FIX
+================================================================================
+
+The file on Dom0 needs these fixes:
+
+1. Line 17: Change comment from `vm*/` to `vm<id>/`
+2. Line 23: Add `#include <stddef.h>` (already there, but verify)
+3. Line 199: Remove `int` from for loop (use `vm_id` already declared)
+
+================================================================================
+                    QUICK FIX (On Dom0)
+================================================================================
+
+Option 1: Edit the file directly
+---------------------------------
+nano mediator.c
+
+Make these changes:
+
+Line 17: Change:
+  * - Write access to /var/vgpu/vm*/response.txt
+To:
+  * - Write access to /var/vgpu/vm<id>/response.txt
+
+Line 23: Verify it has:
+  #include <stddef.h>      /* For size_t */
+
+Line 199: Change:
+  for (int vm_id = 1; vm_id <= 100; vm_id++) {
+To:
+  for (vm_id = 1; vm_id <= 100; vm_id++) {
+(And make sure line 197 has: int vm_id;)
+
+Option 2: Use sed to fix automatically
+---------------------------------------
+sed -i 's|vm\*/response.txt|vm<id>/response.txt|' mediator.c
+sed -i 's|for (int vm_id =|for (vm_id =|' mediator.c
+
+Then verify line 197 has: int vm_id;
+
+Option 3: Copy the fixed file
+------------------------------
+Copy the updated mediator.c from your workspace to Dom0.
+
+================================================================================
+                    VERIFY FIXES
+================================================================================
+
+After making changes, verify:
+
+1. Check line 17:
+   grep "vm.*response.txt" mediator.c
+   Should show: vm<id>/response.txt (NOT vm*/)
+
+2. Check includes:
+   grep -A 5 "^#include" mediator.c | head -10
+   Should include: #include <stddef.h>
+
+3. Check for loop:
+   grep -A 1 "Poll VM directories" mediator.c
+   Should show:
+     int vm_id;
+     for (vm_id = 1; vm_id <= 100; vm_id++) {
+
+================================================================================
+                    COMPILE
+================================================================================
+
+After fixes, compile:
+
+gcc -o mediator mediator.c -lpthread
+
+Should compile without errors!
+
+================================================================================
+End of Compile Fix
+================================================================================

@@ -1,0 +1,120 @@
+Platform: XCP-ng Hardware: NVIDIA H100 80GB PCIe Orchestration: Apache CloudStack
+Phase 1
+Objectives
+Create a minimal Xen virtual GPU (vGPU) stub device visible inside a VM.
+Establish a working communication path (shared memory or similar) between the VM and host mediation daemon.
+Demonstrate a minimal GPU operation (simple CUDA kernel) executed via the mediation layer.
+Run GPU operations from two VMs concurrently without GPU or driver crashes.
+Expected Deliverables
+vGPU Stub Device: A emulated PCIe GPU-like device detectable via lspci inside the VM.
+Host Mediation Daemon: Bare-minimum daemon capable of receiving commands and launching a simple CUDA test job.
+End-to-End Test Application: A minimal CUDA kernel (vector-add or similar) executed through the mediation pipeline.
+Two-VM Concurrency Test: Demonstration that two VMs can send workloads without instability.
+Project Report: Document summarizing what worked, what failed, technical barriers, and recommended continuation path.
+Success Criteria
+VM shows a virtual GPU device via XCP-NG vGPU stub.
+Reliable VM → host communication path exists.
+A CUDA job completes successfully through the mediation daemon.
+Two VMs can run mediated workloads without GPU resets, driver crashes, or host instability.
+5:51
+Phase 2 — Minimal Working Mediation Layer
+Objectives
+Convert the Phase 1 prototype into a more stable mediation layer. 
+Add per-VM queues for GPU job submission. 
+Implement a simple round-robin time-slicing scheduler. 
+Add basic metrics and logging for debugging and monitoring. 
+Achieve stable execution under 2–4 concurrent VMs. 
+Expected Deliverables
+Mediator Daemon with: 
+Per-VM command queues 
+Round-robin scheduling 
+Basic watchdog/reset handling 
+Enhanced VM Test Suite. Multiple synthetic workloads (CUDA samples) executed from
+different VMs.
+Metrics GPU utilization, queue depth, job timing. 
+Stability Test Report: Logs and observations from multi-VM load tests. 
+Success Criteria
+VMs can repeatedly submit GPU workloads without system crashes. 
+Mediator daemon handles concurrency without deadlocks or memory corruption. 
+Round-robin scheduler produces fair sharing under light workloads. 
+Metrics confirm that jobs are being scheduled and executed predictably.
+5:53
+Phase 3 — Scheduler Upgrade & Isolation Controls
+Objectives
+Implement a demand-aware GPU scheduler (not just round-robin).
+Add isolation controls:
+Per-VM rate limits
+Back-pressure for overloaded or abusive VMs
+Fairness/priority weights
+Improve latency accuracy (p95/p99 metrics).
+Strengthen watchdog, GPU reset, and error recovery logic.
+Expected Deliverables
+Mediator Daemon with upgraded scheduler.
+ Isolation Layer including per-VM quotas and protections.
+Advanced Metrics:
+p95/p99 latency
+Context switch count
+Reset detection
+Stress Test Report: Behaviour analysis under heavy mixed workloads.
+Success Criteria 
+Scheduler dynamically adjusts time slices based on real VM demand.
+No single VM can monopolize the GPU or starve others.
+Resilience: GPU or mediator must not crash under stress.
+Measurable latency and fairness improvements over Phase 2.
+5:56
+Phase 4 — CloudStack Integration Layer
+Objectives 
+Make the mediation layer a first-class GPU resource inside CloudStack.
+Allow CloudStack to:
+Detect available GPU/vGPU capacity
+Assign a vGPU session to VMs
+Manage lifecycle events (start/stop/release)
+Build the host-side API for CloudStack communication.
+Expected Deliverables
+Host GPU Agent API
+Endpoints for:
+Querying GPU capacity
+Creating/destroying vGPU assignments
+Reporting per-VM usage
+CloudStack Plugin
+New GPU resource type
+Scheduler integration
+UI/CLI support for GPU-enabled VMs
+End-to-End VM Deployment Demo From CloudStack → VM boots → Receives vGPU → Runs GPU job.
+Success Criteria
+CloudStack can successfully request a vGPU for a VM.
+CloudStack accurately tracks available/used capacity.
+GPU-enabled VMs launch without manual intervention.
+CloudStack and host agent maintain stable communication.
+5:59
+Phase 5 — Hardening, Optimization & Pre-Production Release
+Objectives
+Improve system stability, throughput, and fault tolerance.
+Perform large-scale stress tests.
+Tune scheduler parameters for real workloads.
+Build complete documentation, instructions, and operator guides.
+Deliver a pre-production.
+Expected Deliverables
+Mediator Daemon (Stable Release) Optimized scheduling & isolation, better error recovery.
+Benchmark Report
+Throughput
+Latency
+Max safe VM count per H100
+Operational Runbook Instructions for:
+Deployment
+Monitoring
+Troubleshooting
+Failure handling
+Success Criteria
+The system remains stable with 15–30 active VMs.
+No GPU-wide crashes during extended stress tests.
+Performance meets documented expectations.
+Operators can deploy and manage vGPUs confidently through CloudStack.
+All known limitations are documented before final sign-off.
+Final Output
+A functional GPU mediation system for H100
+ Multi-VM GPU sharing on XCP-ng
+CloudStack plugin and full integration
+Fair, demand-aware GPU scheduling
+Per-VM isolation and utilization metrics
+Technical Documentation

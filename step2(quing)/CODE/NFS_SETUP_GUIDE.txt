@@ -1,0 +1,212 @@
+================================================================================
+                    NFS SETUP GUIDE: Dom0 ↔ VM Communication
+================================================================================
+
+This guide sets up NFS so VMs can communicate with the mediation daemon
+on Dom0 via shared files.
+
+================================================================================
+                    PART 1: SETUP ON DOM0 (Host)
+================================================================================
+
+Step 1: Install NFS Server Packages
+------------------------------------
+yum install -y nfs-utils rpcbind
+
+Step 2: Create Export Directory
+--------------------------------
+mkdir -p /var/vgpu
+chmod 777 /var/vgpu
+
+Step 3: Configure NFS Export
+------------------------------
+Edit /etc/exports and add this line:
+
+/var/vgpu *(rw,sync,no_root_squash,no_subtree_check,fsid=1,insecure)
+
+To add it automatically:
+echo '/var/vgpu *(rw,sync,no_root_squash,no_subtree_check,fsid=1,insecure)' >> /etc/exports
+
+Step 4: Start NFS Services
+---------------------------
+systemctl enable --now rpcbind
+systemctl enable --now nfs-server
+
+Step 5: Export the Share
+-------------------------
+exportfs -rav
+
+Step 6: Verify Export
+---------------------
+exportfs -v
+
+Expected output should show:
+/var/vgpu        <world>(rw,sync,wdelay,hide,no_subtree_check,sec=sys,rw,secure,no_root_squash,no_all_squash)
+
+Step 7: Get Dom0 IP Address
+----------------------------
+hostname -I
+# Or
+ip -4 addr show | grep inet
+
+Note this IP address - you'll need it for the VM mount command.
+
+================================================================================
+                    PART 2: SETUP ON VM (Guest)
+================================================================================
+
+Step 1: Install NFS Client Packages
+------------------------------------
+# For Ubuntu/Debian:
+apt-get update
+apt-get install -y nfs-common
+
+# For CentOS/RHEL:
+yum install -y nfs-utils
+
+Step 2: Create Mount Point
+---------------------------
+mkdir -p /mnt/vgpu
+
+Step 3: Mount NFS Share
+------------------------
+# Replace <DOM0_IP> with the IP from Step 7 above
+mount -t nfs <DOM0_IP>:/var/vgpu /mnt/vgpu
+
+Example:
+mount -t nfs 192.168.1.100:/var/vgpu /mnt/vgpu
+
+Step 4: Verify Mount
+---------------------
+mount | grep /mnt/vgpu
+
+Expected output:
+<DOM0_IP>:/var/vgpu on /mnt/vgpu type nfs (rw,relatime,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=<VM_IP>,local_lock=none,addr=<DOM0_IP>)
+
+Step 5: Test Access
+--------------------
+ls -la /mnt/vgpu/
+# Should show directories like vm1/, vm200/, etc.
+
+touch /mnt/vgpu/test.txt
+ls -la /mnt/vgpu/test.txt
+rm /mnt/vgpu/test.txt
+
+If this works, NFS is configured correctly!
+
+================================================================================
+                    PART 3: MAKE MOUNT PERMANENT (Optional)
+================================================================================
+
+To make the NFS mount persist across VM reboots:
+
+On VM, edit /etc/fstab:
+echo "<DOM0_IP>:/var/vgpu /mnt/vgpu nfs defaults 0 0" >> /etc/fstab
+
+Then test:
+mount -a
+
+If no errors, the mount will persist after reboot.
+
+================================================================================
+                    PART 4: TROUBLESHOOTING
+================================================================================
+
+Problem: "mount.nfs: access denied by server"
+----------------------------------------------
+Solution:
+1. Check /etc/exports on Dom0 has correct permissions
+2. Verify NFS services are running: systemctl status nfs-server
+3. Check firewall: firewall-cmd --list-all (may need to allow NFS)
+
+Problem: "mount.nfs: Connection refused"
+-----------------------------------------
+Solution:
+1. Verify rpcbind is running: systemctl status rpcbind
+2. Check NFS server is running: systemctl status nfs-server
+3. Verify export: exportfs -v
+
+Problem: "mount.nfs: No route to host"
+--------------------------------------
+Solution:
+1. Check network connectivity: ping <DOM0_IP>
+2. Verify firewall allows NFS (ports 111, 2049)
+3. Check if VM can reach Dom0 network
+
+Problem: "Permission denied" when writing files
+------------------------------------------------
+Solution:
+1. Check /var/vgpu permissions: ls -ld /var/vgpu (should be 777)
+2. Verify no_root_squash in /etc/exports
+3. Check per-VM directory permissions: ls -ld /var/vgpu/vm1
+
+Problem: Files not visible immediately
+---------------------------------------
+Solution:
+1. Use sync option in /etc/exports (already included)
+2. Use fflush() in code (already done in vm_client)
+3. Wait a moment for NFS cache to update
+
+================================================================================
+                    QUICK SETUP COMMANDS (Copy-Paste)
+================================================================================
+
+ON DOM0:
+--------
+# Install and setup
+yum install -y nfs-utils rpcbind
+mkdir -p /var/vgpu && chmod 777 /var/vgpu
+echo '/var/vgpu *(rw,sync,no_root_squash,no_subtree_check,fsid=1,insecure)' >> /etc/exports
+systemctl enable --now rpcbind nfs-server
+exportfs -rav
+
+# Get IP address
+hostname -I
+
+# Verify
+exportfs -v
+
+ON VM:
+------
+# Install client
+apt-get update && apt-get install -y nfs-common  # Ubuntu/Debian
+# OR
+yum install -y nfs-utils  # CentOS/RHEL
+
+# Mount (replace <DOM0_IP> with actual IP)
+mkdir -p /mnt/vgpu
+mount -t nfs <DOM0_IP>:/var/vgpu /mnt/vgpu
+
+# Verify
+mount | grep /mnt/vgpu
+ls -la /mnt/vgpu/
+
+================================================================================
+                    VERIFICATION CHECKLIST
+================================================================================
+
+✅ Dom0:
+  [ ] NFS server installed
+  [ ] /var/vgpu directory created and world-writable
+  [ ] /etc/exports configured
+  [ ] NFS services running (rpcbind, nfs-server)
+  [ ] Export visible in exportfs -v
+  [ ] IP address known
+
+✅ VM:
+  [ ] NFS client installed
+  [ ] /mnt/vgpu mount point created
+  [ ] NFS share mounted successfully
+  [ ] Can list files in /mnt/vgpu/
+  [ ] Can create/delete files in /mnt/vgpu/
+
+✅ Communication:
+  [ ] VM can see /mnt/vgpu/vm1/ directory
+  [ ] VM can write to /mnt/vgpu/vm1/request.txt
+  [ ] Dom0 can read /var/vgpu/vm1/request.txt
+  [ ] Dom0 can write /var/vgpu/vm1/response.txt
+  [ ] VM can read /mnt/vgpu/vm1/response.txt
+
+================================================================================
+End of NFS Setup Guide
+================================================================================

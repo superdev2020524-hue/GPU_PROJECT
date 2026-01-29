@@ -1,0 +1,365 @@
+================================================================================
+                    PHASE 2: ERRORS LOG AND SOLUTIONS
+================================================================================
+
+Purpose: Track all errors encountered during Phase 2 implementation
+         with root causes and solutions for future reference.
+
+Format: 
+  ERROR #: Brief description
+  When: Which step/command
+  Symptom: What you see
+  Root Cause: Why it happens
+  Solution: How to fix
+  Prevention: How to avoid in future
+
+================================================================================
+                        KNOWN POTENTIAL ERRORS
+                  (From Phase 1 experience and REPORT1.TXT)
+================================================================================
+
+ERROR 1: NFS Export Not Working
+--------------------------------
+When: Setting up /var/vgpu NFS export
+Symptom: 
+  - VM cannot mount /var/vgpu
+  - "mount.nfs: access denied by server"
+  
+Root Cause:
+  - NFS services not running
+  - Export not refreshed after /etc/exports change
+  - Firewall blocking NFS ports
+  
+Solution:
+  1. Ensure NFS services running:
+     systemctl status rpcbind nfs-server
+     systemctl start rpcbind nfs-server
+  
+  2. Refresh exports:
+     exportfs -rav
+  
+  3. Verify export visible:
+     exportfs -v
+  
+  4. Check from VM:
+     showmount -e <host-ip>
+  
+  5. If firewall issues:
+     firewall-cmd --permanent --add-service=nfs
+     firewall-cmd --reload
+  
+Prevention:
+  - Always run exportfs -rav after editing /etc/exports
+  - Verify with exportfs -v before attempting VM mount
+
+Status: ⚠️ POTENTIAL (not yet encountered)
+
+---
+
+ERROR 2: tmpfs Cannot Be Exported via NFS
+-----------------------------------------
+When: Attempting to export /dev/shm directly
+Symptom: 
+  - VM mount hangs or fails
+  - "exportfs: /dev/shm does not support NFS export"
+  
+Root Cause:
+  - NFS cannot export tmpfs filesystems directly
+  
+Solution:
+  Use symlink approach (as documented in REPORT1.TXT):
+  1. Create real directory: mkdir -p /var/vgpu
+  2. Create symlink: ln -s /var/vgpu /dev/shm/vgpu
+  3. Export /var/vgpu (not /dev/shm)
+  
+Prevention:
+  - Always export real filesystems, not tmpfs
+  - Use symlinks to redirect paths as needed
+
+Status: ⚠️ POTENTIAL (known from REPORT1.TXT)
+
+---
+
+ERROR 3: File Locking Issues with NFS
+-------------------------------------
+When: Multiple VMs writing to same file
+Symptom:
+  - Corrupted command/response files
+  - Responses going to wrong VM
+  - Deadlocks or timeouts
+  
+Root Cause:
+  - Concurrent writes to same file without locking
+  - NFS cache coherency issues
+  
+Solution:
+  Use per-VM directories (as designed):
+  - /var/vgpu/vm1/command.txt
+  - /var/vgpu/vm1/response.txt
+  - /var/vgpu/vm2/command.txt
+  - /var/vgpu/vm2/response.txt
+  
+  Each VM only writes to its own command file
+  Mediator writes to each VM's response file
+  
+Prevention:
+  - Never share command/response files between VMs
+  - Always use per-VM separation
+
+Status: ⚠️ POTENTIAL (design accounts for this)
+
+---
+
+ERROR 4: mmap Over NFS Not Reliable
+-----------------------------------
+When: Using mmap for shared memory over NFS
+Symptom:
+  - Updates not visible to other side
+  - Stale data read
+  - Inconsistent state
+  
+Root Cause:
+  - NFS caching issues with mmap
+  - No guarantee of coherency across NFS clients
+  
+Solution:
+  Use explicit file I/O (as designed in REPORT1.TXT):
+  - Open file, read, close (fresh read every time)
+  - Open file, write, close (explicit flush)
+  - No mmap, no shared memory tricks
+  
+Prevention:
+  - Never use mmap over network filesystems
+  - Stick to explicit read/write operations
+
+Status: ⚠️ POTENTIAL (design avoids this)
+
+---
+
+ERROR 5: CUDA Not Working in Dom0
+---------------------------------
+When: Running CUDA sanity test in Dom0
+Symptom:
+  - cudaGetDeviceCount returns 0
+  - cudaMalloc fails
+  - "CUDA driver version is insufficient"
+  
+Root Cause:
+  - Dom0 kernel/driver mismatch
+  - Xen dom0 restrictions on GPU access
+  - Missing CUDA runtime libraries
+  
+Solution:
+  Per REPORT1.TXT design:
+  1. Run cuda_sanity test first
+  2. If FAILS: Switch to Plan B
+     - Create GPU worker VM with GPU passthrough
+     - Mediator becomes orchestrator only
+     - Worker VM executes actual CUDA
+  3. Do NOT force CUDA in Dom0 if sanity fails
+  
+Prevention:
+  - Always test CUDA sanity before implementation
+  - Have Plan B ready (worker VM approach)
+
+Status: ⚠️ POTENTIAL (gated by sanity test)
+
+---
+
+ERROR 6: Permission Denied on /mnt/vgpu
+---------------------------------------
+When: VM tries to write to /mnt/vgpu/vm1/command.txt
+Symptom:
+  - "Permission denied" error
+  - Cannot create files in mounted directory
+  
+Root Cause:
+  - Export not configured with no_root_squash
+  - Directory permissions too restrictive
+  
+Solution:
+  1. On Dom0, ensure export has no_root_squash:
+     /var/vgpu *(rw,sync,no_root_squash,...)
+  
+  2. Set directory permissions:
+     chmod 777 /var/vgpu/vm1
+     chmod 777 /var/vgpu/vm2
+  
+  3. Refresh export:
+     exportfs -rav
+  
+  4. Remount in VM:
+     sudo umount /mnt/vgpu
+     sudo mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu
+  
+Prevention:
+  - Always use no_root_squash for PoC/development
+  - Set 777 permissions initially, tighten later
+
+Status: ⚠️ POTENTIAL (common NFS issue)
+
+---
+
+ERROR 7: Mediator Not Seeing Command File Updates
+-------------------------------------------------
+When: VM writes command, mediator doesn't process it
+Symptom:
+  - VM client times out waiting for response
+  - Mediator shows no activity
+  - Command file exists but mediator doesn't see content
+  
+Root Cause:
+  - NFS attribute caching
+  - Mediator polling interval too long
+  - File not fully flushed from VM side
+  
+Solution:
+  1. VM client: Ensure explicit flush after write:
+     fprintf(fp, "%d\n", command);
+     fflush(fp);
+     fclose(fp);  // Force write
+  
+  2. Mediator: Use stat() to check mtime:
+     stat(file, &st);
+     if (st.st_mtime > last_mtime) { /* read it */ }
+  
+  3. Reduce NFS cache time (if needed):
+     mount -o actimeo=1 ...
+  
+Prevention:
+  - Always fflush() and fclose() after writing
+  - Use mtime checking in polling loop
+
+Status: ⚠️ POTENTIAL (design includes explicit I/O)
+
+---
+
+ERROR 8: GPU Hang or Driver Crash During Testing
+------------------------------------------------
+When: Running concurrent CUDA workloads
+Symptom:
+  - nvidia-smi hangs
+  - "GPU has fallen off the bus"
+  - Requires host reboot
+  
+Root Cause:
+  - CUDA context conflicts
+  - Memory leaks in test code
+  - GPU overheating or hardware issue
+  
+Solution:
+  1. Check GPU temperature:
+     nvidia-smi -q | grep Temperature
+  
+  2. Ensure proper CUDA cleanup:
+     cudaFree() all allocations
+     cudaDeviceReset() at program end
+  
+  3. Add delays between requests:
+     sleep 1 between VM client calls
+  
+  4. Monitor GPU utilization:
+     watch -n 1 nvidia-smi
+  
+Prevention:
+  - Always cleanup CUDA resources
+  - Start with small workloads, increase gradually
+  - Monitor GPU health during testing
+
+Status: ⚠️ POTENTIAL (CUDA testing risk)
+
+---
+
+ERROR 9: Priority Queue Not Working as Expected
+-----------------------------------------------
+When: Testing priority ordering
+Symptom:
+  - Low priority requests processed before high priority
+  - FIFO not respected within same priority
+  
+Root Cause:
+  - Queue implementation bug
+  - Timestamp not set correctly
+  - Priority comparison inverted
+  
+Solution:
+  (To be determined during implementation)
+  
+  Verification test:
+  1. Submit requests in order: low, medium, high
+  2. Check processing order should be: high, medium, low
+  3. Add timestamps to logs to verify ordering
+  
+Prevention:
+  - Test priority ordering explicitly
+  - Add logging to show queue state
+
+Status: ⚠️ POTENTIAL (will know during testing)
+
+---
+
+ERROR 10: Mediator Crashes or Segfaults
+---------------------------------------
+When: Running mediator daemon
+Symptom:
+  - Mediator process exits unexpectedly
+  - Segmentation fault
+  - Core dump generated
+  
+Root Cause:
+  - Buffer overflow in file reading
+  - NULL pointer dereference
+  - Race condition in concurrent code
+  
+Solution:
+  1. Run under debugger:
+     gdb ./mediator
+     (gdb) run
+     (gdb) bt   # After crash
+  
+  2. Add bounds checking:
+     - Check fopen() return values
+     - Validate file sizes before reading
+     - NULL checks before dereferencing
+  
+  3. Add logging:
+     - Log entry/exit of major functions
+     - Log all file operations
+  
+Prevention:
+  - Compile with warnings: gcc -Wall -Wextra
+  - Use valgrind for memory checking
+  - Add defensive programming checks
+
+Status: ⚠️ POTENTIAL (standard C programming risk)
+
+================================================================================
+                        ACTUAL ERRORS ENCOUNTERED
+                      (To be filled during execution)
+================================================================================
+
+[This section will be populated as errors are actually encountered]
+
+ERROR #: [Number]
+When: [Step/Command]
+Date: [Date encountered]
+Symptom: [What happened]
+Root Cause: [Why it happened]
+Solution Applied: [What fixed it]
+Result: [Did it work?]
+
+---
+
+================================================================================
+                            ERROR STATISTICS
+================================================================================
+
+Total Errors Encountered: 0
+Resolved: 0
+Unresolved: 0
+Known Workarounds: 10 (potential)
+
+================================================================================
+End of Errors Log
+Last Updated: January 24, 2026
+================================================================================

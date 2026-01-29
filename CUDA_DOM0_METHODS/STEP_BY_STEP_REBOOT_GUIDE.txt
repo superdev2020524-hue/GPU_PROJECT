@@ -1,0 +1,175 @@
+================================================================================
+              STEP-BY-STEP GUIDE: Testing Modified Xen (Method 18)
+================================================================================
+
+CURRENT STATUS:
+---------------
+✓ Xen source code modified (hypervisor bit disabled)
+✓ Xen built successfully
+✓ Patched Xen installed: /boot/xen-4.17.5-13-cuda-patched.gz
+✓ Symlink updated: /boot/xen.gz -> patched version
+✓ All backups created
+✓ Test script ready: /root/test_cuda_after_reboot.sh
+
+================================================================================
+STEP 1: REBOOT THE SYSTEM
+================================================================================
+
+Run this command:
+-----------------
+reboot
+
+The system will restart. This may take 2-5 minutes.
+
+IMPORTANT: 
+- The system should boot normally
+- If it doesn't boot, use iDRAC/iLO console to access emergency mode
+- If you can't access the system, you may need to restore the original Xen
+
+================================================================================
+STEP 2: LOG IN AFTER REBOOT
+================================================================================
+
+After the system reboots:
+1. SSH to the system: ssh root@10.25.33.10
+2. Or use iDRAC/iLO console if SSH doesn't work
+3. Log in with your credentials
+
+================================================================================
+STEP 3: RUN THE TEST SCRIPT
+================================================================================
+
+Once logged in, run:
+--------------------
+/root/test_cuda_after_reboot.sh
+
+This script will:
+1. Check if /proc/cpuinfo still has the "hypervisor" flag
+2. Test CUDA operations
+3. Show you the results
+
+================================================================================
+STEP 4: CHECK THE RESULTS
+================================================================================
+
+WHAT TO LOOK FOR:
+-----------------
+
+GOOD SIGNS (Success):
+---------------------
+1. Script output shows: "SUCCESS: Hypervisor flag removed!"
+2. /proc/cpuinfo does NOT contain "hypervisor"
+3. CUDA error is NOT 801 (cudaErrorNotSupported)
+4. CUDA operations succeed
+
+BAD SIGNS (Still failing):
+--------------------------
+1. /proc/cpuinfo still has "hypervisor" flag
+2. CUDA still returns error 801
+3. System behaves differently (may indicate Xen issue)
+
+================================================================================
+STEP 5A: IF IT WORKS (SUCCESS!)
+================================================================================
+
+If the hypervisor flag is gone and CUDA works:
+
+1. Test a simple CUDA program:
+   ----------------------------
+   export PATH=/mnt/cuda_install/cuda-12.3/bin:$PATH
+   export LD_LIBRARY_PATH=/mnt/cuda_install/cuda-12.3/lib64:$LD_LIBRARY_PATH
+   
+   /tmp/detailed_cuda_error
+
+2. Try vector addition:
+   ---------------------
+   nvcc /tmp/vector_add_debug.cu -o /tmp/vector_add_test
+   /tmp/vector_add_test
+
+3. If both work, CUDA is fully functional on Dom0!
+
+================================================================================
+STEP 5B: IF IT DOESN'T WORK (Still has hypervisor flag)
+================================================================================
+
+If /proc/cpuinfo still shows "hypervisor":
+
+1. Check if Xen modifications took effect:
+   ----------------------------------------
+   # Verify the patched Xen is being used
+   ls -la /boot/xen.gz
+   # Should point to: xen-4.17.5-13-cuda-patched.gz
+
+2. Check if there are other places setting the hypervisor bit:
+   ------------------------------------------------------------
+   # Check kernel command line
+   cat /proc/cmdline
+   
+   # Check dmesg for hypervisor-related messages
+   dmesg | grep -i hypervisor
+
+3. Possible reasons:
+   - Xen modifications didn't take effect (wrong file?)
+   - Kernel is also setting the hypervisor bit
+   - CPUID is being set elsewhere
+
+4. Report the findings and we'll investigate further.
+
+================================================================================
+STEP 5C: IF SYSTEM DOESN'T BOOT (Emergency)
+================================================================================
+
+If the system doesn't boot after reboot:
+
+1. Access via iDRAC/iLO console
+2. Boot into emergency/rescue mode if available
+3. Restore original Xen:
+   ----------------------
+   cp /boot/xen-4.17.5-13.gz.backup /boot/xen-4.17.5-13.gz
+   ln -sf /boot/xen-4.17.5-13.gz /boot/xen.gz
+   reboot
+
+4. If you can't access the system, you may need to:
+   - Boot from a rescue CD/USB
+   - Mount the root filesystem
+   - Restore the backup files
+
+================================================================================
+QUICK REFERENCE COMMANDS
+================================================================================
+
+After reboot, run these commands in order:
+
+# 1. Check if hypervisor flag is gone
+grep -i hypervisor /proc/cpuinfo || echo "SUCCESS: No hypervisor flag!"
+
+# 2. Test CUDA
+export PATH=/mnt/cuda_install/cuda-12.3/bin:$PATH
+export LD_LIBRARY_PATH=/mnt/cuda_install/cuda-12.3/lib64:$LD_LIBRARY_PATH
+/tmp/detailed_cuda_error
+
+# 3. Check which Xen is being used
+ls -la /boot/xen.gz
+
+# 4. Check system status
+nvidia-smi
+dmesg | tail -20
+
+================================================================================
+WHAT TO REPORT BACK
+================================================================================
+
+After testing, please report:
+
+1. Did the system boot successfully? (Yes/No)
+2. Does /proc/cpuinfo still have "hypervisor" flag? (Yes/No)
+3. What CUDA error code do you get? (801 or something else?)
+4. Any error messages in dmesg?
+5. Output of: ls -la /boot/xen.gz
+
+This will help determine next steps.
+
+================================================================================
+                              END OF GUIDE
+================================================================================
+

@@ -1,0 +1,30 @@
+cp /usr/lib64/xen/bin/qemu-system-i386 /usr/lib64/xen/bin/qemu-system-i386.backup-step2-$(date +%Y%m%d-%H%M)
+cp x86_64-softmmu/qemu-system-x86_64 /usr/lib64/xen/bin/qemu-system-i386
+
+
+Shutting down VM: b9b93a6d-a38e-5f77-76bb-1f23a4898c8d
+Shutting down VM: 18e12484-8d39-57ff-75f2-42f95d69fd9c
+Shutting down VM: 8c934907-befb-756e-c6fe-91d721291d2b
+Shutting down VM: 29b5c148-f525-b83e-144f-1f6725793021
+Shutting down VM: 14cf0700-638c-41bd-035b-206c184970dc
+
+
+xe vm-param-set uuid=14cf0700-638c-41bd-035b-206c184970dc platform:device-model-args="-device vgpu-stub,pool_id=A,priority=high,vm_id=1"
+xe vm-param-get uuid=14cf0700-638c-41bd-035b-206c184970dc param-name=platform param-key=device-model-args
+xe vm-start uuid=14cf0700-638c-41bd-035b-206c184970dc
+xe vm-param-get uuid=14cf0700-638c-41bd-035b-206c184970dc param-name=power-state
+
+
+xe vm-param-set uuid=8c934907-befb-756e-c6fe-91d721291d2b platform:device-model-args="-device vgpu-stub,pool_id=A,priority=high,vm_id=1"
+xe vm-param-get uuid=8c934907-befb-756e-c6fe-91d721291d2b param-name=platform param-key=device-model-args
+xe vm-start uuid=8c934907-befb-756e-c6fe-91d721291d2b
+xe vm-param-get uuid=8c934907-befb-756e-c6fe-91d721291d2b param-name=power-state
+
+
+xe vm-param-set uuid=29b5c148-f525-b83e-144f-1f6725793021 platform:device-model-args="-device vgpu-stub,pool_id=B,priority=high,vm_id=3"
+xe vm-param-get uuid=29b5c148-f525-b83e-144f-1f6725793021 param-name=platform param-key=device-model-args
+xe vm-start uuid=29b5c148-f525-b83e-144f-1f6725793021
+xe vm-param-get uuid=29b5c148-f525-b83e-144f-1f6725793021 param-name=power-state
+
+
+/usr/lib64/xen/bin/qemu-system-i386 -device vgpu-stub,pool_id=A,priority=high,vm_id=1 -M q35 -display none -S 2>&1

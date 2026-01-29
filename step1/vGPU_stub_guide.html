@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Building Custom vGPU Stub PCI Devices on XCP-ng</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #1e40af;
+            --accent-color: #3b82f6;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --dark-bg: #1e293b;
+            --light-bg: #f8fafc;
+            --border-color: #e2e8f0;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --code-bg: #f1f5f9;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.7;
+            color: var(--text-primary);
+            background-color: #ffffff;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 3rem;
+            padding: 2rem;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+            color: white;
+            padding: 3rem 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        header h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+            letter-spacing: -0.025em;
+        }
+
+        header p {
+            font-size: 1.125rem;
+            opacity: 0.95;
+            max-width: 800px;
+        }
+
+        .sidebar {
+            position: sticky;
+            top: 2rem;
+            height: fit-content;
+            background: var(--light-bg);
+            border-radius: 12px;
+            padding: 1.5rem;
+            border: 1px solid var(--border-color);
+        }
+
+        .sidebar h3 {
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        .sidebar nav ul {
+            list-style: none;
+        }
+
+        .sidebar nav ul li {
+            margin-bottom: 0.5rem;
+        }
+
+        .sidebar nav ul li a {
+            color: var(--text-primary);
+            text-decoration: none;
+            display: block;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        .sidebar nav ul li a:hover {
+            background: white;
+            color: var(--primary-color);
+            transform: translateX(4px);
+        }
+
+        .sidebar nav ul ul {
+            margin-left: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .sidebar nav ul ul li a {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        main {
+            min-width: 0;
+        }
+
+        section {
+            margin-bottom: 3rem;
+            scroll-margin-top: 2rem;
+        }
+
+        h2 {
+            font-size: 1.875rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 3px solid var(--primary-color);
+        }
+
+        h3 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        h4 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+        }
+
+        ul, ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+        }
+
+        code {
+            background: var(--code-bg);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            color: var(--danger-color);
+        }
+
+        pre {
+            background: var(--dark-bg);
+            color: #e2e8f0;
+            padding: 1.5rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin-bottom: 1.5rem;
+            border: 1px solid #334155;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        pre code {
+            background: transparent;
+            color: inherit;
+            padding: 0;
+            font-size: 0.875rem;
+            line-height: 1.6;
+        }
+
+        .alert {
+            padding: 1rem 1.25rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            border-left: 4px solid;
+        }
+
+        .alert-success {
+            background: #f0fdf4;
+            border-color: var(--success-color);
+            color: #166534;
+        }
+
+        .alert-warning {
+            background: #fffbeb;
+            border-color: var(--warning-color);
+            color: #92400e;
+        }
+
+        .alert-danger {
+            background: #fef2f2;
+            border-color: var(--danger-color);
+            color: #991b1b;
+        }
+
+        .alert-info {
+            background: #eff6ff;
+            border-color: var(--primary-color);
+            color: #1e40af;
+        }
+
+        .alert strong {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .card h4 {
+            margin-top: 0;
+            color: var(--primary-color);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .badge-step {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .badge-warning {
+            background: var(--warning-color);
+            color: white;
+        }
+
+        .step-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .step-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 48px;
+            height: 48px;
+            background: var(--primary-color);
+            color: white;
+            border-radius: 50%;
+            font-weight: 700;
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+
+        .troubleshooting-item {
+            background: #fefce8;
+            border-left: 4px solid var(--warning-color);
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 4px;
+        }
+
+        .troubleshooting-item h4 {
+            color: var(--warning-color);
+            margin-top: 0;
+            font-size: 1rem;
+        }
+
+        footer {
+            background: var(--dark-bg);
+            color: #e2e8f0;
+            padding: 2rem;
+            text-align: center;
+            margin-top: 4rem;
+        }
+
+        @media (max-width: 968px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                position: static;
+            }
+
+            header h1 {
+                font-size: 1.75rem;
+            }
+        }
+
+        .highlight-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+        }
+
+        .highlight-box h3 {
+            color: white;
+            margin-top: 0;
+        }
+
+        .highlight-box ul {
+            list-style: none;
+            margin-left: 0;
+        }
+
+        .highlight-box li:before {
+            content: "✓ ";
+            color: #4ade80;
+            font-weight: bold;
+            margin-right: 0.5rem;
+        }
+
+        .command-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .command-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div style="max-width: 1200px; margin: 0 auto;">
+            <h1>Building Custom vGPU Stub PCI Devices on XCP-ng</h1>
+            <p>A comprehensive technical guide for implementing and verifying virtual GPU stubs using QEMU device models on Xen hypervisors</p>
+        </div>
+    </header>
+
+    <div class="container">
+        <aside class="sidebar">
+            <h3>Table of Contents</h3>
+            <nav>
+                <ul>
+                    <li><a href="#goal">Project Goals</a></li>
+                    <li><a href="#architecture">Architecture</a></li>
+                    <li><a href="#prerequisites">Prerequisites</a></li>
+                    <li><a href="#step0">Step 0: Verify Injection</a></li>
+                    <li><a href="#step1">Step 1: Build QEMU</a></li>
+                    <li><a href="#step2">Step 2: Add Device Source</a></li>
+                    <li><a href="#step3">Step 3: Device Implementation</a></li>
+                    <li><a href="#step4">Step 4: Avoid Overflow</a></li>
+                    <li><a href="#step5">Step 5: Build RPM</a></li>
+                    <li><a href="#step6">Step 6: Install QEMU</a></li>
+                    <li><a href="#step7">Step 7: Validate Device</a></li>
+                    <li><a href="#step8">Step 8: Attach to VM</a></li>
+                    <li><a href="#step9">Step 9: Guest Verification</a></li>
+                    <li><a href="#troubleshooting">Troubleshooting</a></li>
+                    <li><a href="#next-steps">Next Steps</a></li>
+                </ul>
+            </nav>
+        </aside>
+
+        <main>
+            <section id="goal">
+                <h2>Project Goals</h2>
+                <div class="highlight-box">
+                    <h3>Success Criteria</h3>
+                    <p>You have successfully completed this implementation when all of the following conditions are met:</p>
+                    <ul>
+                        <li>QEMU device model on the XCP-ng host recognizes your device</li>
+                        <li>Device can be attached to a VM using XAPI injection</li>
+                        <li>VM boots successfully and enumerates the device via lspci</li>
+                    </ul>
+                </div>
+
+                <div class="card">
+                    <h4>1. QEMU Device Model Recognition</h4>
+                    <div class="command-group">
+                        <div class="command-label">Verification Command:</div>
+                        <pre><code>/usr/lib64/xen/bin/qemu-system-i386 -device help | grep -i vgpu-stub</code></pre>
+                    </div>
+                    <div class="alert alert-success">
+                        <strong>Expected Output:</strong>
+                        name "vgpu-stub", bus PCI
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h4>2. XAPI Injection Configuration</h4>
+                    <div class="command-group">
+                        <div class="command-label">Device Attachment:</div>
+                        <pre><code>xe vm-param-set uuid=&lt;VM_UUID&gt; platform:device-model-args="-device vgpu-stub"</code></pre>
+                    </div>
+                    <p>This configuration does not require Xorg or NVIDIA driver stack.</p>
+                </div>
+
+                <div class="card">
+                    <h4>3. Guest PCI Enumeration</h4>
+                    <div class="command-group">
+                        <div class="command-label">Inside the Guest VM:</div>
+                        <pre><code>lspci -nn</code></pre>
+                    </div>
+                    <div class="alert alert-success">
+                        <strong>Expected Result:</strong>
+                        Device appears with vendor/device ID (example: 1af4:1111)
+                    </div>
+                </div>
+
+                <div class="alert alert-info">
+                    <strong>Important Note:</strong>
+                    This guide focuses on implementing a stub device—a minimal PCI device with a single MMIO BAR. This is not a complete GPU implementation but rather a foundation that can be extended for more complex functionality.
+                </div>
+            </section>
+
+            <section id="architecture">
+                <h2>High-Level Architecture</h2>
+                <p>Understanding the architecture is essential for successful implementation and troubleshooting.</p>
+
+                <h3>How the System Works</h3>
+                <p>XCP-ng (Xen hypervisor) uses a QEMU "device model" process (<code>qemu-dm-&lt;domid&gt;</code>) to emulate hardware for HVM guests. By compiling a custom QEMU binary that registers a PCI device type (e.g., "vgpu-stub"), we can instruct Xen/QEMU to instantiate it for specific VMs.</p>
+
+                <div class="card">
+                    <h4>Data Flow</h4>
+                    <ol>
+                        <li><strong>XAPI Storage:</strong> Configuration stored in VM platform field as <code>platform:device-model-args</code></li>
+                        <li><strong>Xenstore Read:</strong> <code>/usr/lib64/xen/bin/qemu-wrapper</code> reads from Xenstore path:<br>
+                        <code>/local/domain/&lt;domid&gt;/platform/device-model-args</code></li>
+                        <li><strong>Argument Injection:</strong> qemu-wrapper appends the arguments to the qemu-dm command line</li>
+                        <li><strong>Device Instantiation:</strong> QEMU creates the device and presents it to the guest</li>
+                    </ol>
+                </div>
+
+                <div class="alert alert-info">
+                    <strong>Workflow Summary:</strong>
+                    Build device into QEMU → Inject "-device vgpu-stub" via XAPI → Guest enumerates PCI device
+                </div>
+            </section>
+
+            <section id="prerequisites">
+                <h2>Prerequisites</h2>
+
+                <h3>Validated Environment</h3>
+                <ul>
+                    <li><strong>Platform:</strong> XCP-ng 8.3 dom0</li>
+                    <li><strong>Hypervisor:</strong> Xen 4.17.x</li>
+                    <li><strong>Device Model:</strong> QEMU 4.2.1</li>
+                    <li><strong>Binary Path:</strong> <code>/usr/lib64/xen/bin/qemu-system-i386</code></li>
+                </ul>
+
+                <div class="alert alert-warning">
+                    <strong>Path Validation:</strong>
+                    Note that the correct path is <code>/usr/lib64/xen/bin/</code>, not <code>/usr/lib/xen/bin/</code>
+                </div>
+
+                <h3>Environment Verification</h3>
+                <pre><code># Verify QEMU installation
+ls -la /usr/lib64/xen/bin/qemu-system-i386 /usr/lib64/xen/bin/qemu-wrapper
+
+# Check QEMU version
+/usr/lib64/xen/bin/qemu-system-i386 -version</code></pre>
+            </section>
+
+            <section id="step0">
+                <div class="step-header">
+                    <div class="step-number">0</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Prove Argument Injection Works</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">Validate the injection mechanism before building</p>
+                    </div>
+                </div>
+
+                <div class="alert alert-warning">
+                    <strong>Critical Pre-Build Validation:</strong>
+                    If injection doesn't work, you can build indefinitely without ever seeing the device in the guest. Always validate this first.
+                </div>
+
+                <h3>Test with Known-Good Device</h3>
+                <p>Select a test VM and inject a device that is already present in QEMU:</p>
+                <pre><code>xe vm-param-set uuid=&lt;VM_UUID&gt; platform:device-model-args="-device ich9-usb-ehci1"
+xe vm-start uuid=&lt;VM_UUID&gt;</code></pre>
+
+                <h3>Verify Injection Success</h3>
+                <pre><code># Get domain ID
+DOMID="$(xe vm-param-get uuid=&lt;VM_UUID&gt; param-name=dom-id)"
+
+# Check Xenstore
+xenstore-read "/local/domain/$DOMID/platform/device-model-args"
+
+# Verify in qemu-dm command line
+ps auxww | grep -F "qemu-dm-$DOMID" | tr ' ' '\n' | grep -F ich9-usb-ehci1</code></pre>
+
+                <div class="alert alert-success">
+                    <strong>Success Indicator:</strong>
+                    If the device appears in both Xenstore and the qemu-dm process arguments, injection is working correctly.
+                </div>
+            </section>
+
+            <section id="step1">
+                <div class="step-header">
+                    <div class="step-number">1</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Build XCP-ng's Patched QEMU</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">Use XCP-ng's QEMU, not vanilla upstream</p>
+                    </div>
+                </div>
+
+                <div class="alert alert-info">
+                    <strong>Why Not Vanilla QEMU?</strong>
+                    Upstream QEMU 4.2.1 combined with Xen 4.17 headers can have compatibility conflicts. XCP-ng's QEMU includes necessary compatibility patches.
+                </div>
+
+                <h3>Build Workspace Structure</h3>
+                <pre><code>~/qemu-xcpng/
+├── SPECS/
+│   └── qemu.spec
+├── SOURCES/
+│   ├── qemu-4.2.1.tar.xz
+│   ├── keycodemapdb-*.tar.gz
+│   └── (other patches)
+├── BUILD/
+├── RPMS/
+└── SRPMS/</code></pre>
+
+                <h3>Common Pitfall: Source Tarball Issues</h3>
+                <div class="troubleshooting-item">
+                    <h4>Error: "source tarball is not a tar archive"</h4>
+                    <p><strong>Cause:</strong> If source tarballs (qemu or keycodemapdb) were cloned via Git LFS, you may have text pointer files instead of actual archives.</p>
+                    <p><strong>Solution:</strong> Download the actual tarballs and place them in <code>SOURCES/</code> directory:</p>
+                    <pre><code>cd ~/qemu-xcpng/SOURCES/
+wget https://download.qemu.org/qemu-4.2.1.tar.xz
+# Download keycodemapdb tarball as specified in spec file</code></pre>
+                </div>
+
+                <h3>Common Pitfall: keymap-gen Arguments</h3>
+                <div class="troubleshooting-item">
+                    <h4>Error: keymap-gen: error: unrecognized arguments</h4>
+                    <p><strong>Cause:</strong> QEMU expects a specific keycodemapdb version unpacked at <code>ui/keycodemapdb</code> during the <code>%prep</code> stage.</p>
+                    <p><strong>Solution:</strong> Ensure proper unpacking in <code>qemu.spec</code> <code>%prep</code> section:</p>
+                    <pre><code>tar xzf %{SOURCE2}
+rm -rf ui/keycodemapdb
+mv keycodemapdb-* ui/keycodemapdb</code></pre>
+                </div>
+            </section>
+
+            <section id="step2">
+                <div class="step-header">
+                    <div class="step-number">2</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Add Custom PCI Device Source</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">Integrate your device into the RPM build</p>
+                    </div>
+                </div>
+
+                <div class="alert alert-info">
+                    <strong>Important:</strong>
+                    The device must be compiled INTO QEMU. The <code>-device vgpu-stub</code> argument only works after the device type is registered in the binary.
+                </div>
+
+                <h3>Step-by-Step Integration</h3>
+
+                <div class="card">
+                    <h4>1. Place Source File</h4>
+                    <p>Copy your device source to the SOURCES directory:</p>
+                    <pre><code>cp vgpu-stub.c ~/qemu-xcpng/SOURCES/</code></pre>
+                </div>
+
+                <div class="card">
+                    <h4>2. Modify qemu.spec</h4>
+                    <p>Add source declaration in the spec file header:</p>
+                    <pre><code>Source9999: vgpu-stub.c</code></pre>
+
+                    <p>In the <code>%prep</code> section, copy the file into the build tree:</p>
+                    <pre><code>cp -a %{SOURCE9999} hw/misc/vgpu-stub.c</code></pre>
+
+                    <p>Ensure compilation by adding to build system:</p>
+                    <pre><code>echo "obj-y += vgpu-stub.o" >> hw/misc/Makefile.objs</code></pre>
+                </div>
+            </section>
+
+            <section id="step3">
+                <div class="step-header">
+                    <div class="step-number">3</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">QEMU 4.2.1-Compatible Implementation</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">Use version-appropriate APIs</p>
+                    </div>
+                </div>
+
+                <div class="alert alert-warning">
+                    <strong>Version Compatibility:</strong>
+                    QOM macros and APIs differ significantly across QEMU versions. Code written for QEMU 7.x will not compile on 4.2.1.
+                </div>
+
+                <h3>Minimal Device Characteristics</h3>
+                <ul>
+                    <li><strong>QEMU Device Name:</strong> "vgpu-stub"</li>
+                    <li><strong>PCI Vendor ID:</strong> 0x1af4 (example)</li>
+                    <li><strong>PCI Device ID:</strong> 0x1111 (example)</li>
+                    <li><strong>MMIO BAR0:</strong> 4 KiB</li>
+                </ul>
+
+                <h3>Critical XCP-ng QEMU Requirement</h3>
+                <div class="alert alert-danger">
+                    <strong>Interface Implementation Required:</strong>
+                    Every non-abstract PCI device class MUST implement either:
+                    <ul style="margin-top: 0.5rem;">
+                        <li>"conventional-pci-device" interface, OR</li>
+                        <li>"pcie-device" interface</li>
+                    </ul>
+                    <p>Without this, QEMU will abort even on <code>-device help</code> with:</p>
+                    <pre style="margin-top: 0.5rem;"><code>pci_device_class_base_init: Assertion `conventional || pcie' failed.</code></pre>
+                </div>
+
+                <h3>Required Interface Declaration</h3>
+                <p>Add the following to your TypeInfo structure:</p>
+                <pre><code>.interfaces = (InterfaceInfo[]) {
+    { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+    { }
+}</code></pre>
+            </section>
+
+            <section id="step4">
+                <div class="step-header">
+                    <div class="step-number">4</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Avoid class_id Overflow</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">QEMU 4.2.1 type limitations</p>
+                    </div>
+                </div>
+
+                <div class="troubleshooting-item">
+                    <h4>Build Error: large integer implicitly truncated</h4>
+                    <pre><code>error: large integer implicitly truncated to unsigned type [-Werror=overflow]
+k->class_id = 0x120000;</code></pre>
+
+                    <p><strong>Root Cause:</strong></p>
+                    <p>In QEMU 4.2.1, <code>PCIDeviceClass::class_id</code> is effectively 16-bit (class&lt;&lt;8 | subclass), not a full 24-bit (class/subclass/progif) value.</p>
+
+                    <p><strong>Solution:</strong></p>
+                    <p>Use the 16-bit format:</p>
+                    <pre><code>k->class_id = 0x1200;  // Base class 0x12, subclass 0x00</code></pre>
+                    <p>Instead of:</p>
+                    <pre><code>k->class_id = 0x120000;  // This will fail</code></pre>
+                </div>
+            </section>
+
+            <section id="step5">
+                <div class="step-header">
+                    <div class="step-number">5</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Build the RPM</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">Compile and package</p>
+                    </div>
+                </div>
+
+                <h3>Build Command</h3>
+                <pre><code>cd ~/qemu-xcpng
+rpmbuild --define "_topdir $(pwd)" -ba SPECS/qemu.spec</code></pre>
+
+                <h3>Expected Outputs</h3>
+                <pre><code>~/qemu-xcpng/RPMS/x86_64/qemu-4.2.1-&lt;release&gt;.xcpng8.3.x86_64.rpm
+~/qemu-xcpng/RPMS/x86_64/qemu-debuginfo-4.2.1-&lt;release&gt;.xcpng8.3.x86_64.rpm</code></pre>
+
+                <div class="alert alert-info">
+                    <strong>Note:</strong>
+                    The warning "bogus date in %changelog" is typically harmless and won't prevent a successful build.
+                </div>
+            </section>
+
+            <section id="step6">
+                <div class="step-header">
+                    <div class="step-number">6</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Install Rebuilt QEMU</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">Safe deployment procedure</p>
+                    </div>
+                </div>
+
+                <div class="alert alert-danger">
+                    <strong>Safety Warning:</strong>
+                    qemu-dm is actively used by running VMs. Never upgrade while VMs are running.
+                </div>
+
+                <h3>Safe Installation Procedure</h3>
+
+                <div class="card">
+                    <h4>1. Stop All Guest VMs</h4>
+                    <pre><code># List running VMs
+xe vm-list is-control-domain=false params=uuid,name-label,power-state
+
+# Shutdown VMs
+xe vm-shutdown uuid=&lt;VM_UUID&gt;</code></pre>
+                </div>
+
+                <div class="card">
+                    <h4>2. Upgrade QEMU Package</h4>
+                    <pre><code>rpm -Uvh ~/qemu-xcpng/RPMS/x86_64/qemu-*.rpm</code></pre>
+                </div>
+
+                <h3>Reinstallation for Same Version</h3>
+                <div class="alert alert-warning">
+                    <strong>Important for Rebuild Iterations:</strong>
+                    If you rebuild with the SAME version-release (NEVR), RPM may report "already installed" and not replace files.
+                </div>
+
+                <pre><code># Force reinstall with same version
+rpm -Uvh --replacepkgs --replacefiles ~/qemu-xcpng/RPMS/x86_64/qemu-&lt;version&gt;.rpm</code></pre>
+
+                <p>Avoid using glob patterns that include debuginfo packages unless specifically needed.</p>
+            </section>
+
+            <section id="step7">
+                <div class="step-header">
+                    <div class="step-number">7</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Validate Device Registration</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">Confirm QEMU recognizes the device</p>
+                    </div>
+                </div>
+
+                <h3>Verification Command</h3>
+                <pre><code>/usr/lib64/xen/bin/qemu-system-i386 -device help | grep -i vgpu-stub</code></pre>
+
+                <div class="alert alert-success">
+                    <strong>Expected Output:</strong>
+                    <pre style="margin-top: 0.5rem;"><code>name "vgpu-stub", bus PCI</code></pre>
+                </div>
+
+                <div class="alert alert-danger">
+                    <strong>If You See the Assertion Error:</strong>
+                    <pre style="margin-top: 0.5rem;"><code>pci_device_class_base_init: Assertion `conventional || pcie' failed.</code></pre>
+                    <p style="margin-top: 0.5rem;">Your device registration is missing the required interface block. Return to Step 3 and add the interface declaration.</p>
+                </div>
+            </section>
+
+            <section id="step8">
+                <div class="step-header">
+                    <div class="step-number">8</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Attach Device to VM</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">XAPI → Xenstore → qemu-wrapper flow</p>
+                    </div>
+                </div>
+
+                <h3>Device Injection</h3>
+                <div class="card">
+                    <h4>1. Configure VM Parameters</h4>
+                    <pre><code>xe vm-param-set uuid=&lt;VM_UUID&gt; platform:device-model-args="-device vgpu-stub"</code></pre>
+                </div>
+
+                <div class="card">
+                    <h4>2. Start Virtual Machine</h4>
+                    <pre><code>xe vm-start uuid=&lt;VM_UUID&gt;</code></pre>
+                </div>
+
+                <h3>Host-Side Verification</h3>
+                <p>Confirm the device argument reached qemu-dm:</p>
+                <pre><code># Get domain ID
+DOMID="$(xe vm-param-get uuid=&lt;VM_UUID&gt; param-name=dom-id)"
+
+# Verify Xenstore
+xenstore-read "/local/domain/$DOMID/platform/device-model-args"
+
+# Check qemu-dm command line
+ps auxww | grep -F "qemu-dm-$DOMID" | tr ' ' '\n' | grep -i vgpu-stub</code></pre>
+
+                <div class="alert alert-warning">
+                    <strong>Troubleshooting:</strong>
+                    If the device appears in Xenstore but not in the qemu-dm command line, the wrapper may not be processing the arguments correctly, or there may be a quoting issue.
+                </div>
+            </section>
+
+            <section id="step9">
+                <div class="step-header">
+                    <div class="step-number">9</div>
+                    <div>
+                        <h2 style="margin: 0; border: none; padding: 0;">Guest Verification</h2>
+                        <p style="margin: 0; color: var(--text-secondary);">The definitive test</p>
+                    </div>
+                </div>
+
+                <h3>PCI Enumeration Check</h3>
+                <p>Execute the following commands inside the guest VM:</p>
+                <pre><code># List PCI devices
+lspci -nn | grep -i "1af4:1111"
+
+# Detailed device information
+lspci -nnv | grep -nA8 -B2 "1af4:1111"
+
+# Verify sysfs entry
+ls -l /sys/bus/pci/devices/</code></pre>
+
+                <h3>Real vs. Fake Device</h3>
+
+                <div class="card">
+                    <h4>✓ Real Enumerated PCI Device</h4>
+                    <ul>
+                        <li>lspci shows Bus:Device.Function address (e.g., 00:05.0) with matching vendor/device ID</li>
+                        <li><code>/sys/bus/pci/devices/0000:00:05.0</code> exists (address will vary)</li>
+                        <li>Device appears in <code>dmesg</code> output</li>
+                    </ul>
+                </div>
+
+                <div class="card">
+                    <h4>✗ Fake Configuration Entry</h4>
+                    <ul>
+                        <li>Only Xenstore/XAPI settings visible</li>
+                        <li>lspci shows no new devices</li>
+                        <li>qemu-dm command line doesn't include the device</li>
+                        <li>No sysfs entry created</li>
+                    </ul>
+                </div>
+
+                <div class="alert alert-success">
+                    <strong>Success Confirmation:</strong>
+                    When you see your device in lspci with the correct vendor/device ID and a PCI address, you have successfully implemented the vGPU stub device.
+                </div>
+            </section>
+
+            <section id="troubleshooting">
+                <h2>Troubleshooting Quick Reference</h2>
+
+                <div class="troubleshooting-item">
+                    <h4>1. QEMU Path Not Found</h4>
+                    <p><strong>Symptom:</strong> <code>/usr/lib/xen/bin/...</code> doesn't exist</p>
+                    <p><strong>Fix:</strong> Use <code>/usr/lib64/xen/bin/qemu-system-i386</code> and <code>/usr/lib64/xen/bin/qemu-wrapper</code></p>
+                </div>
+
+                <div class="troubleshooting-item">
+                    <h4>2. VM Won't Boot After Device Injection</h4>
+                    <p><strong>Symptom:</strong> VM fails to start or immediately halts</p>
+                    <p><strong>Fix:</strong> Check qemu-dm logs and command line. Revert by clearing arguments:</p>
+                    <pre><code>xe vm-param-set uuid=&lt;VM_UUID&gt; platform:device-model-args=""</code></pre>
+                </div>
+
+                <div class="troubleshooting-item">
+                    <h4>3. rpmbuild "not a tar archive"</h4>
+                    <p><strong>Symptom:</strong> Build fails with tarball extraction error</p>
+                    <p><strong>Fix:</strong> You have Git LFS pointer files. Download actual tarballs into SOURCES/</p>
+                </div>
+
+                <div class="troubleshooting-item">
+                    <h4>4. keymap-gen Argument Mismatch</h4>
+                    <p><strong>Symptom:</strong> <code>keymap-gen: error: unrecognized arguments</code></p>
+                    <p><strong>Fix:</strong> Ensure keycodemapdb is properly unpacked into <code>ui/keycodemapdb</code> in %prep</p>
+                </div>
+
+                <div class="troubleshooting-item">
+                    <h4>5. Build Fails: class_id Overflow</h4>
+                    <p><strong>Symptom:</strong> Large integer truncation error</p>
+                    <p><strong>Fix:</strong> Use <code>k->class_id = 0x1200</code>, not <code>0x120000</code> on QEMU 4.2.1</p>
+                </div>
+
+                <div class="troubleshooting-item">
+                    <h4>6. QEMU Crashes with Assertion</h4>
+                    <p><strong>Symptom:</strong> <code>pci_device_class_base_init: Assertion 'conventional || pcie' failed</code></p>
+                    <p><strong>Fix:</strong> Add <code>INTERFACE_CONVENTIONAL_PCI_DEVICE</code> in TypeInfo .interfaces list</p>
+                </div>
+
+                <div class="troubleshooting-item">
+                    <h4>7. RPM Reinstall Says "Already Installed"</h4>
+                    <p><strong>Symptom:</strong> Changes don't take effect after rebuild</p>
+                    <p><strong>Fix:</strong> Force reinstall:</p>
+                    <pre><code>rpm -Uvh --replacepkgs --replacefiles &lt;qemu.rpm&gt;</code></pre>
+                </div>
+            </section>
+
+            <section id="security">
+                <h2>Security Considerations</h2>
+                <div class="alert alert-warning">
+                    <strong>Laboratory Environment Security:</strong>
+                    While fixed IPs and passwords are acceptable for laboratory environments, never reuse these credentials in production or on internet-facing systems. For long-term usage, implement SSH key-based authentication.
+                </div>
+            </section>
+
+            <section id="next-steps">
+                <h2>Next Steps</h2>
+                <p>Once your stub device reliably appears in lspci and you can repeatedly create VMs with the device attached, you can proceed with more advanced implementations:</p>
+
+                <div class="card">
+                    <h4>Enhanced Functionality</h4>
+                    <ul>
+                        <li><strong>Richer BAR Layout:</strong> Define additional MMIO regions and control registers</li>
+                        <li><strong>Interrupt Implementation:</strong> Add MSI or MSI-X interrupt paths</li>
+                        <li><strong>Guest Driver Development:</strong> Create a kernel module to interact with MMIO registers</li>
+                        <li><strong>Mediated GPU Features:</strong> Implement GPU-like functionality (significantly more complex)</li>
+                    </ul>
+                </div>
+
+                <div class="alert alert-danger">
+                    <strong>Important:</strong>
+                    Do not proceed with advanced features until lspci enumeration is solid and repeatable across multiple VMs and restarts.
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <footer>
+        <p>&copy; 2026 Technical Documentation. All rights reserved.</p>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; opacity: 0.8;">
+            This guide is provided for educational and development purposes.
+        </p>
+    </footer>
+</body>
+</html>

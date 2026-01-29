@@ -1,0 +1,150 @@
+================================================================================
+                    METHOD 17: CUDA Package Manager Installation
+                    Install CUDA via yum instead of runfile
+================================================================================
+
+STATUS: [ ] NOT STARTED
+PRIORITY: MEDIUM (Easy to try, low risk)
+COMPLEXITY: LOW (Just reinstalling CUDA)
+
+OBJECTIVE:
+----------
+Install CUDA via package manager (yum) instead of the runfile installer.
+Package-manager CUDA might have different virtualization checks or behavior.
+
+STEPS:
+------
+
+STEP 1: Backup current CUDA installation
+----------------------------------------
+```bash
+# Backup current installation
+mkdir -p /root/cuda_backup_$(date +%Y%m%d)
+cp -r /mnt/cuda_install/cuda-12.3 /root/cuda_backup_$(date +%Y%m%d)/
+cp -r /usr/local/cuda /root/cuda_backup_$(date +%Y%m%d)/ 2>/dev/null || true
+
+# Backup environment
+echo $PATH > /root/cuda_backup_$(date +%Y%m%d)/PATH_backup.txt
+echo $LD_LIBRARY_PATH > /root/cuda_backup_$(date +%Y%m%d)/LD_LIBRARY_PATH_backup.txt
+```
+
+STEP 2: Check available CUDA packages
+--------------------------------------
+```bash
+# Check what CUDA packages are available
+yum search cuda
+
+# Check specific CUDA version
+yum list available | grep cuda
+
+# Check if CUDA repository is configured
+yum repolist | grep -i cuda
+```
+
+STEP 3: Add NVIDIA CUDA repository (if needed)
+-----------------------------------------------
+```bash
+# For CentOS/RHEL 7 (XCP-ng is based on CentOS 7)
+# Download and install CUDA repository
+wget https://developer.download.nvidia.com/compute/cuda/repos/rhel7/x86_64/cuda-repo-rhel7-12.3.0-545.23.06-1.x86_64.rpm
+
+# Install repository
+rpm -i cuda-repo-rhel7-12.3.0-545.23.06-1.x86_64.rpm
+
+# Update yum cache
+yum makecache
+```
+
+STEP 4: Remove current CUDA (optional)
+--------------------------------------
+```bash
+# Note: Be careful - only remove if you have backup
+# Current CUDA is in /mnt/cuda_install, not managed by yum
+# So we can leave it and install package-manager CUDA alongside
+
+# Or remove manually:
+# rm -rf /mnt/cuda_install/cuda-12.3
+# rm -rf /usr/local/cuda
+```
+
+STEP 5: Install CUDA via yum
+-----------------------------
+```bash
+# Install CUDA toolkit
+yum install cuda-toolkit-12-3 -y
+
+# Or install specific components
+yum install cuda-12-3 -y
+
+# Verify installation
+ls -la /usr/local/cuda*
+```
+
+STEP 6: Update environment variables
+-------------------------------------
+```bash
+# Update PATH
+export PATH=/usr/local/cuda/bin:$PATH
+
+# Update LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Make permanent
+echo 'export PATH=/usr/local/cuda/bin:$PATH' >> /etc/profile
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> /etc/profile
+```
+
+STEP 7: Test CUDA
+-----------------
+```bash
+# Test nvcc
+nvcc --version
+
+# Test CUDA
+/tmp/detailed_cuda_error
+
+# Check if error 801 is gone
+```
+
+STEP 8: Compare behavior
+-------------------------
+```bash
+# Compare library versions
+ldd /usr/local/cuda/lib64/libcudart.so* | head -5
+ldd /mnt/cuda_install/cuda-12.3/lib64/libcudart.so* | head -5
+
+# Check if package-manager CUDA has different checks
+strings /usr/local/cuda/lib64/libcudart.so* | grep -i -E "(cpuid|hypervisor|virtual)" | head -10
+```
+
+ROLLBACK:
+---------
+If package-manager CUDA doesn't work:
+```bash
+# Remove package CUDA
+yum remove cuda-toolkit-12-3 -y
+
+# Restore from backup
+cp -r /root/cuda_backup_*/cuda-12.3 /mnt/cuda_install/
+export PATH=/mnt/cuda_install/cuda-12.3/bin:$PATH
+```
+
+EXPECTED OUTCOME:
+-----------------
+Package-manager CUDA may:
+- Have different virtualization checks
+- Use different library versions
+- Have different behavior in virtualized environments
+
+RISKS:
+------
+- Low risk (can restore from backup)
+- May conflict with existing CUDA installation
+- May require uninstalling current CUDA
+
+NEXT METHOD: Method 15 (Namespace Isolation) or Method 16 (Kernel Module)
+
+================================================================================
+                              END OF METHOD 17
+================================================================================
+

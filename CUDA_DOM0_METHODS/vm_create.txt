@@ -1,0 +1,98 @@
+XCP-ng VM start failure: "qemu-dm Timeout reached while starting daemon"
+======================================================================
+
+This error is not “VM creation went wrong”. It means Xen tried to start the
+device-model (QEMU / qemu-dm) and it never came up. The *next step* is always:
+1) Pull the qemu-dm logs (they contain the real error)
+2) Isolate whether your custom `-device vgpu-stub` causes QEMU to exit
+3) If QEMU itself is broken (common after replacing `/usr/lib64/xen/bin/qemu-system-i386`),
+   revert to the stock/bundled QEMU so VMs boot again, then rebuild QEMU properly.
+
+----------------------------------------------------------------------
+Step A: Capture the real error (run on the XCP-ng host)
+----------------------------------------------------------------------
+
+# 1) Immediately after a failed `xe vm-start`, grab recent XAPI/Xen logs:
+tail -n 200 /var/log/xensource.log
+tail -n 200 /var/log/messages 2>/dev/null || true
+
+# If the VM start times out but you see no qemu lines in /var/log/messages,
+# pull the systemd journal for xapi/xenopsd (often contains the actual qemu
+# command line or stderr routing info):
+journalctl -b -u xapi --no-pager | tail -n 200
+journalctl -b -u xenopsd --no-pager | tail -n 200
+
+# 2) Find the newest qemu-dm log and print it:
+ls -lt /var/log/xen/qemu-dm-*.log 2>/dev/null | head -5
+LATEST=$(ls -t /var/log/xen/qemu-dm-*.log 2>/dev/null | head -1)
+echo "LATEST=$LATEST"
+test -n "$LATEST" && tail -n 200 "$LATEST"
+
+# 3) Also check qemu-wrapper logs if present:
+ls -lt /var/log/xen/qemu-wrapper*.log 2>/dev/null | head -5
+tail -n 200 /var/log/xen/qemu-wrapper*.log 2>/dev/null | tail -n 200
+
+----------------------------------------------------------------------
+Step B: Isolate whether `-device vgpu-stub` is the trigger
+----------------------------------------------------------------------
+
+# If you added this:
+#   xe vm-param-set uuid=$VM_UUID other-config:device-model-args="-device vgpu-stub"
+# temporarily remove it and try starting again.
+
+VM_UUID="57e01e2c-ae40-f429-0a28-cf475b79e58c"
+xe vm-param-remove uuid=$VM_UUID param-name=other-config param-key=device-model-args
+xe vm-start uuid=$VM_UUID
+
+# If VM starts WITHOUT the device-model-args, the stub device isn't registered
+# in the QEMU binary currently used by XCP-ng (or QEMU exits on that option).
+
+----------------------------------------------------------------------
+Step C: Validate which QEMU binary XCP-ng is actually using
+----------------------------------------------------------------------
+
+# XCP-ng typically uses:
+#   /usr/lib64/xen/bin/qemu-wrapper -> /usr/lib64/xen/bin/qemu-system-i386
+ls -lh /usr/lib64/xen/bin/qemu-wrapper /usr/lib64/xen/bin/qemu-system-i386
+/usr/lib64/xen/bin/qemu-system-i386 -version
+
+# Check if QEMU knows about the stub device:
+/usr/lib64/xen/bin/qemu-system-i386 -device help 2>/dev/null | grep -i "vgpu-stub" || echo "vgpu-stub NOT listed"
+
+# Check whether QEMU was built with Xen support (Xen QEMU needs this):
+/usr/lib64/xen/bin/qemu-system-i386 -accel help 2>/dev/null | head -50
+
+# If qemu-dm still times out, check for missing shared libraries (very common
+# after copying in a locally built QEMU):
+ldd /usr/lib64/xen/bin/qemu-system-i386 | grep -i "not found" || echo "ldd: no missing libs detected"
+
+# And inspect qemu-wrapper (it may pass Xen-only args like -xen-domid):
+head -n 120 /usr/lib64/xen/bin/qemu-wrapper
+grep -nEi "xen-domid|libxl|qmp|pidfile|daemonize|syslog" /usr/lib64/xen/bin/qemu-wrapper || true
+
+----------------------------------------------------------------------
+Step D (Most common fix): revert to stock QEMU to restore VM booting
+----------------------------------------------------------------------
+
+# If you previously replaced qemu-system-i386, revert using your backup:
+ls -lt /usr/lib64/xen/bin/qemu-system-i386.backup-* 2>/dev/null | head -5
+
+# Example (pick the newest backup file you actually have):
+# cp -a /usr/lib64/xen/bin/qemu-system-i386.backup-YYYYMMDD-HHMM /usr/lib64/xen/bin/qemu-system-i386
+# chmod 0755 /usr/lib64/xen/bin/qemu-system-i386
+
+# Then restart toolstack services:
+# systemctl restart xapi xenopsd
+
+----------------------------------------------------------------------
+Correct long-term approach (so you can add `vgpu-stub` safely)
+----------------------------------------------------------------------
+
+Do NOT build “generic upstream QEMU” with `--disable-xen` and drop it into
+`/usr/lib64/xen/bin/`. XCP-ng expects a Xen-capable QEMU build and may include
+vendor patches.
+
+Best path:
+- Rebuild the XCP-ng QEMU 4.2.1 SRPM (same release as installed) with a minimal
+  `hw/misc/vgpu-stub.c` patch and proper build integration.
+- Install the resulting RPM, so it matches the host’s expectations.

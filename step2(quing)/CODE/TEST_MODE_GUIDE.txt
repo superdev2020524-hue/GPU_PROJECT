@@ -1,0 +1,247 @@
+================================================================================
+                    TEST MODE FOR CONCURRENT SCHEDULING
+                    (Enhanced Mediator Features)
+================================================================================
+
+OVERVIEW:
+---------
+The mediator now includes test mode functionality to verify concurrent request
+scheduling behavior. This allows you to test how the scheduler handles multiple
+requests arriving simultaneously from different VMs.
+
+NEW FEATURES:
+-------------
+1. **Automatic Cleanup on Termination**
+   - Clears all request/response files when mediator stops
+   - Prevents stale data from interfering with next run
+   - Triggered by Ctrl+C or SIGTERM signal
+
+2. **Test Mode Detection**
+   - Automatically detects when requests from 2+ VMs arrive
+   - Prompts user for scheduling preferences before processing
+   - Allows testing concurrent request handling
+
+3. **Interactive Scheduling Questions**
+   - Question 1: Proceed as if requests arrived simultaneously? (YES/NO)
+   - Question 2: Which VM should be processed first in ties? (VM ID or FIFO)
+
+4. **Preferred VM Tie-Breaking**
+   - If priority and pool are the same, preferred VM goes first
+   - Otherwise, uses FIFO (timestamp order)
+
+================================================================================
+                        USAGE SCENARIO
+================================================================================
+
+STEP 1: Start Mediator
+-----------------------
+[On Dom0]
+./mediator
+
+Expected output:
+    ================================================================================
+                        GPU Mediation Daemon
+                        (Dynamic Fair Scheduling with Test Mode)
+    ================================================================================
+    
+    [START] Daemon started
+    [START] Test mode: Waits for multiple requests, then asks for scheduling preferences
+    [INFO] Press Ctrl+C to stop (will cleanup all request/response files)
+
+STEP 2: Send Requests from Multiple VMs
+---------------------------------------
+[On VM1]
+./vm_client_fixed VECTOR_ADD
+
+[On VM2 (or VM200)]
+./vm_client_fixed MATRIX_MUL
+
+Both requests are written to NFS, but mediator waits before processing.
+
+STEP 3: Test Mode Activation
+-----------------------------
+When mediator detects requests from 2+ VMs, it will prompt:
+
+    ================================================================================
+                        TEST MODE: Concurrent Request Scheduling
+    ================================================================================
+    
+    [TEST] Found requests from 2 VM(s): VM1 VM200 
+    
+    [TEST] Question 1: Do you want to proceed as if requests from 2 VM(s) arrived
+            at the same time? (YES/NO): 
+
+STEP 4: Answer Questions
+-------------------------
+Question 1: Enter YES to enable test mode
+    [TEST] ✓ Test mode enabled - requests will be processed as concurrent
+
+Question 2: Enter VM ID for tie-breaking (or press Enter for FIFO)
+    [TEST] Question 2: If priority and pool are the same, which VM should be
+            processed first? (Enter VM ID, e.g., 1, 200, or press Enter for FIFO): 
+
+    Example answers:
+    - "1" → VM1 will be preferred in tie-breaking
+    - "200" → VM200 will be preferred in tie-breaking
+    - (Enter) → Use FIFO (timestamp order)
+
+STEP 5: Processing Begins
+---------------------------
+After answering questions, mediator processes requests according to:
+1. Priority (high > medium > low)
+2. Pool (A and B processed independently)
+3. Preferred VM (if set and priorities/pools are equal)
+4. FIFO (timestamp order, if no preferred VM)
+
+================================================================================
+                        SCHEDULING LOGIC
+================================================================================
+
+Priority Ordering:
+-----------------
+1. Higher priority always processed first (2 > 1 > 0)
+2. Within same priority:
+   - If preferred VM is set: Preferred VM goes first
+   - Otherwise: FIFO (earlier timestamp first)
+
+Pool Separation:
+---------------
+- Pool A and Pool B are independent resources
+- Requests from different pools don't interfere
+- Round-robin processing ensures fairness
+
+Example Scenarios:
+------------------
+
+Scenario 1: Different Priorities
+---------------------------------
+VM1: Pool A, Priority 2 (high), Command: VECTOR_ADD
+VM200: Pool A, Priority 1 (medium), Command: MATRIX_MUL
+
+Result: VM1 processed first (higher priority)
+
+Scenario 2: Same Priority, Preferred VM Set
+--------------------------------------------
+VM1: Pool A, Priority 2, Command: VECTOR_ADD
+VM200: Pool A, Priority 2, Command: MATRIX_MUL
+Preferred VM: 200
+
+Result: VM200 processed first (preferred VM)
+
+Scenario 3: Same Priority, No Preferred VM
+--------------------------------------------
+VM1: Pool A, Priority 2, Command: VECTOR_ADD (timestamp: 10:00:00)
+VM200: Pool A, Priority 2, Command: MATRIX_MUL (timestamp: 10:00:01)
+Preferred VM: 0 (none)
+
+Result: VM1 processed first (FIFO - earlier timestamp)
+
+Scenario 4: Different Pools
+-----------------------------
+VM1: Pool A, Priority 2, Command: VECTOR_ADD
+VM200: Pool B, Priority 2, Command: MATRIX_MUL
+
+Result: Both processed independently (round-robin between pools)
+
+================================================================================
+                        CLEANUP ON TERMINATION
+================================================================================
+
+When mediator stops (Ctrl+C or SIGTERM):
+----------------------------------------
+1. Signal handler triggers cleanup_files()
+2. Scans /var/vgpu for all vm* directories
+3. Clears request.txt and response.txt in each directory
+4. Prints cleanup status for each file
+
+Example output:
+    [CLEANUP] Clearing all request/response files...
+    [CLEANUP] Cleared: /var/vgpu/vm1/request.txt
+    [CLEANUP] Cleared: /var/vgpu/vm1/response.txt
+    [CLEANUP] Cleared: /var/vgpu/vm200/request.txt
+    [CLEANUP] Cleared: /var/vgpu/vm200/response.txt
+    [CLEANUP] Cleanup complete
+    [STOP] Mediator stopped by signal 2
+
+Benefits:
+---------
+- No stale requests on restart
+- Clean state for each test run
+- Prevents confusion from old data
+
+================================================================================
+                        CODE CHANGES SUMMARY
+================================================================================
+
+New Headers:
+------------
+- #include <signal.h> - For signal handling
+- #include <errno.h> - For error handling
+
+New State Variables:
+-------------------
+- int test_mode - Test mode enabled flag
+- int wait_count - Number of requests to wait for
+- uint32_t preferred_vm - VM ID preferred in tie-breaking (0 = none)
+
+New Functions:
+--------------
+- cleanup_files() - Clears all request/response files
+- signal_handler() - Handles SIGINT/SIGTERM for cleanup
+- count_total_requests() - Counts requests in both queues
+- get_requesting_vms() - Gets list of VM IDs with requests
+- interactive_test_mode() - Prompts user for scheduling preferences
+
+Modified Functions:
+------------------
+- insert_request() - Now accepts MediatorState* for preferred VM logic
+- main() - Added test mode detection and signal handlers
+
+================================================================================
+                        TESTING WORKFLOW
+================================================================================
+
+1. Start mediator on Dom0
+2. Send requests from VM1 and VM2 (or VM200) simultaneously
+3. Mediator detects 2+ VMs and enters test mode
+4. Answer questions about scheduling preferences
+5. Observe processing order matches expectations
+6. Press Ctrl+C to stop and cleanup
+
+Expected Behavior:
+------------------
+- Requests are queued but not processed until test mode completes
+- User can control tie-breaking behavior
+- Cleanup ensures fresh start on next run
+
+================================================================================
+                        TROUBLESHOOTING
+================================================================================
+
+Issue: Test mode not activating
+--------------------------------
+- Ensure requests from 2+ different VMs are present
+- Check that requests are written to NFS before mediator polls
+- Verify VM IDs are different (not same VM sending multiple requests)
+
+Issue: Preferred VM not working
+-------------------------------
+- Verify preferred VM ID matches actual requesting VM
+- Check that priorities and pools are actually equal
+- Preferred VM only applies when priority AND pool are same
+
+Issue: Cleanup not working
+--------------------------
+- Check file permissions on /var/vgpu/vm*/ directories
+- Verify mediator has write access
+- Check NFS mount is accessible
+
+Issue: Signal handler not triggering
+------------------------------------
+- Ensure mediator is running in foreground (not background)
+- Use Ctrl+C (SIGINT) or kill command (SIGTERM)
+- Check that signal handlers are registered
+
+================================================================================
+End of TEST_MODE_GUIDE.txt
+================================================================================

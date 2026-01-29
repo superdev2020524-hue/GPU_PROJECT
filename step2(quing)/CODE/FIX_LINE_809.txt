@@ -1,0 +1,44 @@
+================================================================================
+                    FIX FOR LINE 809 ERROR
+================================================================================
+
+ERROR:
+------
+mediator.c:809:54: error: 'vm_' undeclared (first use in this function)
+get_requesting_vms(&state, vm_list, 10, &vm_
+
+PROBLEM:
+--------
+The function call is incomplete - missing "count" at the end.
+
+CORRECT CODE (lines 805-820):
+-----------------------------
+        // Step 2: If test mode is enabled, check for 2+ VMs before processing
+        if (state.test_mode && state.processing_paused && !state.test_mode_pending) {
+            // Check if we have requests from at least 2 different VMs
+            uint32_t vm_list[10];
+            int vm_count;
+            get_requesting_vms(&state, vm_list, 10, &vm_count);
+            
+            if (vm_count >= 2 && current_request_count >= 2) {
+                // We have 2+ VMs with requests - ask scheduling questions
+                printf("\n[TEST] Detected requests from %d VM(s) with %d total requests!\n", 
+                       vm_count, current_request_count);
+                state.test_mode_pending = 1;   // Mark that we're asking questions
+                interactive_test_mode(&state);
+                state.test_mode_pending = 0;   // Questions answered, clear pending flag
+                // Note: interactive_test_mode() will set processing_paused = 0 when done
+            }
+        }
+
+FIX:
+----
+On Dom0, line 809 should be:
+    get_requesting_vms(&state, vm_list, 10, &vm_count);
+
+NOT:
+    get_requesting_vms(&state, vm_list, 10, &vm_
+
+================================================================================
+End of FIX_LINE_809.txt
+================================================================================

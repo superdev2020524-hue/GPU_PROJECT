@@ -1,0 +1,63 @@
+================================================================================
+                    QUICK FIX: Create VM200 Directory
+================================================================================
+
+ERROR: Directory does not exist: /mnt/vgpu/vm200
+
+SOLUTION: Create the directory on Dom0 (host), not in the VM!
+
+================================================================================
+                    STEP 1: Run on Dom0 (Host)
+================================================================================
+
+Option A: Use the setup script
+--------------------------------
+cd /path/to/CODE
+bash setup_vm_directories.sh 200
+
+# Or if you have execute permissions:
+chmod +x setup_vm_directories.sh
+./setup_vm_directories.sh 200
+
+Option B: Manual commands (if script doesn't work)
+---------------------------------------------------
+sudo mkdir -p /var/vgpu/vm200
+sudo chmod 777 /var/vgpu/vm200
+echo "0:Ready" | sudo tee /var/vgpu/vm200/response.txt
+sudo chmod 666 /var/vgpu/vm200/response.txt
+
+Verify:
+-------
+ls -la /var/vgpu/vm200/
+# Should show:
+#   request.txt (empty)
+#   response.txt (contains "0:Ready")
+
+================================================================================
+                    STEP 2: Verify from VM
+================================================================================
+
+In the VM, check if directory is visible via NFS:
+
+ls -la /mnt/vgpu/vm200/
+
+If you see the directory, you're ready to test!
+
+================================================================================
+                    IMPORTANT NOTES
+================================================================================
+
+1. Script MUST run on Dom0 (host), NOT in the VM
+   - Dom0: /var/vgpu/vm200/
+   - VM:   /mnt/vgpu/vm200/ (NFS mount of /var/vgpu)
+
+2. If script gives "command not found":
+   - Try: bash setup_vm_directories.sh 200
+   - Or use manual commands (Option B above)
+
+3. After creating directory, the VM client should work:
+   sudo ./vm_client_fixed VECTOR_ADD
+
+================================================================================
+End of Quick Fix Guide
+================================================================================

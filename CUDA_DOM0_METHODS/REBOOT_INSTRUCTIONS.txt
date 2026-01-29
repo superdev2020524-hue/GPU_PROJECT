@@ -1,0 +1,58 @@
+================================================================================
+                    REBOOT INSTRUCTIONS - Method 18 Testing
+================================================================================
+
+READY TO REBOOT:
+----------------
+Modified Xen is installed and ready for testing.
+
+BEFORE REBOOTING:
+-----------------
+✓ Modified Xen source code (hypervisor bit disabled)
+✓ Built Xen successfully
+✓ Installed patched Xen to /boot/xen-4.17.5-13-cuda-patched.gz
+✓ Updated /boot/xen.gz symlink
+✓ Created backups of all original files
+✓ Created test script: /root/test_cuda_after_reboot.sh
+
+TO REBOOT:
+----------
+Run: reboot
+
+AFTER REBOOT:
+-------------
+1. Log in to the system
+2. Run the test script:
+   /root/test_cuda_after_reboot.sh
+
+3. Check results:
+   - If /proc/cpuinfo has no "hypervisor" flag: SUCCESS
+   - If CUDA error 801 is gone: SUCCESS - CUDA should work!
+   - If CUDA still fails: Check error message and report
+
+ROLLBACK (if system doesn't boot or has issues):
+-------------------------------------------------
+If system doesn't boot or has problems:
+
+1. Boot from rescue/emergency mode if available
+2. Or use iDRAC/iLO console to access system
+3. Restore original Xen:
+   cp /boot/xen-4.17.5-13.gz.backup /boot/xen-4.17.5-13.gz
+   ln -sf /boot/xen-4.17.5-13.gz /boot/xen.gz
+4. Reboot
+
+WHAT TO EXPECT:
+---------------
+After reboot with modified Xen:
+- System should boot normally
+- /proc/cpuinfo should NOT have "hypervisor" flag
+- CPUID instruction should NOT return hypervisor bit
+- CUDA should NOT detect virtualization
+- CUDA operations should work (no error 801)
+
+If this works, CUDA will be able to perform GPU computations on Dom0!
+
+================================================================================
+                              END OF REBOOT INSTRUCTIONS
+================================================================================
+

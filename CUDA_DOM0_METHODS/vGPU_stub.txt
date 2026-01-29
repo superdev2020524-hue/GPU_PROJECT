@@ -1,0 +1,269 @@
+Beginner Guide: Building a Custom “vGPU Stub” PCI Device on XCP-ng (Xen) and Verifying It in lspci
+==============================================================================================
+
+Goal (what “success” looks like)
+--------------------------------
+You are done with “Step 1” when ALL of the following are true:
+  1) QEMU device model on the XCP-ng host knows your device:
+       /usr/lib64/xen/bin/qemu-system-i386 -device help | grep -i vgpu-stub
+     shows:
+       name "vgpu-stub", bus PCI
+
+  2) You can attach it to ONE VM using XAPI injection (no Xorg, no NVIDIA stack):
+       xe vm-param-set uuid=<VM_UUID> platform:device-model-args="-device vgpu-stub"
+
+  3) The VM boots, and inside the guest you can see the device in PCI enumeration:
+       lspci -nn
+     shows your vendor/device ID (example in this guide: 1af4:1111).
+
+This guide intentionally focuses on a *stub* device (a minimal PCI device with one MMIO BAR),
+not a real GPU implementation. It’s a safe foundation you can extend later.
+
+
+High-level architecture (why this approach works)
+-------------------------------------------------
+XCP-ng (Xen) uses a QEMU “device model” process (qemu-dm-<domid>) to emulate hardware for HVM
+guests. If we compile a new QEMU binary that registers a PCI device type (e.g. "vgpu-stub"),
+then we can tell Xen/QEMU to instantiate it for one VM using a supported “extra QEMU args”
+path:
+
+  - XAPI stores a string in VM platform field: platform:device-model-args
+  - /usr/lib64/xen/bin/qemu-wrapper reads it from Xenstore:
+        /local/domain/<domid>/platform/device-model-args
+  - qemu-wrapper appends those args to the qemu-dm command line
+
+So: build device into QEMU → inject "-device vgpu-stub" → guest enumerates a PCI device.
+
+
+Prerequisites (host)
+--------------------
+Assumptions validated in this workflow:
+  - XCP-ng 8.3 dom0
+  - Xen 4.17.x (xen ctrl version shown by QEMU configure output)
+  - Device model binary path:
+      /usr/lib64/xen/bin/qemu-system-i386   (QEMU 4.2.1 in this environment)
+    NOT /usr/lib/xen/bin/...
+
+Verify which QEMU Xen uses:
+  ls -la /usr/lib64/xen/bin/qemu-system-i386 /usr/lib64/xen/bin/qemu-wrapper
+  /usr/lib64/xen/bin/qemu-system-i386 -version
+
+
+Step 0 — Prove argument injection works (before any building)
+-------------------------------------------------------------
+Reason: If injection doesn’t work, you can build forever and never see the device in the guest.
+
+Pick a test VM UUID and inject a known-good device:
+  xe vm-param-set uuid=<VM_UUID> platform:device-model-args="-device ich9-usb-ehci1"
+  xe vm-start uuid=<VM_UUID>
+
+Confirm it reached Xenstore and qemu-dm:
+  DOMID="$(xe vm-param-get uuid=<VM_UUID> param-name=dom-id)"
+  xenstore-read "/local/domain/$DOMID/platform/device-model-args"
+  ps auxww | grep -F "qemu-dm-$DOMID" | tr ' ' '\n' | grep -F ich9-usb-ehci1
+
+If you can see it there, injection is working.
+
+
+Step 1 — Build XCP-ng’s patched QEMU (not vanilla upstream)
+-----------------------------------------------------------
+Why: Upstream QEMU 4.2.1 + Xen 4.17 headers can conflict. XCP-ng’s QEMU has compatibility patches.
+
+Build workspace layout (RPM style):
+  ~/qemu-xcpng/
+    SPECS/qemu.spec
+    SOURCES/...
+    BUILD/...
+    RPMS/...
+
+Common pitfall: “source tarball is not a tar archive”
+  - If the qemu source tarball or keycodemapdb tarball was cloned via Git LFS pointers,
+    rpmbuild will fail because you have tiny text pointer files instead of real tarballs.
+  - Fix by downloading the real tarballs into SOURCES/ (qemu-4.2.1.tar.xz, keycodemapdb-*.tar.gz).
+
+Common pitfall: keymap-gen argument mismatch
+  Symptom:
+    keymap-gen: error: unrecognized arguments: --lang --varname ...
+  Root cause:
+    QEMU expects a specific keycodemapdb version to be unpacked at ui/keycodemapdb during %prep.
+  Fix (in qemu.spec, %prep):
+    tar xzf %{SOURCE2}
+    rm -rf ui/keycodemapdb
+    mv keycodemapdb-* ui/keycodemapdb
+
+
+Step 2 — Add your custom PCI device source into the RPM build
+--------------------------------------------------------------
+Reason: The device must be compiled INTO QEMU. Passing "-device vgpu-stub" only works after that.
+
+1) Put your device source into SOURCES:
+  ~/qemu-xcpng/SOURCES/vgpu-stub.c
+
+2) In qemu.spec:
+  - Add a source entry:
+      Source9999: vgpu-stub.c
+  - In %prep, copy into the extracted tree:
+      cp -a %{SOURCE9999} hw/misc/vgpu-stub.c
+  - Ensure it is built:
+      echo "obj-y += vgpu-stub.o" >> hw/misc/Makefile.objs
+
+
+Step 3 — Use a QEMU 4.2.1-compatible minimal PCI device implementation
+-----------------------------------------------------------------------
+Why: QOM macros/APIs differ across QEMU versions. Newer macros may fail on 4.2.1.
+
+Working minimal device characteristics:
+  - QEMU device name: "vgpu-stub"
+  - PCI vendor/device IDs: 0x1af4 / 0x1111 (example)
+  - MMIO BAR0: 4 KiB
+
+IMPORTANT QEMU/XCP-ng-specific requirement (easy to miss):
+  On this QEMU tree, every non-abstract PCI device class MUST implement one of:
+    - "conventional-pci-device" interface, or
+    - "pcie-device" interface
+  Otherwise QEMU aborts even for "-device help" with:
+    pci_device_class_base_init: Assertion `conventional || pcie' failed.
+
+Fix: Add interfaces to TypeInfo:
+  .interfaces = (InterfaceInfo[]) {
+      { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+      { }
+  }
+
+
+Step 4 — Avoid “class_id overflow” on QEMU 4.2.1
+-------------------------------------------------
+Symptom during build:
+  error: large integer implicitly truncated to unsigned type [-Werror=overflow]
+  k->class_id = 0x120000;
+
+Reason:
+  In QEMU 4.2.1, PCIDeviceClass::class_id is effectively 16-bit (class<<8 | subclass),
+  not a full 24-bit (class/subclass/progif) value.
+
+Fix:
+  Use 0x1200 (base class 0x12, subclass 0x00), not 0x120000.
+
+
+Step 5 — Build the RPM
+----------------------
+From ~/qemu-xcpng:
+  rpmbuild --define "_topdir $(pwd)" -ba SPECS/qemu.spec
+
+Expected outputs:
+  ~/qemu-xcpng/RPMS/x86_64/qemu-4.2.1-<release>.xcpng8.3.x86_64.rpm
+  ~/qemu-xcpng/RPMS/x86_64/qemu-debuginfo-... (optional)
+
+Note:
+  “bogus date in %changelog” is typically a warning; it doesn’t stop a successful build.
+
+
+Step 6 — Install the rebuilt QEMU safely
+----------------------------------------
+Reason: qemu-dm is used by VMs; don’t upgrade while VMs are running.
+
+1) Stop VMs (except dom0):
+  xe vm-list is-control-domain=false params=uuid,name-label,power-state
+  xe vm-shutdown uuid=<VM_UUID>
+
+2) Upgrade QEMU:
+  rpm -Uvh ~/qemu-xcpng/RPMS/x86_64/qemu-*.rpm
+
+VERY IMPORTANT reinstall note:
+  If you rebuild but keep the SAME version-release (NEVR), rpm may say “already installed”
+  and not truly replace files. Use:
+    rpm -Uvh --replacepkgs --replacefiles ~/qemu-xcpng/RPMS/x86_64/qemu-<...>.rpm
+
+Avoid using a glob that includes debuginfo unless you actually want it.
+
+
+Step 7 — Validate QEMU sees the device type
+-------------------------------------------
+Run:
+  /usr/lib64/xen/bin/qemu-system-i386 -device help | grep -i vgpu-stub
+
+Expected:
+  name "vgpu-stub", bus PCI
+
+If you see the assertion again:
+  pci_device_class_base_init: Assertion `conventional || pcie' failed.
+Then your device registration is missing the required interface block.
+
+
+Step 8 — Attach the device to a VM (XAPI → Xenstore → qemu-wrapper)
+--------------------------------------------------------------------
+1) Inject device arg:
+  xe vm-param-set uuid=<VM_UUID> platform:device-model-args="-device vgpu-stub"
+
+2) Start VM:
+  xe vm-start uuid=<VM_UUID>
+
+3) Verify host-side that it actually reached qemu-dm:
+  DOMID="$(xe vm-param-get uuid=<VM_UUID> param-name=dom-id)"
+  xenstore-read "/local/domain/$DOMID/platform/device-model-args"
+  ps auxww | grep -F "qemu-dm-$DOMID" | tr ' ' '\n' | grep -i vgpu-stub
+
+If it’s in Xenstore but not in the qemu-dm command line, the wrapper path may not be used for
+that VM or a quoting issue exists.
+
+
+Step 9 — Guest verification (the critical “real vs fake” test)
+--------------------------------------------------------------
+Inside the guest:
+  lspci -nn | grep -i "1af4:1111"
+  lspci -nnv | grep -nA8 -B2 "1af4:1111"
+  ls -l /sys/bus/pci/devices/
+
+What “real enumerated PCI device” looks like:
+  - lspci shows a Bus:Device.Function address like 00:05.0 with the matching vendor/device ID.
+  - /sys/bus/pci/devices/0000:00:05.0 exists (example address will vary).
+
+What “fake config entry” looks like:
+  - You only see Xenstore/XAPI settings, but lspci has nothing new.
+  - qemu-dm command line doesn’t include the device.
+
+
+Troubleshooting quick index (symptom → fix)
+-------------------------------------------
+1) QEMU path not found
+   - Symptom: /usr/lib/xen/bin/... doesn’t exist
+   - Fix: Use /usr/lib64/xen/bin/qemu-system-i386 and /usr/lib64/xen/bin/qemu-wrapper
+
+2) VM won’t boot after device injection
+   - Check qemu-dm logs / command line. Revert by clearing args:
+       xe vm-param-set uuid=<VM_UUID> platform:device-model-args=""
+
+3) rpmbuild “not a tar archive”
+   - You have Git LFS pointer files. Download real tarballs into SOURCES/.
+
+4) keymap-gen arg mismatch
+   - Ensure keycodemapdb is unpacked into ui/keycodemapdb in %prep.
+
+5) Build fails: class_id overflow
+   - Use k->class_id = 0x1200, not 0x120000 on QEMU 4.2.1.
+
+6) QEMU crashes on “-device help” with conventional||pcie assertion
+   - Add INTERFACE_CONVENTIONAL_PCI_DEVICE (or PCIe interface) in TypeInfo .interfaces list.
+
+7) rpm reinstall says “already installed” / nothing changes
+   - Use:
+       rpm -Uvh --replacepkgs --replacefiles <qemu.rpm>
+
+
+Security note (about passwords / static IP)
+-------------------------------------------
+It’s okay to use a fixed IP and password for a lab, but do NOT reuse those credentials elsewhere.
+Prefer SSH keys for long-term usage.
+
+
+Next steps (after Step 1 success)
+---------------------------------
+Once the stub device reliably appears in lspci, the next evolution is:
+  - Define a richer BAR layout (MMIO registers)
+  - Implement an interrupt (MSI/MSI-X) path
+  - Add a guest driver to interact with the MMIO registers
+  - Add mediated “GPU-like” functionality (this is substantially more complex)
+
+But do not proceed until lspci enumeration is solid and repeatable.
+
+

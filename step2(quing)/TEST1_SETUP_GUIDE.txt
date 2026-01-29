@@ -1,0 +1,478 @@
+================================================================================
+                   TEST-1 VGPU STUB SETUP GUIDE
+================================================================================
+Date: January 25, 2026
+Purpose: Configure TEST-1 VM with vGPU-stub device
+Configuration: pool_id=A, priority=high, vm_id=1
+
+Based on: Successful TEST-2 implementation (pool_id=B, priority=high, vm_id=200)
+Reference: step2(quing)/vgpu-stub_enhance/complete.txt
+
+================================================================================
+                          OVERVIEW
+================================================================================
+
+VM Comparison:
+--------------
+TEST-2 (Already configured):
+  - UUID: 8c934907-befb-756e-c6fe-91d721291d2b
+  - Status: Running
+  - Config: pool_id=B, priority=high, vm_id=200
+  - Status: ✅ VERIFIED WORKING (lspci confirmed, MMIO registers tested)
+
+TEST-1 (To be configured):
+  - UUID: 14cf0700-638c-41bd-035b-206c184970dc
+  - Status: Halted (ready for configuration)
+  - Config: pool_id=A, priority=high, vm_id=1
+  - Status: ⏳ PENDING SETUP
+
+Design Notes:
+-------------
+- Different pool IDs (A vs B) allow testing pool isolation
+- Both set to high priority for fair comparison
+- Different VM IDs (1 vs 200) for easy identification
+- Same device class: Processing Accelerator (0x1200)
+
+================================================================================
+                        PREREQUISITES
+================================================================================
+
+✅ Completed Prerequisites (from Phase 1):
+------------------------------------------
+1. Custom QEMU 4.2.1 with vgpu-stub device built and installed
+2. qemu-wrapper patched to read device-model-args from xenstore
+3. TEST-2 already running successfully with vgpu-stub device
+4. Device verification confirmed on TEST-2 (lspci + MMIO registers)
+
+✅ Current System State:
+-----------------------
+- XCP-ng Dom0 accessible via SSH
+- TEST-2: Running with vgpu-stub (pool_id=B)
+- TEST-1: Halted, ready for configuration
+- Control domain: Running normally
+
+================================================================================
+                      SETUP PROCEDURE
+================================================================================
+
+OPTION 1: Automated Setup (Recommended)
+========================================
+
+Step 1: Make the setup script executable
+-----------------------------------------
+cd /root
+cd /home/david/Downloads/gpu/step2\(quing\)/
+chmod +x setup_test1_vgpu.sh
+
+Step 2: Run the setup script
+-----------------------------
+./setup_test1_vgpu.sh
+
+The script will:
+✓ Find TEST-1 VM by name
+✓ Shut down if running (safe state)
+✓ Configure device-model-args with: -device vgpu-stub,pool_id=A,priority=high,vm_id=1
+✓ Start the VM
+✓ Verify domain ID assigned
+✓ Check xenstore configuration
+✓ Verify QEMU command line in logs
+✓ Provide next steps for guest verification
+
+Expected output:
+----------------
+==========================================
+vGPU Stub Setup for TEST-1
+==========================================
+
+[Step 1] Finding VM UUID...
+✅ Found VM UUID: 14cf0700-638c-41bd-035b-206c184970dc
+
+[Step 2] Checking VM power state...
+Current power state: halted
+
+[Step 3] Configuring vGPU stub device...
+Device arguments: -device vgpu-stub,pool_id=A,priority=high,vm_id=1
+✅ Configuration applied: -device vgpu-stub,pool_id=A,priority=high,vm_id=1
+
+[Step 5] Starting VM...
+Waiting for VM to initialize...
+
+[Step 6] Verifying VM startup...
+Power state: running
+Domain ID: <number>
+✅ VM started successfully with Domain ID: <number>
+
+[Step 7] Verifying xenstore configuration...
+XenStore device-model-args: -device vgpu-stub,pool_id=A,priority=high,vm_id=1
+✅ XenStore configuration matches
+
+[Step 8] Checking QEMU command line in logs...
+✅ qemu-wrapper successfully read device-model-args from xenstore
+✅ vGPU stub device found in QEMU command line
+
+==========================================
+SETUP SUMMARY
+==========================================
+
+VM Configuration:
+  Name:      Test-1
+  UUID:      14cf0700-638c-41bd-035b-206c184970dc
+  Domain ID: <number>
+  State:     running
+
+vGPU Stub Configuration:
+  Pool ID:   A
+  Priority:  high
+  VM ID:     1
+
+Verification Status:
+  [✓] VM started successfully
+  [✓] Domain ID assigned (not -1)
+  [✓] device-model-args configured
+  [✓] Device in QEMU command line
+
+==========================================
+
+
+OPTION 2: Manual Setup (Step-by-Step)
+======================================
+
+If you prefer to understand each step:
+
+Step 1: Get VM UUID
+--------------------
+xe vm-list name-label="Test-1" params=uuid --minimal
+
+Expected: 14cf0700-638c-41bd-035b-206c184970dc
+
+Step 2: Configure device-model-args
+------------------------------------
+xe vm-param-set uuid=14cf0700-638c-41bd-035b-206c184970dc \
+  platform:device-model-args="-device vgpu-stub,pool_id=A,priority=high,vm_id=1"
+
+Step 3: Verify configuration
+-----------------------------
+xe vm-param-get uuid=14cf0700-638c-41bd-035b-206c184970dc \
+  param-name=platform param-key=device-model-args
+
+Expected output: -device vgpu-stub,pool_id=A,priority=high,vm_id=1
+
+Step 4: Start the VM
+--------------------
+xe vm-start uuid=14cf0700-638c-41bd-035b-206c184970dc
+
+Wait 5-8 seconds for initialization.
+
+Step 5: Verify VM started
+--------------------------
+xe vm-list uuid=14cf0700-638c-41bd-035b-206c184970dc \
+  params=name-label,power-state,dom-id
+
+Expected:
+  name-label: Test-1
+  power-state: running
+  dom-id: <positive number, not -1>
+
+Step 6: Get domain ID
+----------------------
+VM_DOMID=$(xe vm-list uuid=14cf0700-638c-41bd-035b-206c184970dc \
+  params=dom-id --minimal)
+echo "Domain ID: $VM_DOMID"
+
+Step 7: Check xenstore
+-----------------------
+xenstore-read /local/domain/$VM_DOMID/platform/device-model-args
+
+Expected: -device vgpu-stub,pool_id=A,priority=high,vm_id=1
+
+Step 8: Verify QEMU logs
+-------------------------
+# Check that qemu-wrapper read the args
+grep "qemu-dm-$VM_DOMID.*Adding device-model-args" /var/log/daemon.log | tail -1
+
+# Check that device is in QEMU command line
+grep "qemu-dm-$VM_DOMID.*vgpu-stub.*pool_id=A" /var/log/daemon.log | tail -1
+
+Expected: Both should show the device configuration
+
+================================================================================
+                    GUEST VERIFICATION (Inside TEST-1 VM)
+================================================================================
+
+After TEST-1 is running, you need to verify the device is visible inside
+the guest VM.
+
+Option A: Automated Verification Script
+----------------------------------------
+1. Copy the verification script to TEST-1:
+   
+   On Dom0:
+   scp /home/david/Downloads/gpu/step2\(quing\)/verify_vgpu_guest.sh \
+       user@test-1-ip:/tmp/
+
+2. SSH into TEST-1:
+   ssh user@test-1-ip
+
+3. Run the verification script:
+   chmod +x /tmp/verify_vgpu_guest.sh
+   /tmp/verify_vgpu_guest.sh
+
+   The script will:
+   - Search for vGPU stub device in lspci
+   - Show detailed device information
+   - Verify MMIO region
+   - Create and run a test program to read registers
+   - Display expected values (pool_id=A, priority=2, vm_id=1)
+
+Option B: Manual Verification
+------------------------------
+1. SSH into TEST-1:
+   ssh user@test-1-ip
+
+2. Check lspci:
+   lspci | grep -i 'processing accelerators\|red hat\|1af4:1111'
+
+   Expected output:
+   XX:XX.X Processing accelerators: Red Hat, Inc. Device 1111 (rev 01)
+
+3. Get detailed info:
+   lspci -vvv | grep -A 20 'Processing accelerators'
+
+   Expected to show:
+   - Vendor: Red Hat, Inc. [1af4]
+   - Device: 1111
+   - Region 0: Memory at XXXXXXXX (32-bit, non-prefetchable) [size=4K]
+
+4. Check sysfs:
+   DEVICE=$(lspci | grep 1af4:1111 | awk '{print $1}')
+   ls -la /sys/bus/pci/devices/0000:$DEVICE/
+   cat /sys/bus/pci/devices/0000:$DEVICE/vendor   # Should show 0x1af4
+   cat /sys/bus/pci/devices/0000:$DEVICE/device   # Should show 0x1111
+   cat /sys/bus/pci/devices/0000:$DEVICE/class    # Should show 0x120000
+
+5. Test MMIO registers (requires compilation):
+   See verify_vgpu_guest.sh for complete test program
+
+================================================================================
+                     TROUBLESHOOTING
+================================================================================
+
+Problem 1: VM fails to start (domain ID = -1)
+----------------------------------------------
+CAUSE: qemu-wrapper Python error or QEMU startup failure
+CHECK:
+  tail -50 /var/log/daemon.log | grep -i "qemu-dm\|error\|TypeError"
+
+SOLUTION:
+  - Verify qemu-wrapper patch is applied correctly
+  - Check for Python 3 bytes.decode('utf-8') fix
+  - Ensure QEMU has vgpu-stub device: 
+    /usr/lib64/xen/bin/qemu-system-i386 -device help | grep vgpu
+
+Problem 2: VM starts but device not in QEMU command line
+---------------------------------------------------------
+CAUSE: device-model-args not being read from xenstore
+CHECK:
+  grep "Adding device-model-args from xenstore" /var/log/daemon.log
+
+SOLUTION:
+  - Re-apply qemu-wrapper patch
+  - Verify xenstore key exists:
+    xenstore-read /local/domain/<domid>/platform/device-model-args
+  - Restart VM after fixing
+
+Problem 3: Device not visible in guest lspci
+---------------------------------------------
+CAUSE: Device not passed to QEMU, or guest needs PCI rescan
+CHECK:
+  - Verify QEMU command line has device (Dom0):
+    grep qemu-dm-<domid>.*vgpu-stub /var/log/daemon.log
+  
+SOLUTION:
+  - If not in QEMU command: Shutdown VM, reconfigure, restart
+  - If in QEMU command: Try PCI rescan in guest:
+    sudo sh -c 'echo 1 > /sys/bus/pci/rescan'
+  - Reboot guest VM (full reboot, not just restart)
+
+Problem 4: Different pool_id/priority/vm_id than expected
+----------------------------------------------------------
+CAUSE: Wrong configuration applied
+CHECK:
+  xe vm-param-get uuid=<VM_UUID> param-name=platform \
+    param-key=device-model-args
+
+SOLUTION:
+  - Shutdown VM
+  - Reconfigure with correct values
+  - Restart VM
+
+Problem 5: Cannot read MMIO registers in guest
+-----------------------------------------------
+CAUSE: Permission issue or wrong device address
+SOLUTION:
+  - Run test program with sudo
+  - Verify device address: lspci | grep 1af4:1111
+  - Check resource0 exists:
+    ls -la /sys/bus/pci/devices/0000:<address>/resource0
+
+================================================================================
+                      COMPARISON TEST
+================================================================================
+
+After TEST-1 is configured, you can verify both VMs side-by-side:
+
+On Dom0:
+--------
+# List both VMs
+xe vm-list params=name-label,power-state,dom-id | grep -A 2 "Test-"
+
+# Compare configurations
+echo "TEST-1:"
+xe vm-param-get uuid=14cf0700-638c-41bd-035b-206c184970dc \
+  param-name=platform param-key=device-model-args
+
+echo ""
+echo "TEST-2:"
+xe vm-param-get uuid=8c934907-befb-756e-c6fe-91d721291d2b \
+  param-name=platform param-key=device-model-args
+
+Expected:
+TEST-1: -device vgpu-stub,pool_id=A,priority=high,vm_id=1
+TEST-2: -device vgpu-stub,pool_id=B,priority=high,vm_id=200
+
+# Check QEMU processes
+ps aux | grep qemu-dm
+
+In Each Guest:
+--------------
+# SSH into TEST-1
+ssh user@test-1-ip
+lspci | grep "Processing accelerators"
+
+# SSH into TEST-2  
+ssh user@test-2-ip
+lspci | grep "Processing accelerators"
+
+Both should show: "Processing accelerators: Red Hat, Inc. Device 1111 (rev 01)"
+
+================================================================================
+                     SUCCESS CRITERIA
+================================================================================
+
+TEST-1 setup is considered successful when ALL of the following are verified:
+
+Dom0 (Host) Side:
+-----------------
+[✓] VM UUID found: 14cf0700-638c-41bd-035b-206c184970dc
+[✓] device-model-args configured with pool_id=A, priority=high, vm_id=1
+[✓] VM starts successfully (power-state: running)
+[✓] Domain ID assigned (positive number, not -1)
+[✓] XenStore contains device-model-args key
+[✓] qemu-wrapper logs "Adding device-model-args from xenstore"
+[✓] QEMU command line contains "-device vgpu-stub,pool_id=A,priority=high,vm_id=1"
+
+Guest Side:
+-----------
+[✓] lspci shows "Processing accelerators: Red Hat, Inc. Device 1111"
+[✓] Device has 4KB MMIO region (Region 0)
+[✓] Sysfs entries exist: /sys/bus/pci/devices/0000:XX:XX.X/
+[✓] MMIO registers readable
+[✓] Register 0x008 reads 'A' (0x41)
+[✓] Register 0x00C reads 2 (high priority)
+[✓] Register 0x010 reads 1 (vm_id)
+
+Documentation:
+--------------
+[✓] Configuration recorded in this document
+[✓] Logs captured from /var/log/daemon.log
+[✓] Guest lspci output saved
+[✓] MMIO register test results saved
+
+================================================================================
+                    NEXT STEPS (After TEST-1 Setup)
+================================================================================
+
+Once TEST-1 is verified working, you can proceed to Phase 2 testing:
+
+1. Two-VM Concurrency Test
+   - Both TEST-1 and TEST-2 running simultaneously
+   - Submit workloads from both VMs
+   - Verify no GPU crashes or conflicts
+
+2. Pool Isolation Test
+   - TEST-1 (pool A) and TEST-2 (pool B) submit requests
+   - Verify requests are handled by correct pool
+   - Check for interference between pools
+
+3. Priority Queueing Test
+   - Both configured with high priority
+   - Add a third VM with low priority
+   - Verify high-priority requests processed first
+
+4. NFS Communication Setup
+   - Mount shared directory on both VMs
+   - Test file-based VM↔Dom0 communication
+   - Deploy mediator daemon on Dom0
+
+5. CUDA Integration
+   - Run CUDA sanity test on Dom0
+   - Integrate CUDA into mediator
+   - Submit GPU workloads from VMs via mediator
+
+Reference: step2(quing)/SUCCESSFUL_STEPS.txt for Phase 2 procedures
+
+================================================================================
+                         QUICK REFERENCE
+================================================================================
+
+TEST-1 VM Details:
+------------------
+Name:      Test-1
+UUID:      14cf0700-638c-41bd-035b-206c184970dc
+Pool ID:   A
+Priority:  high
+VM ID:     1
+
+TEST-2 VM Details (for comparison):
+------------------------------------
+Name:      Test-2
+UUID:      8c934907-befb-756e-c6fe-91d721291d2b
+Dom ID:    (use: xe vm-list uuid=... params=dom-id --minimal)
+Pool ID:   B
+Priority:  high
+VM ID:     200
+
+Important Files:
+----------------
+Setup script:       /home/david/Downloads/gpu/step2(quing)/setup_test1_vgpu.sh
+Guest verify:       /home/david/Downloads/gpu/step2(quing)/verify_vgpu_guest.sh
+This guide:         /home/david/Downloads/gpu/step2(quing)/TEST1_SETUP_GUIDE.txt
+Phase 2 plan:       /home/david/Downloads/gpu/step2(quing)/README_PHASE2.txt
+Success log:        /home/david/Downloads/gpu/step2(quing)/SUCCESSFUL_STEPS.txt
+Complete guide:     /home/david/Downloads/gpu/step2(quing)/vgpu-stub_enhance/complete.txt
+
+Key Commands:
+-------------
+# Start setup
+cd /home/david/Downloads/gpu/step2\(quing\)/ && ./setup_test1_vgpu.sh
+
+# Check status
+xe vm-list name-label="Test-1" params=name-label,power-state,dom-id
+
+# View config
+xe vm-param-get uuid=14cf0700-638c-41bd-035b-206c184970dc \
+  param-name=platform param-key=device-model-args
+
+# Check logs
+grep "qemu-dm.*vgpu-stub" /var/log/daemon.log | tail -5
+
+# Verify in guest
+ssh user@test-1-ip "lspci | grep 'Processing accelerators'"
+
+================================================================================
+                            END OF GUIDE
+================================================================================
+Document created: January 25, 2026
+Last updated: January 25, 2026
+Status: Ready for execution
+================================================================================

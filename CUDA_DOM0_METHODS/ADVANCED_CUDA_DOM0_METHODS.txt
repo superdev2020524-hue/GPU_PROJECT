@@ -1,0 +1,377 @@
+================================================================================
+                    ADVANCED CUDA DOM0 WORKAROUND METHODS
+                    Methods Not Yet Attempted
+================================================================================
+
+CURRENT STATUS:
+--------------
+✓ nvidia-smi: WORKING
+✓ Driver loaded: WORKING  
+✓ GPU visible: WORKING
+✗ CUDA runtime: FAILING (error 801: operation not supported)
+
+ROOT CAUSE IDENTIFIED:
+----------------------
+CUDA detects Xen hypervisor via /proc/cpuinfo "hypervisor" flag and blocks
+GPU context creation. This is a CUDA runtime/driver limitation.
+
+================================================================================
+                         NEW METHODS TO TRY
+================================================================================
+
+METHOD 13: LD_PRELOAD Interception
+-----------------------------------
+Status: [✓] TESTED - FAILED
+
+Description: Intercept CUDA's /proc/cpuinfo reads using LD_PRELOAD to hide hypervisor flag
+
+Steps Completed:
+1. ✓ Created shared library intercepting open()/read()/fopen()/openat()
+2. ✓ Added mmap() interception to filter memory-mapped cpuinfo
+3. ✓ Filtered "hypervisor" flag from /proc/cpuinfo reads
+4. ✗ CUDA still returns error 801
+
+Result: FAILED - CUDA uses CPUID instruction directly (0f a2 opcode found in libcuda.so)
+
+Evidence:
+- LD_PRELOAD successfully filters /proc/cpuinfo (verified with cat)
+- CUDA still detects virtualization despite filtered cpuinfo
+- objdump shows CPUID instruction (0f a2) in libcuda.so at address 25a26f
+- CPUID instruction bypasses all file I/O interception (LD_PRELOAD cannot intercept CPUID)
+
+Conclusion: LD_PRELOAD cannot intercept CPUID instruction. Need kernel-level or binary-level solution.
+
+Next: Try Method 26 (Xen parameters) or Method 14 (binary patching)
+
+
+METHOD 14: Binary Patching CUDA Libraries
+------------------------------------------
+Status: [✓] TESTED - PARTIALLY FAILED
+
+Description: Patch CUDA libraries to bypass hypervisor detection
+
+Steps Completed:
+1. ✓ Backed up CUDA libraries
+2. ✓ Found CPUID instruction at offset 0x25a26f (opcode 0f a2)
+3. ✓ Found hypervisor check at offset 0x25a27a (and $0x80000,%ecx)
+4. ✓ Found conditional jump at offset 0x25a292 (je 25a29b)
+5. ✗ Attempted to patch CPUID with NOPs - broke driver (error 999, nvidia-smi failed)
+6. ✗ Attempted to patch jump to unconditional - still error 999
+
+Results:
+- CPUID instruction found: libcuda.so.545.23.06 at 0x25a26f
+- Hypervisor check: AND instruction checks bit 19 (0x80000) of ECX register
+- Conditional jump: je (74 07) skips setting virtualization flag if bit not set
+- Patching CPUID with NOPs: Broke driver initialization (RmInitAdapter failed)
+- Patching jump to unconditional: Still error 999, driver initialization issues
+
+Driver Error: RmInitAdapter failed! (0x62:0x40:2377)
+- This suggests driver can't initialize after patching
+- May require reboot to clear driver state
+- Binary patching may be incompatible with driver initialization
+
+Conclusion: Binary patching is high risk and may break driver initialization. 
+Need to investigate if driver state corruption is from patching or separate issue.
+
+Next: Reboot and retest, or try different patching approach (patch result handling instead of instructions)
+
+
+METHOD 15: Namespace/Container Isolation
+-----------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Use Linux namespaces to hide /proc/cpuinfo hypervisor flag
+
+Steps:
+1. Create a namespace with modified /proc/cpuinfo
+2. Use unshare or similar to run CUDA in namespace
+3. Mount a modified /proc/cpuinfo that doesn't have hypervisor flag
+4. Test CUDA in isolated namespace
+
+Expected Outcome: CUDA sees non-virtualized environment
+
+Notes: Complex, may require kernel support, medium risk
+
+
+METHOD 16: Kernel Module to Filter /proc/cpuinfo
+-------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Create kernel module to filter hypervisor flag from /proc/cpuinfo
+
+Steps:
+1. Write kernel module that intercepts /proc/cpuinfo reads
+2. Remove "hypervisor" from CPU flags before returning to userspace
+3. Load module and test CUDA
+
+Expected Outcome: All processes see CPU without hypervisor flag
+
+Notes: Requires kernel module development, high complexity, medium risk
+
+
+METHOD 17: Try CUDA Package Manager Installation
+------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Install CUDA via yum package manager instead of runfile
+
+Steps:
+1. Backup current CUDA installation
+2. Remove/uninstall current CUDA
+3. Install CUDA via yum: yum install cuda-toolkit-12-3 (or similar)
+4. Test if package-manager CUDA works differently
+
+Expected Outcome: Package-manager CUDA may have different virtualization checks
+
+Notes: Requires reinstalling CUDA, time-consuming, low risk
+
+
+METHOD 18: Modify Xen to Not Set Hypervisor Flag
+-------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Modify Xen hypervisor to not set CPUID hypervisor bit
+
+Steps:
+1. Find Xen source code that sets CPUID hypervisor bit
+2. Modify to not set the bit
+3. Recompile Xen
+4. Reboot with modified Xen
+5. Test CUDA
+
+Expected Outcome: CPU doesn't report hypervisor flag, CUDA works
+
+Notes: Requires Xen source modification and recompilation, very high complexity
+
+
+METHOD 19: Use CUDA Runtime Wrapper Library
+--------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Create wrapper library that intercepts CUDA calls and works around restrictions
+
+Steps:
+1. Create library that wraps CUDA runtime functions
+2. Intercept cudaSetDevice and handle error 801 specially
+3. Try alternative initialization paths
+4. Link CUDA programs against wrapper instead of direct CUDA
+
+Expected Outcome: Wrapper library bypasses CUDA restrictions
+
+Notes: Complex, requires deep CUDA API knowledge
+
+
+METHOD 20: Check for CUDA Debug/Development Builds
+----------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Try CUDA debug builds or development versions that might have fewer restrictions
+
+Steps:
+1. Search for CUDA debug builds or development versions
+2. Download and install debug version
+3. Test if debug version has different virtualization behavior
+4. Check if debug flags disable virtualization checks
+
+Expected Outcome: Debug CUDA version may have relaxed restrictions
+
+Notes: May not exist, requires finding/downloading debug builds
+
+
+METHOD 21: Use CUDA Compatibility Mode
+---------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Try CUDA compatibility/legacy modes that might bypass checks
+
+Steps:
+1. Check CUDA documentation for compatibility modes
+2. Try CUDA compatibility libraries
+3. Test with different CUDA compute capabilities
+4. Try forcing older CUDA API versions
+
+Expected Outcome: Compatibility mode bypasses new virtualization checks
+
+Notes: May not exist, requires CUDA documentation research
+
+
+METHOD 22: Modify /proc/cpuinfo via FUSE
+-----------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Use FUSE filesystem to create fake /proc/cpuinfo without hypervisor flag
+
+Steps:
+1. Install FUSE development libraries
+2. Create FUSE filesystem that presents modified /proc/cpuinfo
+3. Mount over /proc/cpuinfo
+4. Test CUDA with fake /proc/cpuinfo
+
+Expected Outcome: CUDA reads fake /proc/cpuinfo without hypervisor flag
+
+Notes: Complex, requires FUSE programming, may break other things
+
+
+METHOD 23: Use ptrace to Modify CUDA Process Memory
+---------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Use ptrace to modify CUDA process memory and bypass checks
+
+Steps:
+1. Write program that attaches to CUDA process via ptrace
+2. Find memory location where hypervisor check result is stored
+3. Modify memory to indicate "not virtualized"
+4. Continue CUDA execution
+
+Expected Outcome: CUDA process thinks it's not virtualized
+
+Notes: Very complex, requires reverse engineering, high risk
+
+
+METHOD 24: Check NVIDIA Enterprise/Data Center CUDA
+----------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: NVIDIA may have enterprise versions with different virtualization support
+
+Steps:
+1. Research NVIDIA enterprise CUDA versions
+2. Check if data center CUDA has Xen support
+3. Try to obtain enterprise CUDA if available
+4. Test enterprise version
+
+Expected Outcome: Enterprise CUDA may support virtualized environments
+
+Notes: May require licensing, may not be publicly available
+
+
+METHOD 25: Use CUDA via Remote Procedure Call
+-----------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Run CUDA on remote system, communicate via RPC
+
+Steps:
+1. Set up CUDA on non-virtualized system
+2. Create RPC server that accepts CUDA commands
+3. Create client library that looks like CUDA but calls RPC
+4. Link programs against RPC client
+
+Expected Outcome: Programs think they're using local CUDA but it's remote
+
+Notes: Complex, requires network setup, not true local CUDA
+
+
+METHOD 26: Kernel Parameter to Hide Hypervisor from CPUID
+----------------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Check if kernel/Xen has parameter to hide hypervisor from CPUID
+
+Steps:
+1. Check Xen documentation for CPUID masking options
+2. Check kernel parameters for CPUID modification
+3. Try kernel parameters: no-hypervisor, hide-hypervisor, etc.
+4. Test if CPUID no longer reports hypervisor
+
+Expected Outcome: CPUID doesn't report hypervisor, /proc/cpuinfo doesn't have flag
+
+Notes: May not exist, low risk if it does
+
+
+METHOD 27: Use CUDA via Docker/Container with GPU Passthrough
+--------------------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Run CUDA in Docker container with GPU access, container may hide hypervisor
+
+Steps:
+1. Install Docker with GPU support (nvidia-docker2)
+2. Create container with CUDA
+3. Test if container environment hides hypervisor from CUDA
+4. If works, use container for CUDA operations
+
+Expected Outcome: Container environment may mask hypervisor detection
+
+Notes: Requires Docker setup, may not work if detection is at kernel level
+
+
+METHOD 28: Modify CUDA Library with Binary Search/Replace
+----------------------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Use sed/hex editor to replace "hypervisor" string in CUDA libraries
+
+Steps:
+1. Backup CUDA libraries
+2. Search for "hypervisor" string in libcudart.so and libcuda.so
+3. Replace with harmless string or remove
+4. Test if modified libraries work
+
+Expected Outcome: CUDA libraries don't check for hypervisor
+
+Notes: High risk, may break libraries, requires careful binary editing
+
+
+METHOD 29: Use CUDA via WSL2-style Approach
+---------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Check if XCP-ng has WSL2-like GPU passthrough that might work differently
+
+Steps:
+1. Research XCP-ng GPU passthrough methods
+2. Check if there's a "compute-only" passthrough mode
+3. Try different GPU assignment methods
+4. Test if compute-only passthrough bypasses restrictions
+
+Expected Outcome: Different passthrough method may work
+
+Notes: May not be applicable to XCP-ng
+
+
+METHOD 30: Contact NVIDIA/XCP-ng for Support
+---------------------------------------------
+Status: [ ] NOT REVIEWED
+
+Description: Official support channels may have solutions
+
+Steps:
+1. Contact NVIDIA support about CUDA in Xen Dom0
+2. Contact XCP-ng support about GPU compute support
+3. Check if there are official workarounds or patches
+4. Request feature/bug fix if needed
+
+Expected Outcome: Official solution or workaround
+
+Notes: May take time, may not have solution, but worth trying
+
+================================================================================
+                         PRIORITY ORDER
+================================================================================
+
+RECOMMENDED TO TRY FIRST (Easiest to Hardest):
+1. METHOD 13: LD_PRELOAD Interception (easiest, low risk)
+2. METHOD 17: CUDA Package Manager Installation (easy, just reinstalling)
+3. METHOD 26: Kernel Parameter to Hide Hypervisor (if exists)
+4. METHOD 22: Modify /proc/cpuinfo via FUSE (medium complexity)
+5. METHOD 15: Namespace/Container Isolation (medium complexity)
+6. METHOD 16: Kernel Module to Filter /proc/cpuinfo (high complexity)
+7. METHOD 14: Binary Patching CUDA Libraries (high risk)
+8. METHOD 18: Modify Xen Source (very high complexity)
+
+================================================================================
+                         IMPLEMENTATION GUIDE
+================================================================================
+
+Each method will be implemented step-by-step with:
+- Detailed commands
+- Code examples where needed
+- Testing procedures
+- Rollback procedures if method fails
+
+================================================================================
+                              END OF PLAN
+================================================================================
+

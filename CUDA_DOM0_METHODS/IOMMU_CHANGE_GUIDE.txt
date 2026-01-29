@@ -1,0 +1,207 @@
+================================================================================
+                    IOMMU CONFIGURATION CHANGE GUIDE
+                    (For XCP-ng - PROCEED WITH CAUTION)
+================================================================================
+
+WARNING: This change can break VM GPU pass-through and affect system stability.
+Only do this on a test system, NOT production!
+
+================================================================================
+                         BEFORE YOU START
+================================================================================
+
+1. Make sure you have physical access or out-of-band management (iLO, iDRAC)
+   in case the system doesn't boot properly after changes.
+
+2. Take a backup or snapshot if possible.
+
+3. Note your current working configuration so you can revert.
+
+================================================================================
+                         STEP-BY-STEP GUIDE
+================================================================================
+
+STEP 1: Check Current IOMMU Setting
+-----------------------------------
+
+Run this command to see current boot parameters:
+
+    cat /proc/cmdline
+
+You should see something like:
+    root=LABEL=root-ykjrqa ro nolvm ... iommu=pt ...
+
+The "iommu=pt" means passthrough mode (GPU reserved for VMs).
+
+
+STEP 2: Find the Boot Configuration File
+----------------------------------------
+
+XCP-ng uses GRUB. The config file location:
+
+    /boot/grub/grub.cfg      (main config - auto-generated)
+    /etc/default/grub        (settings template)
+
+First, check which one exists:
+
+    ls -la /boot/grub/grub.cfg
+    ls -la /etc/default/grub
+
+
+STEP 3: Backup the Original File
+--------------------------------
+
+IMPORTANT: Always backup before editing!
+
+    cp /boot/grub/grub.cfg /boot/grub/grub.cfg.backup
+    cp /etc/default/grub /etc/default/grub.backup
+
+
+STEP 4: Edit the GRUB Configuration
+-----------------------------------
+
+Option A: Edit /etc/default/grub (Preferred if it exists)
+---------------------------------------------------------
+
+    nano /etc/default/grub
+
+Find the line that looks like:
+    GRUB_CMDLINE_LINUX="... iommu=pt ..."
+
+Change "iommu=pt" to "iommu=off":
+    GRUB_CMDLINE_LINUX="... iommu=off ..."
+
+Save the file (Ctrl+O, Enter, Ctrl+X in nano).
+
+Then regenerate grub.cfg:
+
+    grub2-mkconfig -o /boot/grub/grub.cfg
+
+
+Option B: Edit /boot/grub/grub.cfg Directly
+-------------------------------------------
+
+If /etc/default/grub doesn't exist or doesn't work:
+
+    nano /boot/grub/grub.cfg
+
+Look for lines containing "iommu=pt". They look like:
+
+    linux /boot/vmlinuz... root=LABEL=root-ykjrqa ro ... iommu=pt ...
+
+Change each "iommu=pt" to "iommu=off":
+
+    linux /boot/vmlinuz... root=LABEL=root-ykjrqa ro ... iommu=off ...
+
+There may be multiple entries (for different boot options). 
+Change the one for your default boot entry first.
+
+Save the file.
+
+
+STEP 5: Reboot the System
+-------------------------
+
+    reboot
+
+Wait for the system to come back up. This may take a few minutes.
+
+
+STEP 6: Verify the Change
+-------------------------
+
+After reboot, check if the change took effect:
+
+    cat /proc/cmdline
+
+You should now see "iommu=off" instead of "iommu=pt".
+
+
+STEP 7: Test CUDA Again
+-----------------------
+
+    ./vector_add_debug
+
+If successful, you should see:
+    cudaMalloc d_a: no error
+    cudaMalloc d_b: no error
+    cudaMalloc d_c: no error
+    ...
+    Result: 11 22 33 44 55 66 77 88 99 110
+
+
+================================================================================
+                         IF SOMETHING GOES WRONG
+================================================================================
+
+System Won't Boot
+-----------------
+
+1. At the GRUB boot menu, press 'e' to edit boot parameters
+2. Find the line with "iommu=off"
+3. Change it back to "iommu=pt"
+4. Press Ctrl+X or F10 to boot with temporary settings
+5. Once booted, restore your backup:
+   
+       cp /boot/grub/grub.cfg.backup /boot/grub/grub.cfg
+
+
+CUDA Still Doesn't Work
+-----------------------
+
+The issue might be something else. Restore IOMMU:
+
+    # Edit grub and change iommu=off back to iommu=pt
+    nano /boot/grub/grub.cfg
+    
+    # Or restore backup
+    cp /boot/grub/grub.cfg.backup /boot/grub/grub.cfg
+    
+    reboot
+
+
+================================================================================
+                         IOMMU OPTIONS EXPLAINED
+================================================================================
+
+iommu=pt    (passthrough)
+    - GPU is reserved for VM pass-through
+    - Dom0 can see GPU but can't use compute
+    - Required for assigning GPU to VMs
+    - DEFAULT for XCP-ng
+
+iommu=off   (disabled)
+    - No IOMMU protection
+    - Dom0 can use GPU directly
+    - VMs CANNOT use GPU pass-through
+    - Less secure, not recommended for production
+
+iommu=on    (enabled, no passthrough)
+    - IOMMU active for all devices
+    - May or may not allow Dom0 GPU access
+    - Worth trying if "off" causes issues
+
+
+================================================================================
+                         RECOMMENDATION
+================================================================================
+
+Instead of changing IOMMU, consider using the VM Worker approach:
+
+1. Keep iommu=pt (current setting)
+2. Create a VM with GPU pass-through
+3. Install CUDA in that VM
+4. Use that VM as your GPU worker
+
+This is:
+- Safer (GPU crashes don't affect host)
+- More production-ready
+- The intended way to use GPUs on XCP-ng
+
+Only change IOMMU if you specifically need Dom0 to run CUDA and understand
+the security/stability implications.
+
+================================================================================
+                              END OF GUIDE
+================================================================================
+

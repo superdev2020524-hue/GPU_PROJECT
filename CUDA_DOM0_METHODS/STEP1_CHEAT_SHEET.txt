@@ -1,0 +1,148 @@
+================================================================================
+STEP 1: QUICK REFERENCE CHEAT SHEET
+================================================================================
+
+Print this and keep it handy while implementing!
+
+================================================================================
+ESSENTIAL VALUES
+================================================================================
+
+Vendor ID:      0x1AF4 (Red Hat)
+Device ID:      0x1111 (Custom)
+Class Code:    0x120000 (Processing Accelerator)
+BAR Size:      4KB (0x1000)
+
+Expected in lspci:
+  01:00.0 Processing accelerator: Red Hat, Inc. Device 1111
+
+================================================================================
+BUILD COMMANDS
+================================================================================
+
+# Get QEMU source
+cd ~/vgpu-development
+wget https://download.qemu.org/qemu-X.Y.Z.tar.xz
+tar xf qemu-X.Y.Z.tar.xz
+cd qemu-X.Y.Z
+
+# Add device code
+cp STEP1_CODE_SKELETON.c hw/misc/vgpu-stub.c
+
+# Update build system (meson)
+Edit: hw/misc/meson.build
+Add: softmmu_ss.add(when: 'CONFIG_VGPU_STUB', if_true: files('vgpu-stub.c'))
+
+# Configure and build
+./configure --target-list=x86_64-softmmu --enable-vgpu-stub
+make -j$(nproc)
+
+# Verify
+./x86_64-softmmu/qemu-system-x86_64 -device help | grep vgpu-stub
+
+================================================================================
+DEPLOYMENT COMMANDS
+================================================================================
+
+# Backup original QEMU
+cp /usr/lib/xen/bin/qemu-system-x86_64 \
+   /usr/lib/xen/bin/qemu-system-x86_64.backup
+
+# Install new QEMU
+cp x86_64-softmmu/qemu-system-x86_64 \
+   /usr/lib/xen/bin/qemu-system-x86_64
+chmod +x /usr/lib/xen/bin/qemu-system-x86_64
+
+# Verify
+/usr/lib/xen/bin/qemu-system-x86_64 -device help | grep vgpu-stub
+
+================================================================================
+VM CONFIGURATION
+================================================================================
+
+Add to VM config file:
+
+device_model_args = [ "-device", "vgpu-stub" ]
+
+Create/start VM:
+xl create vm.cfg
+
+Check device on command line:
+ps aux | grep qemu | grep vgpu-stub
+
+================================================================================
+VERIFICATION (Inside VM)
+================================================================================
+
+lspci
+# Should show: Processing accelerator: Red Hat, Inc. Device 1111
+
+lspci -d 1af4:1111 -v
+# Detailed info
+
+dmesg | grep -i error
+# Should show no errors
+
+================================================================================
+TROUBLESHOOTING QUICK CHECKS
+================================================================================
+
+□ Device in "qemu -device help"? → NO: Rebuild
+□ Device on QEMU command line? → NO: Check VM config
+□ Device in lspci? → NO: Check QEMU logs, dmesg
+□ Shows correct class? → NO: Verify code (should be 0x12)
+□ No kernel errors? → NO: Check dmesg, QEMU logs
+
+================================================================================
+ROLLBACK (If Needed)
+================================================================================
+
+cp /usr/lib/xen/bin/qemu-system-x86_64.backup \
+   /usr/lib/xen/bin/qemu-system-x86_64
+
+Restart VMs.
+
+================================================================================
+KEY FILES TO EDIT
+================================================================================
+
+1. hw/misc/vgpu-stub.c        (your device code)
+2. hw/misc/meson.build        (or Makefile.objs - build system)
+3. meson_options.txt          (or configure - config option)
+4. VM config file             (device_model_args)
+
+================================================================================
+DEBUGGING COMMANDS
+================================================================================
+
+# QEMU logs
+tail -f /var/log/xen/qemu-dm-<vm-name>.log
+
+# Xen messages
+xl dmesg | tail -50
+
+# VM kernel messages
+dmesg | grep -i pci
+
+# Check process
+ps aux | grep qemu
+
+# QEMU version
+qemu-system-x86_64 -version
+
+================================================================================
+SUCCESS CRITERIA
+================================================================================
+
+✓ Device in lspci
+✓ Vendor: 1af4
+✓ Device: 1111
+✓ Class: Processing accelerator
+✓ BAR visible
+✓ No errors
+
+If all check, Step 1 DONE! ✅
+
+================================================================================
+
+

@@ -1,0 +1,340 @@
+================================================================================
+                    PHASE 1 ARCHITECTURE GUIDE FOR BEGINNERS
+                    VM → Host Daemon → VM Worker GPU Pipeline
+================================================================================
+
+OVERVIEW
+--------
+This guide explains how to build a system where multiple VMs can use a single 
+GPU (H100) by sending requests through a host daemon to a dedicated worker VM.
+
+--------------------------------------------------------------------------------
+                              SYSTEM COMPONENTS
+--------------------------------------------------------------------------------
+
+You will have 3 main parts:
+
+1. CLIENT VMs (VM-A, VM-B, etc.)
+   - These are normal VMs where users run applications
+   - They do NOT have direct GPU access
+   - They send GPU work requests to the host daemon
+
+2. HOST DAEMON (runs on XCP-ng Dom0)
+   - A program running on the physical host (Dom0)
+   - Receives requests from client VMs
+   - Forwards requests to the VM Worker
+   - Returns results back to client VMs
+
+3. VM WORKER (special VM with GPU pass-through)
+   - A dedicated VM that has exclusive GPU access via pass-through
+   - Runs a "worker service" that listens for GPU jobs
+   - Executes actual CUDA operations on the H100
+   - Sends results back to the host daemon
+
+--------------------------------------------------------------------------------
+                              DATA FLOW DIAGRAM
+--------------------------------------------------------------------------------
+
+    +----------+     +----------+
+    |  VM-A    |     |  VM-B    |      <-- Client VMs (no GPU)
+    | (Client) |     | (Client) |
+    +----+-----+     +-----+----+
+         |                 |
+         |  (1) Request    |  (1) Request
+         |                 |
+         v                 v
+    +-----------------------------+
+    |       XCP-ng HOST (Dom0)    |
+    |                             |
+    |    +-------------------+    |
+    |    |   HOST DAEMON     |    |    <-- Runs on physical host
+    |    | (Relay & Control) |    |
+    |    +--------+----------+    |
+    |             |               |
+    +-------------|---------------+
+                  |
+                  | (2) Forward to Worker
+                  v
+         +--------+--------+
+         |    VM WORKER    |           <-- Has GPU pass-through
+         |  (GPU Service)  |
+         |                 |
+         |  +-----------+  |
+         |  | H100 GPU  |  |           <-- Actual GPU hardware
+         |  +-----------+  |
+         +-----------------+
+
+--------------------------------------------------------------------------------
+                           STEP-BY-STEP DATA FLOW
+--------------------------------------------------------------------------------
+
+STEP 1: Client VM sends request to Host Daemon
+----------------------------------------------
+- Client VM-A wants to run vector addition
+- VM-A writes request to a communication channel (xenstore or virtio-serial)
+- Request contains: "Please add these two arrays: [1,2,3] + [4,5,6]"
+
+STEP 2: Host Daemon receives and forwards
+-----------------------------------------
+- Host daemon (on Dom0) reads the request
+- Daemon logs: "Received GPU request from VM-A"
+- Daemon forwards request to VM Worker via network socket (TCP/IP)
+
+STEP 3: VM Worker executes GPU work
+-----------------------------------
+- Worker service receives the request
+- Worker runs actual CUDA code on H100:
+    * Allocates GPU memory
+    * Copies input data to GPU
+    * Runs vector addition kernel
+    * Copies result back
+- Result: [5, 7, 9]
+
+STEP 4: Result returns to Client VM
+-----------------------------------
+- VM Worker sends result back to Host Daemon
+- Host Daemon forwards result to VM-A
+- VM-A receives: [5, 7, 9]
+- Done!
+
+--------------------------------------------------------------------------------
+                         COMMUNICATION METHODS
+--------------------------------------------------------------------------------
+
+CLIENT VM ←→ HOST DAEMON (Dom0)
+-------------------------------
+Options (pick one):
+
+A) XenStore (Recommended for beginners)
+   - Built into Xen/XCP-ng
+   - Key-value store accessible from VMs and Dom0
+   - Simple to use, good for small data
+   - Path example: /local/domain/{vm_id}/gpu/request
+
+B) Virtio-Serial
+   - Virtual serial port between VM and host
+   - Good for streaming data
+   - Requires QEMU configuration
+
+C) Shared Memory (Grant Tables)
+   - Fastest option
+   - More complex to implement
+   - Best for large data transfers
+
+
+HOST DAEMON ←→ VM WORKER
+------------------------
+Options (pick one):
+
+A) TCP/IP Socket (Recommended for beginners)
+   - Standard network connection
+   - Worker VM has an IP address (e.g., 192.168.1.100)
+   - Daemon connects to Worker on a port (e.g., 5000)
+   - Easy to debug with standard tools
+
+B) Unix Domain Socket (if on same host)
+   - Faster than TCP
+   - More complex setup with VMs
+
+--------------------------------------------------------------------------------
+                      IMPLEMENTATION GUIDE (BEGINNER)
+--------------------------------------------------------------------------------
+
+PART 1: SET UP VM WORKER
+========================
+
+1. Create a VM with GPU pass-through
+   - In XCP-ng, assign the H100 to this VM
+   - Install Ubuntu + NVIDIA drivers + CUDA
+
+2. Create worker service (Python example):
+
+   --- FILE: worker_service.py ---
+   
+   import socket
+   import json
+   import numpy as np
+   from numba import cuda  # or use PyCUDA
+   
+   def vector_add_gpu(a, b):
+       # Actual CUDA operation here
+       result = a + b  # simplified
+       return result
+   
+   # Listen for requests
+   server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   server.bind(('0.0.0.0', 5000))
+   server.listen(5)
+   print("Worker listening on port 5000...")
+   
+   while True:
+       client, addr = server.accept()
+       data = client.recv(4096)
+       request = json.loads(data.decode())
+       
+       # Execute GPU work
+       a = np.array(request['array_a'])
+       b = np.array(request['array_b'])
+       result = vector_add_gpu(a, b)
+       
+       # Send result back
+       response = json.dumps({'result': result.tolist()})
+       client.send(response.encode())
+       client.close()
+   
+   --- END FILE ---
+
+3. Run the worker service:
+   $ python worker_service.py
+
+
+PART 2: SET UP HOST DAEMON (Dom0)
+=================================
+
+1. On XCP-ng Dom0, create the daemon:
+
+   --- FILE: host_daemon.py ---
+   
+   import socket
+   import json
+   
+   WORKER_IP = "192.168.1.100"  # VM Worker's IP
+   WORKER_PORT = 5000
+   
+   def forward_to_worker(request_data):
+       # Connect to VM Worker
+       sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+       sock.connect((WORKER_IP, WORKER_PORT))
+       sock.send(json.dumps(request_data).encode())
+       
+       # Get result
+       response = sock.recv(4096)
+       sock.close()
+       return json.loads(response.decode())
+   
+   def read_vm_request(vm_id):
+       # Read from XenStore (simplified)
+       # In real code, use xenstore-read command or library
+       import subprocess
+       path = f"/local/domain/{vm_id}/gpu/request"
+       result = subprocess.run(['xenstore-read', path], capture_output=True)
+       return json.loads(result.stdout.decode())
+   
+   def write_vm_response(vm_id, response):
+       # Write to XenStore
+       import subprocess
+       path = f"/local/domain/{vm_id}/gpu/response"
+       subprocess.run(['xenstore-write', path, json.dumps(response)])
+   
+   # Main loop
+   print("Host daemon started...")
+   while True:
+       # Check for requests from VMs (simplified)
+       # In real code, use xenstore-watch for notifications
+       for vm_id in get_active_vms():
+           request = read_vm_request(vm_id)
+           if request:
+               print(f"Received request from VM {vm_id}")
+               result = forward_to_worker(request)
+               write_vm_response(vm_id, result)
+               print(f"Sent response to VM {vm_id}")
+   
+   --- END FILE ---
+
+
+PART 3: SET UP CLIENT VM
+========================
+
+1. Create client application:
+
+   --- FILE: client_app.py ---
+   
+   import subprocess
+   import json
+   import time
+   
+   def send_gpu_request(array_a, array_b):
+       # Write request to XenStore
+       request = {
+           'operation': 'vector_add',
+           'array_a': array_a,
+           'array_b': array_b
+       }
+       subprocess.run([
+           'xenstore-write', 
+           '/local/domain/self/gpu/request',
+           json.dumps(request)
+       ])
+       
+       # Wait for response
+       while True:
+           result = subprocess.run([
+               'xenstore-read',
+               '/local/domain/self/gpu/response'
+           ], capture_output=True)
+           
+           if result.returncode == 0:
+               response = json.loads(result.stdout.decode())
+               # Clear the response
+               subprocess.run(['xenstore-rm', '/local/domain/self/gpu/response'])
+               return response
+           
+           time.sleep(0.1)
+   
+   # Test it!
+   result = send_gpu_request([1, 2, 3], [4, 5, 6])
+   print(f"GPU Result: {result}")  # Should print [5, 7, 9]
+   
+   --- END FILE ---
+
+--------------------------------------------------------------------------------
+                         TESTING PHASE 1 GOALS
+--------------------------------------------------------------------------------
+
+TEST 1: vGPU Stub Visible
+-------------------------
+- In client VM, the vGPU stub should appear in lspci
+- This is separate from the worker architecture
+- Shows VM "thinks" it has a GPU
+
+TEST 2: Single VM GPU Operation
+-------------------------------
+1. Start VM Worker with worker_service.py
+2. Start Host Daemon with host_daemon.py
+3. In Client VM-A, run client_app.py
+4. Verify result is correct
+
+TEST 3: Two VMs Concurrent
+--------------------------
+1. Start VM Worker
+2. Start Host Daemon
+3. In VM-A: run client_app.py
+4. In VM-B: run client_app.py (at same time)
+5. Both should get correct results
+6. No crashes!
+
+--------------------------------------------------------------------------------
+                              SUMMARY
+--------------------------------------------------------------------------------
+
+WHAT YOU'RE BUILDING:
+- Client VMs talk to Host Daemon (via XenStore)
+- Host Daemon talks to VM Worker (via TCP socket)
+- VM Worker runs actual CUDA on H100
+- Results flow back the same path
+
+WHY THIS ARCHITECTURE:
+- Host Daemon is the control point (needed for Phase 2+ scheduling)
+- VM Worker is a workaround for BAR access limitations
+- Proves the mediation concept works
+
+NEXT STEPS AFTER PHASE 1:
+- Phase 2: Add queues and scheduling in Host Daemon
+- Phase 3: Add fairness and isolation
+- Phase 4: Integrate with CloudStack
+- Phase 5: Optimize and harden
+
+================================================================================
+                              END OF GUIDE
+================================================================================
+

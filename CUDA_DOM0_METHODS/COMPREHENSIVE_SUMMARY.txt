@@ -1,0 +1,123 @@
+================================================================================
+                    CUDA DOM0 TROUBLESHOOTING - COMPREHENSIVE SUMMARY
+                    All Methods Attempted and Results
+================================================================================
+
+DATE: December 18, 2025
+SYSTEM: XCP-ng (Xen 4.17), Kernel 4.19-xen
+GPU: NVIDIA H100 PCIe
+CUDA: 12.3.52
+DRIVER: 545.23.06
+
+ROOT CAUSE IDENTIFIED:
+----------------------
+CUDA uses CPUID instruction directly (opcode 0f a2) to detect virtualization.
+CPUID returns hypervisor bit (bit 19 = 0x80000) in ECX register.
+CUDA blocks GPU context creation (error 801) when virtualization is detected.
+
+LOCATION OF CPUID IN CUDA:
+---------------------------
+- libcuda.so.545.23.06 at offset 0x25a26f: CPUID instruction (0f a2)
+- Hypervisor check: AND $0x80000,%ecx at offset 0x25a27a
+- Flag set: orl $0x1,0x19c1015(%rip) at offset 0x25a294
+- Flag check: and $0x1,%r14d at offset 0x25a2a3
+
+METHODS ATTEMPTED:
+------------------
+
+[✓] Method 1-12: Initial Troubleshooting
+    Result: FAILED - Identified /proc/cpuinfo as detection method
+    Notes: CUDA reads /proc/cpuinfo but also uses CPUID directly
+
+[✓] Method 13: LD_PRELOAD Interception
+    Result: FAILED - CUDA uses CPUID directly, bypasses file I/O
+    Evidence: Successfully filtered /proc/cpuinfo but CUDA still detects virtualization
+    Location: filter_cpuinfo_fixed.c, libfilter_cpuinfo_v3.so
+
+[✓] Method 14: Binary Patching
+    Result: FAILED - Causes segfaults, too risky
+    Attempts:
+    - Patched CPUID with NOPs: Broke driver (error 999)
+    - Patched AND instruction: Still error 801
+    - Patched flag set: Still error 801
+    - Patched flag check: Segmentation fault
+    - Patched jump: Segmentation fault
+    Notes: Flag is used in multiple places, patching breaks functionality
+
+[✓] Method 15: Namespace Isolation
+    Result: FAILED - CUDA uses CPUID directly, not /proc/cpuinfo
+    Evidence: Successfully hid hypervisor flag from /proc/cpuinfo but CUDA still fails
+
+[✓] Method 16: Kernel Module
+    Result: FAILED - Xen handles CPUID, not Linux kernel
+    Evidence: Module compiles/loads but cannot intercept CPUID
+    Notes: CPUID executes directly on CPU, Xen intercepts before Linux sees it
+
+[✓] Method 17: CUDA Package Manager
+    Result: FAILED - Installation error, but would have same issue
+    Notes: Package-manager CUDA would have same CPUID detection
+
+[✓] Method 26: Xen CPUID Masking Parameters
+    Result: NOT AVAILABLE - Xen doesn't have CPUID masking parameters
+
+REMAINING VIABLE METHODS:
+-------------------------
+
+[ ] Method 18: Modify Xen Source Code
+    Complexity: VERY HIGH
+    Risk: HIGH
+    Description: Modify Xen hypervisor to not set hypervisor bit in CPUID
+    Requires: Xen source code, recompilation, reboot
+    Likelihood: HIGH (if implemented correctly)
+
+[ ] Method 22: FUSE Filesystem
+    Complexity: MEDIUM
+    Risk: LOW
+    Description: Use FUSE to intercept /proc/cpuinfo reads
+    Likelihood: LOW (CUDA uses CPUID directly)
+
+[ ] Method 30: Contact NVIDIA/XCP-ng Support
+    Complexity: LOW
+    Risk: LOW
+    Description: Request official support or workarounds
+    Likelihood: UNKNOWN (may not have solution)
+
+CONCLUSIONS:
+------------
+1. File I/O interception methods (LD_PRELOAD, namespace, FUSE) cannot work
+   because CUDA uses CPUID instruction directly
+
+2. Binary patching is too risky and causes segfaults
+
+3. Linux kernel modules cannot intercept CPUID because Xen handles it
+
+4. Only viable solution: Modify Xen hypervisor to not set hypervisor bit
+   (Method 18) or get official support (Method 30)
+
+RECOMMENDATION:
+---------------
+For Phase 1 requirements, the VM Worker approach remains the most practical:
+- Create VM with GPU passthrough
+- Install CUDA in VM (will work there)
+- Build architecture: Client VMs → Host Daemon → VM Worker → GPU
+
+If Dom0 CUDA is absolutely required:
+- Try Method 18 (Xen modification) - Complex but may work
+- Contact NVIDIA/XCP-ng support (Method 30) - May have official solution
+
+BACKUP LOCATIONS:
+-----------------
+- libcuda.so: /usr/lib64/libcuda.so.545.23.06.backup
+- CUDA libs: /mnt/cuda_install/backup/
+- Kernel module: ~/cpuid_intercept_module/
+
+FILES CREATED:
+--------------
+- CUDA_DOM0_METHODS/ - All method documentation
+- filter_cpuinfo_fixed.c - LD_PRELOAD library source
+- cpuid_intercept_module/ - Kernel module source
+
+================================================================================
+                              END OF SUMMARY
+================================================================================
+

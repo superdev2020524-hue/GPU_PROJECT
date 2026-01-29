@@ -1,0 +1,318 @@
+Title; GPU Virtualization Engineer – Systems & Hypervisors
+
+About the Role
+
+We’re hiring a GPU Virtualization Engineer with strong expertise in Linux kernel, hypervisors, and low-level driver development. You will enable secure, high-performance GPU sharing in hypervisor-based cloud environments by writing or extending kernel modules, device drivers, and virtualization code to make GPUs available to multiple workloads in a controlled and efficient manner.
+
+Context
+
+We are building a GPU-accelerated private cloud and require an engineer to extend GPU virtualization capabilities. The goal is multi-tenant GPU sharing under modern hypervisors, with strong isolation, performance, and flexibility for advanced compute workloads
+Responsibilities
+• Build or extend a GPU virtualization layer in the hypervisor/device stack.
+• Enable multi-tenant GPU sharing with security and performance in mind.
+• Design and implement resource partitioning frameworks (time-slicing, device mediation, virtual functions).
+• Benchmark and optimize compute-intensive workloads (e.g., AI/ML, HPC).
+• Produce design docs, performance reports, and maintainable code.
+• Collaborate with infrastructure and cloud engineering teams for integration.
+
+Meeting summary
+
+- The Client explained that H100/H200 GPUs are expensive CAPEX and OPEX resources that often sit idle, making virtualization necessary to allow 10, 20, or even 100 different clients to share the same GPU when needed. 
+- Scale requirements include serving a small data center business with DOD, DHS, and other government department clients, with a timeline goal of having the system operational within the next couple of months. 
+- Their Offshore Dev confirmed they are using XCPNG, a Xen-based open source hypervisor, with CloudStack as their cloud portal, and want to virtualize H100 GPUs to divide them among multiple VMs across multiple tenants. 
+- Security considerations include strong requirements for cross-channel security, multi-tenant isolation, and instance isolation to protect against side channel attacks even when GPUs are divided among multiple VMs. 
+- Current hardware setup uses Dell 7525 servers with Intel Xeon CPUs and PCIe Gen 4, though they are developing their own US-manufactured motherboard with post-quantum proofing capabilities as an Intel partner. 
+- No existing work has been done on scheduling and partitioning layers, as H100 lacks SR-IOV and vGPU support, requiring development of a custom virtual GPU solution. 
+- MIG facility is available with H100 but only supports seven partitions maximum, reducing capacity from 80GB to 10GB per instance, which doesn't meet their dynamic allocation requirements. 
+- Priority-based scheduling was discussed as a potential feature, allowing higher-priority tenants like "Montas" to get GPU access before lower-priority users like "Za".
+
+Chat history.
+
+Me; After thinking more about the GPU project, I believe the first step is mapping your GPU SKUs + IOMMU/BAR layout so we can choose SR-IOV, mdev, or time-sliced passthrough per device. From there, adding a simple scheduler + latency metrics will keep multi-tenant performance predictable. Quick question- which GPU models are you running today, and is your stack mainly KVM/QEMU?
+
+client:We are using H100 80Gb PCI GPU And XCP-NG hypervisor with Apache Cloudstack We are not using KVM
+Me:Thanks, that helps a lot.
+H100 80GB PCIe is a great base because MIG gives us strong hardware isolation between GPU slices, and XCP-ng with CloudStack just means we need to be deliberate about how those MIG instances are exposed to VMs.
+The next logical step on my side would be to sketch a short outline for you that covers:
+how we'd configure MIG on the host,
+how those MIG instances could be assigned to Xen VMs, and
+how CloudStack can treat each instance as a schedulable GPU resource (with isolation and predictable p95/p99 latency in mind).
+One thing that would help me tune that outline:
+Are you imagining a fixed set of MIG profiles per H100, or do you want the flexibility to adjust profiles (e.g., 1g.10gb/2g.20gb/3g.40gb)
+based on demand?
+
+Client:MIG is not required. Thats already available with H100. We need a proper Gpu virtualisation.
+
+Me:Totally understood - MIG is just the hardware partitioning feature; what you're looking for is full GPU virtualization so multiple VMs can share the same H100 through a mediation layer with proper scheduling, isolation, and a clean guest-visible device model. On XCP-ng that means building a Xen-side GPU virtualization path: host driver hooks for MMIO/doorbells, an IOMMU-safe time-slicing/scheduling layer, and a stable ABI that CloudStack can treat as a schedulable GPU resource per VM. To tune the design, it would help to know whether you want the VMs to see a virtual NVIDIA-style GPU device, or a more transparent passthrough device with host-controlled scheduling.
+
+Client:VMs to see a virtual GPU device.
+Transparent pass through is already implemented and it's working. Problem is that only 1 vm will get the GPU.
+We need to virtualize a GPU and assign it to many VM instances.
+Me:So the goal is to build a full vGPU layer: a virtual GPU device exposed to each VM, backed by a host-side mediation layer that time-slices/schedules the real H100.
+Client:We need to develop a complete mediation layer. That has a physical H100 gpu in bottom layer and act as a virtual GPU for upper VMs/ cloud layer.
+Client:Yes exactly
+Me:Understood - that's exactly the layer I'm describing.
+A host-side mediation layer that sits above the physical H100, intercepts MMIO/doorbell operations, manages queue submission, handles scheduling/time-slicing, and presents each VM with a virtual GPU device that behaves consistently with the NVIDIA stack.
+Before I outline the design, one important point to confirm:
+Do you need identical vGPU profiles for all VMs, or different "sizes" of virtual GPUs depending on workload (small/medium/large)
+That will determine how we structure the scheduler and the vGPU device model.
+Client: Would like maximum flexibility so long as it does not affect performance.
+Client:VGPU profile for VMs can be identical. Handle GPU requests at mediation layer. Implement scheduling to have maximum performance as and when needed by the VMs.
+Me:Got it, that's very clear.
+So all VMs can see the same virtual GPU profile, and the mediation layer is responsible for handling GPU requests and dynamically scheduling time on the physical H100 so that active VMs get the performance they need while idle ones don't hold capacity.
+I can design the mediation layer and scheduler around that model - work-conserving, demand-aware, with isolation and predictable latency as key constraints.
+One thing that will help sizing and scheduling is a rough target like: how many VMs do you expect to share a single H100 at peak?
+
+Client:That depends on users and their workloads as some have high GPU requirements and other have very little. But ideally we want to have maximum VMs possible with H100.
+
+Me:Got it that makes sense.
+So the goal is a flexible mediation layer and scheduler that can safely oversubscribe the H100: support many VMs with mixed workloads, but still protect performance for heavy users and keep latency predictable.
+Client:Good
+Me:The way I'd suggest moving forward is to start with a design + prototype plan:
+architecture of the mediation layer (host hooks, virtual GPU device model, scheduling approach),
+how it plugs into XCP-ng and CloudStack,
+and an initial sizing strategy for "maximum safe VMs per H100" based on benchmarking rather than a fixed number baked in.
+If that sounds reasonable, I can put together a short design outline and proposed timeline so we can get started.
+
+Client:Prepare a technical design so we can have better understanding and clarity
+
+Via email
+
+Hi,
+As discussed, I’ve prepared a first-pass technical design for the GPU mediation layer and vGPU virtualization on your H100 / XCP-ng / CloudStack stack.
+The document covers:
+Goals and requirements for sharing a single H100 across multiple VMs
+A high-level architecture for the mediation layer and virtual GPU device model
+The scheduler and resource management approach for mixed workloads
+Integration points with XCP-ng and CloudStack
+A phased implementation plan and key open questions
+This is meant as a starting point for us to align on the architecture and constraints (especially around NVIDIA driver/licensing boundaries), and I’m happy to adjust it based on your feedback or any additional requirements.
+Once you’ve had a chance to review, we can walk through any parts you’d like to discuss in more detail and talk about how you’d like to move forward with implementation.
+Best regards,
+Bren
+
+Technical Design: GPU Mediation Layer & vGPU Virtualization for H100 on XCP-ng
+________________________________________
+1. Goals & Requirements
+Primary goal
+Enable multiple VMs on XCP-ng (Xen) to share a single NVIDIA H100 80GB PCIe GPU via a mediation layer that:
+•	Exposes a virtual GPU device to each VM (identical vGPU profile per VM)
+•	Handles all GPU requests at the mediation layer
+•	Implements demand-aware scheduling for maximum overall performance
+•	Preserves isolation and predictable latency for heavy workloads
+Key requirements
+•	Multiple VMs per H100 with identical vGPU profiles
+•	Transparent to VMs: each sees a “normal” NVIDIA-style GPU device (existing CUDA stacks should work)
+•	Host-side scheduling:
+•	Time-slicing / engine scheduling based on demand
+•	Work-conserving: unused capacity is redistributed to active VMs
+•	Isolation:
+•	No cross-VM memory access
+•	Bounded interference (no single VM can starve all others indefinitely)
+•	Integration:
+•	Work with XCP-ng (Xen) and Apache CloudStack
+•	CloudStack should be able to treat vGPUs as assignable GPU resources per VM
+________________________________________
+2. Current State
+•	Hardware: NVIDIA H100 80GB PCIe
+•	Hypervisor: XCP-ng, Xen-based
+•	Cloud orchestration: Apache CloudStack
+•	Today:
+•	Transparent passthrough is already implemented and works
+•	Limitation: only one VM can own the H100 at a time
+We want to move from single-VM passthrough → true multi-VM GPU virtualization.
+________________________________________
+3. High-Level Architecture
+We introduce a GPU Mediation Layer on the host, between:
+•	The physical H100 GPU (bottom)
+•	The Xen / VM layer (top)
+Core components:
+1.	Host-side GPU Mediation Daemon (“Mediator”)
+2.	Host GPU Kernel Hooks / Driver Extensions
+3.	Xen Device Model (vGPU Device)
+4.	Scheduler & Resource Manager
+5.	CloudStack Integration Layer
+6.	Metrics & Observability
+At a high level:
+•	Each VM is presented with a virtual GPU device (via Xen device model).
+•	The VM’s GPU commands (MMIO, doorbells, queue submissions) are intercepted and routed to the Mediation Daemon.
+•	The Mediation Daemon queues, schedules, and submits work to the real H100.
+•	The Scheduler decides who runs when, based on demand, policies, and isolation constraints.
+________________________________________
+4. Components in Detail
+4.1 Host GPU Mediation Daemon
+Runs in host user space:
+•	Accepts GPU command streams from each VM (via Xen device model / shared memory queues).
+•	Manages:
+•	Per-VM queues
+•	Context switching / state management
+•	Scheduling decisions
+•	Error handling & reset coordination
+Responsibilities:
+•	Queue management:
+•	Maintain separate queues per VM
+•	Track queue depth, outstanding work, and priorities
+•	Command submission:
+•	Batch and submit work to the H100 in a controlled manner
+•	Back-pressure:
+•	Apply back-pressure if a VM exceeds allowed limits (to protect others)
+•	Statistics & metrics:
+•	Collect per-VM utilization, latency, error rates, etc.
+4.2 Host GPU Kernel Hooks / Driver Extensions
+We will need to cooperate with the NVIDIA driver and/or implement kernel hooks:
+•	Context control:
+•	Create/manage GPU contexts per VM
+•	Memory management:
+•	Map and pin per-VM GPU memory in a safe way
+•	Enforce quotas/logical limits
+•	Interrupt handling:
+•	Route interrupts/events back to the correct VM context via the Xen device model
+•	Reset logic:
+•	Handle fault/timeout scenarios without globally impacting all VMs where possible
+The exact depth of integration with the proprietary NVIDIA driver will dictate how “deep” these hooks go; design should keep these interactions cleanly abstracted.
+4.3 Xen Device Model (vGPU Device)
+In the Xen/XCP-ng environment, we add a virtual GPU device per VM:
+•	Presents a NVIDIA-like PCIe device to the VM
+•	Exposes:
+•	Expected BARs / MMIO regions
+•	Virtual doorbells / queues
+•	Interrupts (MSI/MSI-X) mapped via Xen
+•	Forwards:
+•	MMIO writes, queue submissions, and relevant commands to the Host Mediation Daemon
+•	GPU responses / completion events back to the VM
+Design goals:
+•	Guest transparency:
+•	The VM’s OS and CUDA stack should behave as though they are talking to a physical GPU.
+•	ABI stability:
+•	Keep the guest-visible device behavior stable over time.
+4.4 Scheduler & Resource Manager
+The scheduler is part of the Mediation Daemon and is central to “maximum VMs with good performance.”
+Key properties:
+•	Identical vGPU profiles for all VMs:
+•	Each VM sees the same virtual GPU type.
+•	Dynamic, demand-aware scheduling:
+•	Allocate more GPU time to active VMs and less to idle ones.
+•	Support mixed workloads (some heavy, some light).
+•	Work-conserving:
+•	If only one VM is busy, it can effectively use the whole GPU.
+•	Policy controls:
+•	Optional per-VM “weight” or “priority” settings.
+•	Optional max share limits per VM or per project/tenant.
+Scheduling model (initial version):
+•	Time-slicing:
+•	Divide GPU execution into slices.
+•	Assign slices to VMs with pending work.
+•	Fairness:
+•	Round-robin or weighted fair queuing.
+•	Latency control:
+•	Bounds on how long a VM can monopolize the GPU before another VM gets a turn.
+•	Configurable policies:
+•	Define default policies, but allow tuning over time as real workload data becomes available.
+4.5 CloudStack Integration
+CloudStack needs to:
+•	Discover available vGPU capacity per host (e.g., “this host can support up to N active vGPU assignments per H100”).
+•	Assign vGPU instances to VMs:
+•	When a VM is provisioned, a vGPU assignment is created and registered with the Mediation Layer.
+•	Track usage:
+•	Optional: mapping of project/tenant to vGPU allocations.
+•	Handle lifecycle:
+•	VM start/stop → create/destroy vGPU instance.
+•	Live migrations: longer-term consideration.
+Integration approach:
+•	New CloudStack resource plugin or extension that:
+•	Talks to a host-side agent API exposed by the Mediation Daemon.
+•	Manages the mapping between VM IDs and GPU contexts/queues.
+•	At first, we can implement a static limit per H100
+•	e.g., “up to N vGPU assignments per GPU”
+•	Then refine based on benchmark results.
+4.6 Metrics & Observability
+From day one, we should expose:
+•	Per-VM metrics:
+•	GPU utilization (%)
+•	Queue depth
+•	Average / p95 / p99 latency for GPU operations
+•	Error/fault counts
+•	Per-host metrics:
+•	Total GPU utilization
+•	Number of active VMs (vGPU assignments)
+•	Scheduler decisions / context switches
+Integration targets:
+•	Prometheus (or similar)
+•	Dashboards for:
+•	Operators (capacity planning, troubleshooting)
+•	Engineering (benchmarking, tuning scheduler policies)
+________________________________________
+5. Phased Implementation Plan
+Phase 0 – Detailed Design (what you asked for now)
+•	Finalize architecture with you:
+•	Confirm mediation stack layout
+•	Decide on initial scheduling policy
+•	Agree on CloudStack integration surface (API/agent design)
+•	Deliverables:
+•	Detailed design doc (expanded version of this)
+•	Implementation plan & risks
+Phase 1 – Minimal Mediation & Single-Host Prototype
+Goal: Multiple VMs sharing one H100 on a single host, controlled by the mediation layer.
+•	Implement minimal Xen device model exposing a virtual GPU device to each VM.
+•	Implement a basic Host Mediation Daemon:
+•	Per-VM queues
+•	Simple time-sliced scheduler
+•	Integration with host driver to submit work to H100
+•	Basic metrics/logging:
+•	Per-VM utilization and queue depth
+•	Simple test environment:
+•	2–3 VMs running synthetic GPU workloads and simple CUDA programs
+Phase 2 – Scheduler Improvements & Observability
+•	Introduce demand-aware scheduling:
+•	adjust time slices based on observed demand
+•	enforce basic isolation policies (no complete starvation)
+•	Improve metrics (p95/p99, slice timing, reset events).
+•	Add basic configuration options:
+•	max vGPUs per H100
+•	per-VM weight/priority (if needed)
+Phase 3 – CloudStack Integration
+•	Implement host agent API for CloudStack to:
+•	query capacity
+•	create/destroy vGPU assignments
+•	Implement CloudStack plugin / integration logic:
+•	expose vGPU as a schedulable resource
+•	Test end-to-end:
+•	Request VM with GPU in CloudStack → vGPU assigned through mediation layer → VM successfully runs GPU workloads alongside others.
+Phase 4 – Hardening & Optimization
+•	Benchmarks:
+•	heavy/mixed workloads
+•	VM counts approaching target “max safe VMs per H100”
+•	Tuning:
+•	scheduler parameters
+•	back-pressure rules
+•	error and reset handling
+•	Documentation:
+•	operator docs
+•	known limitations
+•	performance expectations
+________________________________________
+6. Open Questions / Decisions to Make Together
+1.	Acceptable initial target for VMs per H100
+•	We can start with a conservative default (e.g., X VMs per GPU) and adjust based on benchmarks.
+2.	Priority / QoS needs
+•	Do some tenants or workloads need higher priority or guaranteed minimum shares?
+3.	Supported guest OS / driver versions
+•	Which OS and CUDA driver versions must we support in the VMs?
+4.	Metrics / observability stack
+•	Do you already use Prometheus/Grafana or another stack we should integrate with?
+Client:Bren, can you give us an indication of timeline and what resources you need
+Me:Sure - here's a realistic outline for timelines and what I'd need on your side.
+Timeline (high level):
+Weeks 1-4:
+Feasibility validation and detailed design, plus a basic mediation-layer skeleton so we can start exercising a simple VM early and confirm assumptions around the NVIDIA stack on H100/XCP-ng.
+GPU path
+Around Weeks 8-12:
+A first multi-VM prototype on a single H100: minimal Xen vGPU device model, mediation layer handling requests from multiple VMs, simple time-sliced scheduling, and initial metrics so we can benchmark and tune under mixed workloads.
+After that prototype is in place, we can decide together how far and how fast to push toward full production (CloudStack integration, more advanced scheduling policies, hardening, etc.), based on the results and your priorities.
+
+Resources I'd need from your side:
+A staging host with an H100 running XCP-ng, with a few test VMs and CloudStack wired up.
+Administrative access on that host to install the mediation layer, Xen device model, and any required system components.
+A point person familiar with your XCP-ng/ CloudStack setup to coordinate configuration and integration details.
+A few representative GPU workloads (or at least patterns/benchmarks) so we can tune the scheduler to how you actually expect the system to be used.
+If this structure looks reasonable, I'm happy to refine the milestones with you and align on next steps.

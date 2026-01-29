@@ -1,0 +1,460 @@
+================================================================================
+                    POOL SCHEDULING: Avoiding Starvation
+                    Answer to: "Won't Pool A starve Pool B?"
+================================================================================
+
+EXCELLENT QUESTION!
+
+You identified a critical design issue: If we always prioritize Pool A over
+Pool B at the pool level, then even low-priority tasks in Pool A would be
+processed before high-priority tasks in Pool B.
+
+This document explains:
+1. What pools represent (design intent)
+2. How to avoid starvation (fair scheduling)
+3. Multiple scheduling strategies
+4. When to use which approach
+
+================================================================================
+                    DESIGN INTENT: What Are Pools?
+================================================================================
+
+Pools Represent SEPARATE GPU Resources
+--------------------------------------
+
+Pool A = GPU #0 (or Cluster A)
+Pool B = GPU #1 (or Cluster B)
+
+Think of pools as DIFFERENT PHYSICAL RESOURCES, not priority levels!
+
+Example Use Cases:
+-----------------
+1. Two Physical GPUs:
+   - Pool A → H100 GPU #0 (PCIe slot 1)
+   - Pool B → H100 GPU #1 (PCIe slot 2)
+   
+2. CloudStack Clusters:
+   - Pool A → Cluster "Production" 
+   - Pool B → Cluster "Development"
+   
+3. GPU Memory Partitions:
+   - Pool A → First 40GB of GPU
+   - Pool B → Second 40GB of GPU
+
+Key Point: Pools are INDEPENDENT resources, not priority classes!
+
+================================================================================
+                    THE PROBLEM: Pool-Level Starvation
+================================================================================
+
+WRONG Approach (Pool Priority):
+-------------------------------
+
+If we always process Pool A before Pool B:
+
+    ┌─────────────────────────────────────┐
+    │ Scheduler                           │
+    │                                     │
+    │ 1. Process ALL of Pool A            │
+    │ 2. Then process Pool B              │
+    └─────────────────────────────────────┘
+              │                │
+              ▼                ▼
+         Pool A Queue     Pool B Queue
+         ────────────     ────────────
+         High: [VM1]      High: [VM4] ← STARVED!
+         Med:  [VM2]      Med:  [VM5] ← STARVED!
+         Low:  [VM3]      Low:  [VM6] ← STARVED!
+
+Problem: Even VM3 (low priority in Pool A) gets processed before VM4 
+         (high priority in Pool B)! ❌
+
+Result: Pool B starvation!
+
+================================================================================
+                    SOLUTION 1: Round-Robin (Current Design)
+================================================================================
+
+Fair Scheduling Between Pools
+-----------------------------
+
+Process ONE request from each pool per cycle:
+
+    ┌─────────────────────────────────────┐
+    │ Scheduler (Round-Robin)             │
+    │                                     │
+    │ Loop:                               │
+    │   1. Process ONE from Pool A        │
+    │   2. Process ONE from Pool B        │
+    │   3. Repeat                         │
+    └─────────────────────────────────────┘
+              │                │
+              ▼                ▼
+         Pool A Queue     Pool B Queue
+         ────────────     ────────────
+         High: [VM1]      High: [VM4]
+         Med:  [VM2]      Med:  [VM5]
+         Low:  [VM3]      Low:  [VM6]
+
+Processing Order:
+----------------
+Cycle 1: VM1 (Pool A, high), VM4 (Pool B, high)
+Cycle 2: VM2 (Pool A, med),  VM5 (Pool B, med)
+Cycle 3: VM3 (Pool A, low),  VM6 (Pool B, low)
+
+Result: ✅ Fair between pools, priority within pools
+
+Code (Current Implementation):
+------------------------------
+
+while (state.running) {
+    poll_requests(&state);
+    
+    // Process one from each pool (fair)
+    process_pool(&state.pool_a);  // Pop & execute 1 request
+    process_pool(&state.pool_b);  // Pop & execute 1 request
+    
+    usleep(100000);  // 100ms
+}
+
+Benefits:
+--------
+✅ No starvation (both pools get equal chances)
+✅ Priority works within each pool
+✅ Simple to understand and implement
+✅ Works for independent GPU resources
+
+Drawbacks:
+---------
+⚠️  If Pool A is always busy and Pool B is idle, Pool A still waits
+⚠️  50/50 split even if one pool needs more
+
+================================================================================
+                    SOLUTION 2: Weighted Round-Robin
+================================================================================
+
+If One Pool Needs More Resources
+--------------------------------
+
+Give Pool A 70% and Pool B 30% of GPU time:
+
+while (state.running) {
+    poll_requests(&state);
+    
+    // Process 7 from Pool A, 3 from Pool B per cycle
+    for (int i = 0; i < 7; i++) {
+        process_pool(&state.pool_a);
+    }
+    for (int i = 0; i < 3; i++) {
+        process_pool(&state.pool_b);
+    }
+    
+    usleep(100000);
+}
+
+Benefits:
+--------
+✅ Configurable resource allocation
+✅ Still no starvation (Pool B gets 30%)
+✅ Priority works within each pool
+
+Use When:
+--------
+- Production vs Development pools
+- Different customer tiers
+- Known workload ratios
+
+================================================================================
+                    SOLUTION 3: Dynamic Fairness
+================================================================================
+
+Skip Empty Pools Automatically
+------------------------------
+
+Only process pools that have requests:
+
+while (state.running) {
+    poll_requests(&state);
+    
+    // Only process if queue has requests
+    if (state.pool_a.count > 0) {
+        process_pool(&state.pool_a);
+    }
+    if (state.pool_b.count > 0) {
+        process_pool(&state.pool_b);
+    }
+    
+    usleep(100000);
+}
+
+Benefits:
+--------
+✅ No wasted cycles on empty pools
+✅ Idle pool doesn't slow down busy pool
+✅ Still fair when both are busy
+
+This is BETTER than current naive round-robin!
+
+================================================================================
+                    SOLUTION 4: Global Priority Queue
+================================================================================
+
+If You Want Global Priority Across Pools
+----------------------------------------
+
+Ignore pool separation for scheduling (but still track pool_id):
+
+typedef struct {
+    Request *head;           // Global priority queue
+    pthread_mutex_t lock;
+} GlobalQueue;
+
+void insert_global(GlobalQueue *queue, Request *req) {
+    // Sort by priority ONLY (ignore pool_id)
+    // Highest priority first, regardless of pool
+}
+
+Processing Order:
+----------------
+VM4 (Pool B, high)   ← Processed first
+VM1 (Pool A, high)   ← Second (FIFO within same priority)
+VM5 (Pool B, med)
+VM2 (Pool A, med)
+VM6 (Pool B, low)
+VM3 (Pool A, low)
+
+Benefits:
+--------
+✅ True global priority
+✅ High priority ALWAYS wins
+
+Drawbacks:
+---------
+❌ Pool B could dominate if it has more high-priority requests
+❌ Pools lose independence (what's the point of pools then?)
+
+Use When:
+--------
+- Pools are logical categories, not physical resources
+- You want strict priority enforcement across all VMs
+
+================================================================================
+                    RECOMMENDED: Enhanced Round-Robin
+================================================================================
+
+Best Balance for Your Use Case
+------------------------------
+
+Combine fair scheduling with efficiency:
+
+void scheduler_loop(MediatorState *state) {
+    while (state->running) {
+        poll_requests(state);
+        
+        int processed = 0;
+        
+        // Try to process from each pool (skip if empty)
+        if (state->pool_a.count > 0) {
+            process_pool(&state->pool_a);
+            processed++;
+        }
+        
+        if (state->pool_b.count > 0) {
+            process_pool(&state->pool_b);
+            processed++;
+        }
+        
+        // If both pools are empty, sleep longer
+        if (processed == 0) {
+            usleep(500000);  // 500ms when idle
+        } else {
+            usleep(100000);  // 100ms when active
+        }
+    }
+}
+
+Benefits:
+--------
+✅ Fair between pools (no starvation)
+✅ Skips empty pools (efficient)
+✅ Priority within each pool
+✅ Adapts to workload
+
+This is the BEST approach for independent GPU resources!
+
+================================================================================
+                    COMPARISON TABLE
+================================================================================
+
+Strategy           | Fairness | Efficiency | Starvation Risk | Complexity
+-------------------|----------|------------|-----------------|------------
+Naive Pool Priority| ❌ Pool B | ✅ High    | ❌ HIGH        | Low
+Round-Robin        | ✅ Fair   | ⚠️  Medium | ✅ None        | Low
+Weighted RR        | ⚠️  Config| ✅ High    | ⚠️  Low        | Medium
+Dynamic Fair       | ✅ Fair   | ✅ High    | ✅ None        | Low
+Global Priority    | ⚠️  Varies| ✅ High    | ⚠️  Medium     | Medium
+
+Recommendation: Dynamic Fair (Solution 3 + enhancements)
+
+================================================================================
+                    IMPLEMENTATION: Updated mediator.c
+================================================================================
+
+Replace the main loop in mediator.c with this:
+
+/*
+ * Enhanced scheduler loop with dynamic fairness
+ * - Skips empty pools (efficient)
+ * - Fair between pools (no starvation)
+ * - Priority within pools (correct ordering)
+ */
+int main() {
+    MediatorState state;
+    time_t last_stats = time(NULL);
+    
+    printf("=== GPU Mediation Daemon (Dynamic Fair Scheduling) ===\n");
+    init_mediator(&state);
+    
+    printf("[SCHED] Strategy: Dynamic Round-Robin\n");
+    printf("[SCHED] Fairness: Equal between pools, priority within pools\n");
+    printf("[SCHED] Starvation: None (both pools get fair chances)\n");
+    printf("\n");
+    
+    while (state.running) {
+        // Step 1: Poll for new requests
+        poll_requests(&state);
+        
+        int processed = 0;
+        
+        // Step 2: Process Pool A (if has requests)
+        if (state.pool_a.count > 0) {
+            process_pool(&state.pool_a, &state);
+            processed++;
+        }
+        
+        // Step 3: Process Pool B (if has requests)
+        if (state.pool_b.count > 0) {
+            process_pool(&state.pool_b, &state);
+            processed++;
+        }
+        
+        // Step 4: Statistics
+        time_t now = time(NULL);
+        if (now - last_stats >= 60) {
+            printf("\n[STATS] Total processed: %lu\n", state.total_processed);
+            printf("[STATS] Pool A: queue=%d\n", state.pool_a.count);
+            printf("[STATS] Pool B: queue=%d\n", state.pool_b.count);
+            printf("\n");
+            last_stats = now;
+        }
+        
+        // Step 5: Adaptive sleep
+        if (processed == 0) {
+            usleep(500000);  // 500ms when both pools idle
+        } else {
+            usleep(100000);  // 100ms when processing
+        }
+    }
+    
+    return 0;
+}
+
+Key Changes:
+-----------
+1. Check pool count before processing (skip empty pools)
+2. Track how many pools processed per cycle
+3. Adaptive sleep (longer when idle, shorter when busy)
+4. Log scheduling strategy at startup
+
+This prevents starvation while maximizing efficiency!
+
+================================================================================
+                    TESTING STARVATION
+================================================================================
+
+Test Case: Verify Pool B Doesn't Starve
+---------------------------------------
+
+Setup:
+1. VM1: Pool A, high priority - sends 1000 requests
+2. VM2: Pool B, high priority - sends 10 requests
+
+Expected Result (Fair Scheduling):
+- Both VMs should get responses
+- VM2 shouldn't wait for all 1000 of VM1's requests
+- Processing should be interleaved
+
+Test Script:
+-----------
+
+# Terminal 1: Start mediator
+./mediator | tee test_starvation.log
+
+# Terminal 2: VM1 (Pool A, spam requests)
+for i in {1..1000}; do 
+    ./vm_client TEST_A
+done
+
+# Terminal 3: VM2 (Pool B, few requests)
+for i in {1..10}; do 
+    ./vm_client TEST_B
+    echo "VM2 request $i completed at $(date +%s)"
+done
+
+# Check results:
+grep "RESPONSE" test_starvation.log | grep "vm2"
+
+Expected: All 10 VM2 responses appear BEFORE all 1000 VM1 requests complete
+
+If using naive pool priority: VM2 would wait for all 1000 VM1 requests ❌
+If using round-robin:         VM2 gets responses interleaved ✅
+
+================================================================================
+                    SUMMARY: Answer to Your Question
+================================================================================
+
+Q: "Won't we always get stuck in Pool A? Won't high-priority Pool B never 
+    execute until low-priority Pool A is exhausted?"
+
+A: NOT with the current design! Here's why:
+
+1. Pools are INDEPENDENT RESOURCES (different GPUs), not priority levels
+   - Pool A = GPU #0
+   - Pool B = GPU #1
+   
+2. Current implementation uses ROUND-ROBIN between pools:
+   - Process ONE from Pool A
+   - Process ONE from Pool B
+   - Repeat
+   
+3. This prevents starvation:
+   - Pool B high-priority WILL execute
+   - Pool A doesn't monopolize the scheduler
+   
+4. Priority applies WITHIN each pool:
+   - Pool A: high > medium > low ✅
+   - Pool B: high > medium > low ✅
+   
+5. Recommended enhancement: DYNAMIC FAIRNESS
+   - Skip empty pools (don't waste time)
+   - Still fair when both are busy
+   - Best of both worlds!
+
+Bottom Line:
+-----------
+✅ No starvation with round-robin scheduling
+✅ Pools are independent, not hierarchical
+✅ Priority works within each pool
+✅ Fair resource allocation between pools
+
+If you WANTED Pool A to have higher priority than Pool B (NOT recommended):
+- You'd need a different design (global priority queue)
+- But then you'd lose pool independence
+- Starvation would be a real problem
+
+The current design is CORRECT for independent GPU resources!
+
+================================================================================
+End of Pool Scheduling Explanation
+Date: January 25, 2026
+================================================================================

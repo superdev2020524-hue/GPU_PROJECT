@@ -1,0 +1,273 @@
+BEGINNER GUIDE: Create, Start, and Connect to a NEW VM on XCP-ng (Xen)
+===============================================================================
+Goal: Create a fresh Ubuntu Server VM from an ISO, start it, and connect to it.
+
+This guide uses ONLY commands you run on:
+  - Dom0 (XCP-ng host): xe/xl/ssh
+  - Your Linux desktop/laptop: ssh + TigerVNC (through an SSH tunnel)
+
+Important gotchas (read once):
+  1) VNC socket changes when the VM's dom-id changes (every start/reboot).
+     You must repoint socat to /var/run/xen/vnc-<domid>.
+  2) CD userdevice MUST be a NUMBER (e.g. 3), NOT "xvdd".
+     If you set CD device to "xvdd" you will break the VM config.
+  3) If you will run TWO VMs at the same time, they MUST NOT share the same static IP.
+     Example: VM1=10.25.33.11, VM2=10.25.33.12.
+
+  4) dom-id (“DOMID”) is not a permanent VM identifier.
+     - UUID = permanent identity (never changes unless you clone/copy).
+     - dom-id = runtime identity (assigned each time the VM starts).
+     - dom-id becomes -1 when the VM is halted (no running domain).
+     - dom-id WILL change on every reboot and every stop/start.
+     - If dom-id changes rapidly (e.g. 18→20→28→30), the VM is usually crashing/restarting.
+       Common cause during Ubuntu install: too little RAM/CPU. Fix by setting 2–4GiB+ RAM.
+
+
+===============================================================================
+SECTION A — Prereqs (Dom0)
+===============================================================================
+1) Confirm Xen is healthy:
+   xl info | egrep 'xen_version|virt_caps'
+
+2) Confirm ISO SR and Local storage SR exist:
+   xe sr-list params=uuid,name-label,type,content-type
+
+3) Identify your ISO SR UUID and Local storage SR UUID:
+   - ISO SR: content-type=iso
+   - Local storage: type=lvm content-type=user
+
+   (You will use these variables later.)
+
+
+===============================================================================
+SECTION B — Pick an Ubuntu Server ISO (Dom0)
+===============================================================================
+1) List ISO files available in your ISO SR:
+   ISO_SR_UUID=<PUT_YOUR_ISO_SR_UUID_HERE>
+   xe vdi-list sr-uuid=$ISO_SR_UUID params=uuid,name-label,virtual-size,type
+
+2) Choose an Ubuntu Server ISO "name-label" from the list, e.g.:
+   ubuntu-24.04.2-live-server-amd64.iso
+
+   Save these:
+   ISO_NAME="ubuntu-24.04.2-live-server-amd64.iso"
+   ISO_VDI_UUID=<PUT_THE_ISO_VDI_UUID_HERE>
+
+
+===============================================================================
+SECTION C — Create the VM object (Dom0)
+===============================================================================
+1) Get the template UUID for "Other install media":
+   xe template-list name-label="Other install media" params=uuid
+
+2) Create the VM:
+   TEMPLATE_UUID=<PUT_TEMPLATE_UUID_HERE>
+   VM_UUID=$(xe vm-install template-uuid=$TEMPLATE_UUID new-name-label="ubuntu-fresh")
+   echo "VM_UUID=$VM_UUID"
+
+3) Set memory (RECOMMENDED — low memory can cause installer crashes/reboots):
+   xe vm-memory-limits-set uuid=$VM_UUID static-min=4GiB static-max=4GiB dynamic-min=4GiB dynamic-max=4GiB
+
+4) Set CPUs (RECOMMENDED):
+   xe vm-param-set uuid=$VM_UUID VCPUs-max=4
+   xe vm-param-set uuid=$VM_UUID VCPUs-at-startup=4
+
+
+===============================================================================
+SECTION D — Add a DISK to the VM (Dom0)  [REQUIRED]
+===============================================================================
+If you do not add a disk, the VM cannot install anything.
+
+1) Create a 40GiB disk on Local storage:
+   LOCAL_SR_UUID=<PUT_YOUR_LOCAL_STORAGE_SR_UUID_HERE>
+   DISK_VDI=$(xe vdi-create sr-uuid=$LOCAL_SR_UUID name-label="ubuntu-fresh-disk0" virtual-size=40GiB type=user)
+   echo "DISK_VDI=$DISK_VDI"
+
+2) Attach disk as device slot 0 (this becomes xvda when running):
+   DISK_VBD=$(xe vbd-create vm-uuid=$VM_UUID vdi-uuid=$DISK_VDI device=0 type=Disk mode=RW bootable=true)
+   echo "DISK_VBD=$DISK_VBD"
+
+3) Verify disk slot:
+   xe vbd-param-get uuid=$DISK_VBD param-name=userdevice
+   (Should print: 0)
+
+
+===============================================================================
+SECTION E — Add a NETWORK interface (Dom0)  [REQUIRED for SSH later]
+===============================================================================
+1) List networks and pick the correct bridge (usually xenbr0):
+   xe network-list params=uuid,name-label,bridge
+
+2) Create VIF on device 0:
+   NET_UUID=<PUT_YOUR_NETWORK_UUID_HERE>
+   VIF_UUID=$(xe vif-create vm-uuid=$VM_UUID network-uuid=$NET_UUID device=0)
+   echo "VIF_UUID=$VIF_UUID"
+
+
+===============================================================================
+SECTION F — Add a CD drive + insert the Ubuntu ISO (Dom0)  [REQUIRED]
+===============================================================================
+DO NOT use "device=xvdd" for CD. Use a numeric slot, e.g. 3.
+
+1) Create an empty CD VBD on slot 3:
+   CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+   echo "CD_VBD=$CD_VBD"
+
+2) Insert the ISO into that CD drive:
+   xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+
+3) Verify CD slot:
+   xe vbd-param-get uuid=$CD_VBD param-name=userdevice
+   (Should print: 3)
+
+
+===============================================================================
+SECTION G — Boot from ISO (Dom0)
+===============================================================================
+1) Set boot order to CD then Disk:
+   xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+
+2) Start VM:
+   xe vm-start uuid=$VM_UUID
+
+3) Get dom-id (you will need this for VNC):
+   DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+   echo "DOMID=$DOMID"
+
+4) Confirm the VNC unix socket exists:
+   ls -la /var/run/xen/vnc-$DOMID
+
+
+===============================================================================
+SECTION H — Connect to VM console using TigerVNC over an SSH tunnel
+===============================================================================
+Why: Many networks block direct access to dom0:5901. SSH tunnel is reliable.
+
+Part 1: Dom0 — expose the VM's VNC unix socket on TCP 5901
+-----------------------------------------------------------
+1) Install socat (once):
+   yum install -y socat
+
+2) Start socat pointing to the CURRENT dom-id socket:
+   pkill socat || true
+   nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+   ss -ltnp | grep :5901 || true
+
+Part 2: Your Linux desktop/laptop — create the SSH tunnel
+---------------------------------------------------------
+1) Start tunnel (leave it running):
+   ssh -N -L 5901:127.0.0.1:5901 root@<DOM0_IP>
+
+2) Connect TigerVNC Viewer to:
+   127.0.0.1:5901
+
+
+===============================================================================
+SECTION I — Ubuntu installer (inside VNC)
+===============================================================================
+1) Network configuration:
+   - Choose the NIC (it will show a MAC)
+   - IPv4: Manual
+   - Address: 10.25.33.11/24   (VM1 example)
+   - Gateway: 10.25.33.1
+   - DNS: 8.8.8.8
+
+2) SSH setup:
+   - Enable "Install OpenSSH server"
+
+3) Create user:
+   - Username: david
+   - Password: calvin123
+
+4) Finish install and reboot.
+
+
+===============================================================================
+SECTION J — After reboot: VNC usually breaks (dom-id changes). Fix it.
+===============================================================================
+Why this happens:
+  - Xen assigns a new dom-id each time the VM starts (and also after any reboot).
+  - QEMU exposes VNC as a unix socket named with that dom-id:
+      /var/run/xen/vnc-<DOMID>
+  - Therefore, your VNC proxy (socat) MUST be updated to the new socket.
+
+What you can and can’t prevent:
+  - You cannot “pin” a dom-id; it is always dynamic.
+  - You CAN prevent frequent dom-id changes by keeping the VM stable:
+      - allocate enough RAM (2–4GiB+ for Ubuntu installer)
+      - allocate enough vCPUs (2+ recommended)
+      - avoid crash loops (check /var/log/xen/qemu-dm-<domid>.log if it keeps restarting)
+
+1) Get the new dom-id:
+   DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+   echo "DOMID=$DOMID"
+   ls -la /var/run/xen/vnc-$DOMID
+
+2) Restart socat to the new socket:
+   pkill socat || true
+   nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+
+Optional: “auto-repoint” helper (recommended)
+---------------------------------------------
+If you’re tired of manually chasing the socket, run this on dom0 (bash).
+It will re-check the current dom-id and restart socat if it changed:
+
+  VM_UUID="<PUT_VM_UUID_HERE>"
+  PORT=5901
+  while true; do
+    DOMID="$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)"
+    SOCK="/var/run/xen/vnc-$DOMID"
+    if [ -S "$SOCK" ]; then
+      # Restart socat only if it is not already pointing at the right socket
+      if ! ps auxww | grep -E "[s]ocat.*TCP-LISTEN:$PORT" | grep -q "$SOCK"; then
+        pkill socat || true
+        nohup socat TCP-LISTEN:$PORT,fork,reuseaddr UNIX-CONNECT:$SOCK >/root/socat-vnc.log 2>&1 &
+        echo "Repointed socat: TCP $PORT -> $SOCK"
+      fi
+    fi
+    sleep 2
+  done
+
+
+===============================================================================
+SECTION K — SSH into the VM (preferred long-term)
+===============================================================================
+From your Linux desktop/laptop:
+   ssh david@10.25.33.11
+
+Note: SSH as root is usually disabled on Ubuntu by default.
+
+
+===============================================================================
+SECTION L — Cleanup (optional)
+===============================================================================
+Stop the VNC proxy on dom0:
+   pkill socat || true
+
+List created objects:
+   xe vm-list uuid=$VM_UUID params=uuid,name-label,power-state
+   xe vbd-list vm-uuid=$VM_UUID params=uuid,type,userdevice,vdi-uuid
+   xe vif-list vm-uuid=$VM_UUID params=uuid,device,MAC,network-uuid
+
+
+===============================================================================
+SECTION M — Create VM2 for 2-VM testing (optional but recommended)
+===============================================================================
+Goal: Create a second Ubuntu VM from ISO so you can prove the workflow works on TWO VMs.
+
+IMPORTANT:
+  - VM2 must use a DIFFERENT IP from VM1 (do NOT reuse 10.25.33.11).
+  - Recommended VM2 IP: 10.25.33.12/24 (same gateway/DNS).
+
+Method:
+  Repeat Sections C→K exactly, but change:
+    - VM name-label: "ubuntu-fresh-2"
+    - Disk name-label: "ubuntu-fresh-2-disk0"
+    - In the Ubuntu installer:
+        Hostname: ubuntu-fresh-2
+        IP:       10.25.33.12/24
+
+SSH test for VM2:
+  ssh david@10.25.33.12
+
+

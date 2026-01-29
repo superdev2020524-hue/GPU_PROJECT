@@ -1,0 +1,271 @@
+================================================================================
+REPORT: Phase 1 Plan + Runbook + Status (single-document version)
+================================================================================
+Platform: XCP-ng (Xen)
+Hardware: NVIDIA H100 80GB PCIe
+Orchestration target (later phases): Apache CloudStack
+
+Purpose of this document:
+- Present Phase 1 requirements, the implemented approach, and a runbook that can
+  be explained and executed without referencing any other document.
+
+================================================================================
+1) Executive summary
+================================================================================
+Phase 1 is a minimal end-to-end proof that:
+- A VM can present a “GPU-like” virtual device (vGPU stub) visible via `lspci`
+- A VM can send a request to a host-side mediation daemon (Dom0 mediator)
+- The mediator can execute a minimal GPU workload (simple CUDA kernel) and return
+  a result to the VM
+- Two VMs can submit workloads without GPU resets, driver crashes, or host
+  instability (basic concurrency demonstration)
+
+This document includes:
+- A requirements checklist aligned to Phase 1
+- A concrete implementation approach for VM↔Dom0 communication and mediation
+- A step-by-step runbook (commands, files, expected outputs)
+- Known gaps and the recommended path to close them
+
+================================================================================
+2) Phase 1 requirements checklist (aligned to project goals)
+================================================================================
+Status meanings:
+- Implemented: design + runbook exist; can be executed to produce evidence
+- Execution-dependent: must be run on the target host/VMs to confirm
+- Not implemented: requires new development work beyond this Phase 1 runbook
+
+1) vGPU stub device visible via `lspci` inside VM
+- Status: NOT IMPLEMENTED (open work item)
+- Requirement: VM must show a “GPU-like” PCIe device enumeration in `lspci`.
+
+2) Reliable VM → host communication path to mediation daemon
+- Status: IMPLEMENTED (execution-dependent)
+- Method: NFS-mounted shared directory + explicit file read/write protocol.
+
+3) Minimal GPU operation executed via mediation layer (simple CUDA kernel)
+- Status: IMPLEMENTED (execution-dependent)
+- Constraint: Dom0 must pass a CUDA sanity test; otherwise use a GPU worker VM.
+
+4) Two-VM concurrency demonstration (no GPU/driver crashes)
+- Status: PARTIAL (execution-dependent; protocol needs per-VM separation)
+
+5) Project report (what worked/failed/barriers/next steps)
+- Status: IMPLEMENTED (this document)
+
+================================================================================
+3) Architecture (Phase 1)
+================================================================================
+High-level flow (network-safe file protocol):
+
+VM client writes command  ─┐
+                           ├──> Shared directory (NFS mount) <──┐
+VM client reads response ──┘                                    │
+                                                                │
+                                                         Dom0 mediator
+                                                     polls + processes + writes
+
+Optional CUDA path:
+Dom0 mediator executes CUDA workload on H100 and returns a status/message line.
+
+Core design choice:
+- Avoid mmap over NFS/sshfs for signaling. Use explicit open/read/close and
+  open/write/close operations to avoid cache/coherency surprises.
+
+================================================================================
+4) Preconditions (what must be true before running)
+================================================================================
+Access:
+- Root access to XCP-ng host (Dom0)
+- Root/sudo access to VM(s)
+
+Host (Dom0) baseline:
+- XCP-ng installed and reachable over SSH
+- `nvidia-smi` works and shows the H100
+- Build tools installed: `gcc`, `make`, kernel headers as needed
+- NFS server packages installed: `nfs-utils`, `rpcbind`
+
+VM baseline:
+- Linux VM with network access to host
+- Build tools installed (gcc/build-essential)
+- NFS client packages installed (`nfs-common` or `nfs-utils`)
+
+================================================================================
+5) Runbook A — Verify environment (host + VM)
+================================================================================
+Host (Dom0):
+- Confirm OS:
+  - `cat /etc/redhat-release`
+- Confirm GPU visibility:
+  - `nvidia-smi`
+- Confirm domains:
+  - `xl list`
+- Get host IP:
+  - `hostname -I` (fallback: `ip -4 addr show`)
+
+VM:
+- Confirm Linux:
+  - `uname -a`
+- Confirm connectivity to host:
+  - `ping -c 3 <host-ip>`
+
+Evidence to capture:
+- Outputs for the above commands (copy into meeting notes or screenshots)
+
+================================================================================
+6) Runbook B — Create a shared directory between Dom0 and VM (NFS)
+================================================================================
+Goal:
+- Provide a shared filesystem path used for Phase 1 command/response exchange.
+
+Important XCP-ng detail:
+- `/dev/shm` is tmpfs. Exporting tmpfs directly via NFS often fails.
+  Recommended workaround: export `/var/vgpu` and point `/dev/shm/vgpu` at it.
+
+Host (Dom0):
+1) Create export directory:
+   - `mkdir -p /var/vgpu`
+   - `chmod 777 /var/vgpu`   (PoC only; tighten later)
+2) Point `/dev/shm/vgpu` at `/var/vgpu`:
+   - Option A (recommended): symlink
+     - `rm -rf /dev/shm/vgpu`
+     - `ln -s /var/vgpu /dev/shm/vgpu`
+   - Option B: bind mount (direction matters)
+     - `mount --bind /var/vgpu /dev/shm/vgpu`
+3) Configure NFS export:
+   - Edit `/etc/exports` and add:
+     - `/var/vgpu *(rw,sync,no_root_squash,no_subtree_check,fsid=1,insecure)`
+4) Start NFS:
+   - `systemctl enable --now rpcbind nfs-server`
+   - `exportfs -rav`
+5) Verify export:
+   - `exportfs -v` (must show `/var/vgpu`)
+
+VM:
+1) Create mount point:
+   - `mkdir -p /mnt/vgpu`
+2) Mount export:
+   - `sudo mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu`
+3) Confirm mounted:
+   - `mount | grep /mnt/vgpu`
+
+Evidence to capture:
+- `exportfs -v` (host) and `mount | grep /mnt/vgpu` (VM)
+
+================================================================================
+7) Runbook C — VM↔Dom0 protocol (network-safe)
+================================================================================
+Files (paths on each side):
+- VM sees:
+  - Command:   `/mnt/vgpu/command.txt`
+  - Response:  `/mnt/vgpu/response.txt`
+- Dom0 sees (same underlying files via `/dev/shm/vgpu` pointer):
+  - Command:   `/dev/shm/vgpu/command.txt`
+  - Response:  `/dev/shm/vgpu/response.txt`
+
+Message format:
+- Response is a single line: `status:message`
+  - `0:Ready` (initial state)
+  - `1:<message>` success
+  - `2:<message>` error
+
+Why not mmap:
+- mmap across NFS/sshfs can yield inconsistent visibility of updates (cache/coherency).
+- Explicit file I/O forces fresh reads and predictable propagation.
+
+================================================================================
+8) Runbook D — Start mediator and run a basic (non-CUDA) round-trip test
+================================================================================
+Mediator responsibilities:
+- Write `0:Ready` to `response.txt` at startup
+- Poll `command.txt` and detect new non-zero commands
+- Write `1:<message>` when a command is processed
+
+VM client responsibilities:
+- Write a command number to `command.txt`
+- Poll `response.txt` until status != 0 (with timeout)
+
+Expected result:
+- VM prints a SUCCESS message
+- Dom0 mediator logs “received command” and “response sent”
+
+Evidence to capture:
+- Dom0 mediator console output
+- VM client output
+
+================================================================================
+9) Runbook E — Enable CUDA in Dom0 (optional; gated)
+================================================================================
+This is the “minimal GPU operation” requirement. It is not assumed; it is tested.
+
+9.1 Dom0 CUDA sanity test (required)
+Goal:
+- Confirm Dom0 can run CUDA runtime calls and allocate/free GPU memory.
+
+PASS criteria:
+- `cudaGetDeviceCount` returns >= 1
+- `cudaMalloc` succeeds and program exits cleanly
+
+FAIL handling:
+- If sanity fails, do NOT force CUDA-in-Dom0. Switch to a GPU passthrough worker VM
+  for GPU execution, and keep Dom0 as the orchestrator/mediator.
+
+9.2 CUDA vector-add test through mediator
+If sanity passes:
+- Add a mediator command code (example):
+  - `1` = run vector-add validation (CUDA kernel)
+  - `2` = return basic GPU info string
+- Expected response example:
+  - `1:Vector add PASSED: 1024 elements, 0 errors (CUDA on H100)`
+
+Evidence to capture:
+- `nvcc --version` (Dom0)
+- Dom0 sanity output
+- VM output showing vector-add PASS response
+
+================================================================================
+10) Two-VM concurrency demo (Phase 1 requirement) — how to make it credible
+================================================================================
+Problem with the simplest protocol:
+- A single shared `command.txt` / `response.txt` can be overwritten when two VMs
+  submit at the same time.
+
+Minimal fix (still Phase 1 simple):
+- Use per-VM files/directories:
+  - `/var/vgpu/vm1/command.txt` + `/var/vgpu/vm1/response.txt`
+  - `/var/vgpu/vm2/command.txt` + `/var/vgpu/vm2/response.txt`
+- Mediator polls both per-VM command files and writes responses back to each VM’s
+  response file.
+
+Success criteria for the demo:
+- VM1 and VM2 can both submit commands repeatedly without GPU reset/driver crash.
+- Logs show both streams processed.
+
+================================================================================
+11) What worked / what didn’t (Phase 1 reality check)
+================================================================================
+What works well in this Phase 1 approach:
+- The NFS + explicit file protocol is easy to validate, debug, and demonstrate.
+- The Dom0 CUDA sanity gate prevents wasted time on configurations where CUDA in Dom0
+  is not feasible.
+
+What is missing or fragile:
+1) vGPU stub PCIe device (guest `lspci` enumeration)
+   - Not implemented in this Phase 1 runbook; requires separate device-model work.
+2) Concurrency correctness
+   - Needs per-VM separation at minimum; queues/scheduling belong to Phase 2.
+3) Dom0 CUDA viability
+   - If sanity fails, the design must shift to GPU execution in a worker VM.
+
+================================================================================
+12) Recommended next steps to fully satisfy Phase 1
+================================================================================
+1) Implement the vGPU stub (PCIe enumeration visible in guest `lspci`).
+2) Update the file protocol to per-VM command/response files (two-VM demo).
+3) Run and capture evidence for:
+   - Host/VM verification outputs
+   - Mediator/client round-trip logs
+   - CUDA sanity + vector-add results (Dom0 or worker VM based on sanity)
+
+================================================================================
+End of report (REPORT1.TXT)
+================================================================================

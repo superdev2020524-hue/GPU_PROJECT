@@ -1,0 +1,325 @@
+================================================================================
+              PHASE 2: SUCCESSFUL STEPS ONLY
+              (Beginner-Friendly Step-by-Step Record)
+================================================================================
+
+Purpose: This file contains ONLY steps that have been verified to work.
+         Each step includes commands, expected outputs, and verification.
+         Errors and troubleshooting are in ERRORS_LOG.txt.
+
+Note: This is a live document. Steps are added only after successful execution.
+
+================================================================================
+                    PREREQUISITE: PHASE 1 COMPLETION
+================================================================================
+
+Before starting Phase 2, ensure Phase 1 (vGPU Stub Device) is complete:
+
+✅ Phase 1 Verification Checklist:
+----------------------------------
+[ ] Custom QEMU 4.2.1 built and installed
+    Command: rpm -q qemu | grep 4.2.1
+    
+[ ] vgpu-stub device available
+    Command: /usr/lib64/xen/bin/qemu-system-i386 -device help | grep vgpu
+    Expected: "vgpu-stub" appears in output
+    
+[ ] qemu-wrapper patched
+    Command: grep "device-model-args from xenstore" /usr/lib64/xen/bin/qemu-wrapper
+    Expected: Code block appears
+    
+[ ] Test VM can boot with vgpu-stub device
+    Command: xe vm-param-set uuid=<VM_UUID> platform:device-model-args="-device vgpu-stub,pool_id=A,priority=medium,vm_id=100"
+    Command: xe vm-start uuid=<VM_UUID>
+    Expected: VM boots successfully
+    
+[ ] Device visible in guest
+    Command (in guest): lspci | grep "Processing accelerators"
+    Expected: Shows "Red Hat, Inc. Device 1111"
+
+Reference: step2(quing)/vgpu-stub_enhance/complete.txt
+
+================================================================================
+                    PHASE 2 SUCCESSFUL STEPS
+================================================================================
+
+=== STEP 1: Environment Verification (Runbook A from REPORT1.TXT) ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Verify host and VM prerequisites before proceeding
+
+Commands to run:
+---------------
+[On Dom0 Host]
+1. cat /etc/redhat-release
+2. nvidia-smi
+3. xl list
+4. hostname -I
+
+[On VM]
+1. uname -a
+2. ping -c 3 <host-ip>
+
+Expected Results:
+----------------
+- nvidia-smi shows H100 GPU
+- xl list shows control domain and VMs
+- VM can ping host
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 2: NFS Shared Directory Setup (Runbook B from REPORT1.TXT) ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Create shared filesystem for VM↔Dom0 communication
+
+[On Dom0 Host]
+---------------
+1. Create export directory:
+   mkdir -p /var/vgpu
+   chmod 777 /var/vgpu
+
+2. Create symlink to /dev/shm:
+   rm -rf /dev/shm/vgpu
+   ln -s /var/vgpu /dev/shm/vgpu
+
+3. Configure NFS export:
+   echo '/var/vgpu *(rw,sync,no_root_squash,no_subtree_check,fsid=1,insecure)' >> /etc/exports
+
+4. Start NFS services:
+   systemctl enable --now rpcbind nfs-server
+   exportfs -rav
+
+5. Verify export:
+   exportfs -v
+
+Expected: Shows /var/vgpu with correct options
+
+[On VM]
+-------
+1. Install NFS client:
+   sudo apt-get install -y nfs-common  # Ubuntu/Debian
+   # OR
+   sudo yum install -y nfs-utils       # CentOS/RHEL
+
+2. Create mount point:
+   sudo mkdir -p /mnt/vgpu
+
+3. Mount NFS share:
+   sudo mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu
+
+4. Verify mount:
+   mount | grep /mnt/vgpu
+
+Expected: Shows mounted NFS filesystem
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 3: Per-VM Directory Structure ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Create separate directories for each VM to avoid conflicts
+
+[On Dom0 Host]
+--------------
+1. Create per-VM directories:
+   mkdir -p /var/vgpu/vm1
+   mkdir -p /var/vgpu/vm2
+   chmod 777 /var/vgpu/vm1
+   chmod 777 /var/vgpu/vm2
+
+2. Initialize response files:
+   echo "0:Ready" > /var/vgpu/vm1/response.txt
+   echo "0:Ready" > /var/vgpu/vm2/response.txt
+   chmod 666 /var/vgpu/vm1/response.txt
+   chmod 666 /var/vgpu/vm2/response.txt
+
+Expected: Directories created and accessible
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 4: Build Mediation Daemon (Dom0) ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Create the mediation daemon that processes VM requests
+
+Source file: To be created in CODE/mediator.c
+
+Build commands:
+--------------
+cd /root/phase2
+gcc -o mediator mediator.c -lpthread
+chmod +x mediator
+
+Expected: Executable created without errors
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 5: Build VM Client Program ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Create client program for VMs to send requests
+
+Source file: To be created in CODE/vm_client.c
+
+Build commands (in VM):
+-----------------------
+cd /root/phase2
+gcc -o vm_client vm_client.c
+chmod +x vm_client
+
+Expected: Executable created without errors
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 6: Test Basic Communication (Non-CUDA) ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Verify file-based communication works
+
+[On Dom0]
+---------
+./mediator
+
+Expected: "Mediator started, polling for commands..."
+
+[On VM1]
+--------
+./vm_client 1
+
+Expected: "SUCCESS: Received response from mediator"
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 7: CUDA Sanity Test (Dom0) ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Verify CUDA works in Dom0 environment
+
+Build and test:
+--------------
+cd /root/phase2
+nvcc -o cuda_sanity cuda_sanity.cu
+./cuda_sanity
+
+Expected:
+- "CUDA Device Count: 1"
+- "cudaMalloc: SUCCESS"
+- "cudaFree: SUCCESS"
+
+If FAILS: Switch to GPU passthrough worker VM approach
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 8: Integrate CUDA into Mediator ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Add CUDA execution capability to mediator
+
+Rebuild with CUDA:
+-----------------
+cd /root/phase2
+nvcc -o mediator mediator.cu -lpthread
+
+Test CUDA command:
+-----------------
+[On VM1]
+./vm_client 1  # Send CUDA test command
+
+Expected: "1:Vector add PASSED: 1024 elements, 0 errors"
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 9: Two-VM Concurrency Test ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Verify two VMs can submit requests without conflicts
+
+[On Dom0]
+---------
+./mediator  # Ensure mediator is running
+
+[On VM1 - in one terminal]
+--------------------------
+while true; do ./vm_client 1; sleep 1; done
+
+[On VM2 - in another terminal]
+-------------------------------
+while true; do ./vm_client 2; sleep 1; done
+
+Expected:
+- Both VMs receive responses
+- No GPU crashes or driver errors
+- Mediator logs show interleaved processing
+
+Monitor on Dom0:
+---------------
+nvidia-smi  # Should show GPU active
+tail -f /var/log/mediator.log  # Check for errors
+
+✅ VERIFICATION: [To be filled after execution]
+
+---
+
+=== STEP 10: Priority Queue Verification ===
+Status: ⏳ NOT YET EXECUTED
+
+Purpose: Verify high-priority requests are processed before low-priority
+
+Test procedure:
+--------------
+1. Start mediator
+2. Submit multiple requests with different priorities
+3. Verify processing order matches priority
+
+Expected: High → Medium → Low ordering within each pool
+
+✅ VERIFICATION: [To be filled after execution]
+
+================================================================================
+                        NOTES FOR BEGINNERS
+================================================================================
+
+Important Tips:
+--------------
+1. Always verify each step before moving to the next
+2. Keep terminal output logs for troubleshooting
+3. If a step fails, check ERRORS_LOG.txt for solutions
+4. Don't skip verification steps
+5. Test with one VM before adding second VM
+
+Common Mistakes to Avoid:
+------------------------
+1. Forgetting to start NFS services
+2. Incorrect file permissions on shared directory
+3. Not mounting NFS in VM before running client
+4. Running mediator without CUDA if sanity test failed
+5. Forgetting to create per-VM directories
+
+Where to Get Help:
+-----------------
+1. Check ERRORS_LOG.txt for known issues
+2. Review COMPLETE_GUIDE.txt for detailed explanations
+3. Check /var/log/daemon.log for system errors
+4. Use nvidia-smi to check GPU state
+
+================================================================================
+End of Successful Steps
+Last Updated: January 24, 2026
+================================================================================

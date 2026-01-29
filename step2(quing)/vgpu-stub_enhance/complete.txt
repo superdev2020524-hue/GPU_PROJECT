@@ -1,0 +1,1008 @@
+================================================================================
+        COMPLETE GUIDE: Building vGPU Stub Device for XCP-ng
+================================================================================
+
+Author: Based on successful implementation January 22, 2026
+Platform: XCP-ng 8.x with QEMU 4.2.1
+Purpose: Build and deploy a custom PCI device (vGPU stub) with properties
+
+This guide provides step-by-step instructions that anyone can follow to
+successfully build, install, and test a vGPU stub device on XCP-ng.
+
+================================================================================
+                              TABLE OF CONTENTS
+================================================================================
+
+Part 1: Overview and Prerequisites
+Part 2: Setting Up the Build Environment
+Part 3: Creating the vGPU Stub Device Source Code
+Part 4: Integrating into QEMU Build System
+Part 5: Building and Installing QEMU
+Part 6: Patching qemu-wrapper (CRITICAL)
+Part 7: Testing with a VM
+Part 8: Verification Inside Guest
+Part 9: Troubleshooting Common Errors
+Part 10: Cleanup and Maintenance
+
+================================================================================
+                      PART 1: OVERVIEW AND PREREQUISITES
+================================================================================
+
+WHAT THIS GUIDE ACCOMPLISHES:
+-----------------------------
+- Builds a custom QEMU with an enhanced vGPU stub PCI device
+- The device appears as "Processing Accelerator" (PCI class 0x1200)
+- Supports custom properties: pool_id, priority, vm_id
+- Device is visible in guest VMs via lspci
+- Properties are accessible via MMIO registers
+
+SYSTEM REQUIREMENTS:
+-------------------
+- XCP-ng 8.x host (tested on XCP-ng 8.2)
+- Xen version 4.17.x
+- QEMU 4.2.1 (XCP-ng patched version)
+- Root access to dom0
+- At least 10GB free disk space
+- Git and RPM build tools
+
+EXPECTED TIME:
+-------------
+- Build process: 30-45 minutes
+- Testing and verification: 10-15 minutes
+- Total: ~1 hour
+
+================================================================================
+                   PART 2: SETTING UP THE BUILD ENVIRONMENT
+================================================================================
+
+Step 1: Create Build Directory
+-------------------------------
+Run these commands on your XCP-ng dom0:
+
+cd ~
+mkdir -p vgpu-build
+cd vgpu-build
+
+Step 2: Install Build Dependencies
+-----------------------------------
+yum install -y rpm-build git git-lfs gcc make python3-devel \
+    glib2-devel pixman-devel zlib-devel
+
+# Initialize Git LFS (required for XCP-ng QEMU repo)
+git lfs install
+
+Step 3: Clone QEMU Repository
+------------------------------
+git clone https://github.com/xcp-ng/qemu.git
+cd qemu
+git checkout v4.2.1-xcp-ng
+
+Expected output: "Switched to branch 'v4.2.1-xcp-ng'"
+
+Step 4: Setup RPM Build Structure
+----------------------------------
+mkdir -p ~/vgpu-build/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+
+# Copy QEMU sources to RPM build directory
+cp qemu-*.tar.* ~/vgpu-build/rpmbuild/SOURCES/
+cp *.patch ~/vgpu-build/rpmbuild/SOURCES/ 2>/dev/null || true
+cp qemu.spec ~/vgpu-build/rpmbuild/SPECS/
+
+# Change to RPM build directory
+cd ~/vgpu-build/rpmbuild
+
+VERIFICATION:
+------------
+Check that these files exist:
+- SOURCES/qemu-4.2.1.tar.gz
+- SPECS/qemu.spec
+
+If missing, verify Git LFS is working:
+git lfs pull
+
+================================================================================
+                 PART 3: CREATING THE vGPU STUB DEVICE SOURCE CODE
+================================================================================
+
+This is the core of our custom device. Create the file in SOURCES directory:
+
+cat > ~/vgpu-build/rpmbuild/SOURCES/vgpu-stub.c << 'EOF'
+/*
+ * Enhanced vGPU Stub PCI Device for XCP-ng
+ * 
+ * Based on STEP1_PCI_STUB_IMPLEMENTATION.txt architecture
+ * Class: Processing Accelerator (0x120000) - Compute-focused, not display
+ * 
+ * Features:
+ * - Minimal PCI device visible in guest lspci
+ * - Custom properties: pool_id, priority, vm_id
+ * - 4KB MMIO region for future communication
+ * - Proper PCI enumeration support
+ * 
+ * Date: January 22, 2026
+ * Platform: XCP-ng 8.x (QEMU 4.2.1)
+ */
+
+#include "qemu/osdep.h"
+#include "hw/pci/pci.h"
+#include "hw/hw.h"
+#include "hw/pci/msi.h"
+#include "qemu/timer.h"
+#include "qom/object.h"
+#include "qemu/module.h"
+#include "sysemu/kvm.h"
+#include "hw/qdev-properties.h"
+#include "qapi/error.h"
+#include <string.h>
+
+#define TYPE_VGPU_STUB "vgpu-stub"
+#define VGPU_STUB(obj) OBJECT_CHECK(VGPUStubState, (obj), TYPE_VGPU_STUB)
+
+/*
+ * Device State Structure
+ * Per STEP1 Section 5: Device state structure (lines 535-545)
+ */
+typedef struct VGPUStubState {
+    PCIDevice parent_obj;
+    
+    /* MMIO region for communication */
+    MemoryRegion mmio;
+    
+    /* Communication registers (for future use) */
+    uint32_t command_reg;
+    uint32_t status_reg;
+    
+    /* Enhanced properties */
+    char *pool_id;      /* "A" or "B" - GPU pool assignment */
+    char *priority;     /* "low", "medium", "high" - scheduling priority */
+    uint32_t vm_id;     /* Unique VM identifier */
+} VGPUStubState;
+
+/*
+ * MMIO Read Handler
+ * Per STEP1 Section 5: BAR MMIO handlers (lines 547-561)
+ */
+static uint64_t vgpu_mmio_read(void *opaque, hwaddr addr, unsigned size)
+{
+    VGPUStubState *s = opaque;
+    uint64_t val = 0;
+    
+    switch (addr) {
+    case 0x000:  /* Command register */
+        val = s->command_reg;
+        break;
+    case 0x004:  /* Status register */
+        val = s->status_reg;
+        break;
+    case 0x008:  /* Pool ID register (ASCII char) */
+        if (s->pool_id && strlen(s->pool_id) > 0) {
+            val = (uint32_t)(s->pool_id[0]);
+        } else {
+            val = (uint32_t)'A';  /* Default pool A */
+        }
+        break;
+    case 0x00C:  /* Priority register (0=low, 1=medium, 2=high) */
+        if (s->priority) {
+            if (strcmp(s->priority, "high") == 0) val = 2;
+            else if (strcmp(s->priority, "medium") == 0) val = 1;
+            else val = 0;
+        } else {
+            val = 1;  /* Default medium */
+        }
+        break;
+    case 0x010:  /* VM ID register */
+        val = s->vm_id;
+        break;
+    default:
+        val = 0;
+        break;
+    }
+    
+    return val;
+}
+
+/*
+ * MMIO Write Handler
+ * Per STEP1 Section 5: BAR MMIO handlers (lines 563-577)
+ */
+static void vgpu_mmio_write(void *opaque, hwaddr addr,
+                            uint64_t val, unsigned size)
+{
+    VGPUStubState *s = opaque;
+    
+    switch (addr) {
+    case 0x000:  /* Command register */
+        s->command_reg = val;
+        s->status_reg = 0x1;  /* Signal command received */
+        break;
+    default:
+        /* Other registers read-only for now */
+        break;
+    }
+}
+
+/*
+ * MMIO Operations Structure
+ * Per STEP1 Section 5: MemoryRegionOps (lines 579-587)
+ */
+static const MemoryRegionOps vgpu_mmio_ops = {
+    .read = vgpu_mmio_read,
+    .write = vgpu_mmio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
+
+/*
+ * Device Realization Function
+ * Per STEP1 Section 5: Device initialization (lines 589-619)
+ * 
+ * Sets up PCI configuration space per STEP1 Section 3 (lines 268-300)
+ */
+static void vgpu_realize(PCIDevice *pci_dev, Error **errp)
+{
+    VGPUStubState *s = VGPU_STUB(pci_dev);
+    
+    /* Set interrupt pin (optional, for future MSI support) */
+    pci_dev->config[PCI_INTERRUPT_PIN] = 1;
+    
+    /* 
+     * Initialize BAR0 (4KB MMIO region)
+     * Per STEP1 Section 3: BAR specification (lines 312-336)
+     */
+    memory_region_init_io(&s->mmio, OBJECT(s), &vgpu_mmio_ops, s,
+                          "vgpu-stub-mmio", 4096);
+    pci_register_bar(pci_dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
+    
+    /* Initialize registers */
+    s->command_reg = 0;
+    s->status_reg = 0;
+    
+    /* Validate and set default properties */
+    if (!s->pool_id || strlen(s->pool_id) == 0) {
+        g_free(s->pool_id);
+        s->pool_id = g_strdup("A");
+    } else {
+        if (strcmp(s->pool_id, "A") != 0 && strcmp(s->pool_id, "B") != 0) {
+            error_setg(errp, "vgpu-stub: pool_id must be 'A' or 'B', got '%s'",
+                       s->pool_id);
+            return;
+        }
+    }
+    
+    if (!s->priority || strlen(s->priority) == 0) {
+        g_free(s->priority);
+        s->priority = g_strdup("medium");
+    } else {
+        if (strcmp(s->priority, "low") != 0 &&
+            strcmp(s->priority, "medium") != 0 &&
+            strcmp(s->priority, "high") != 0) {
+            error_setg(errp, "vgpu-stub: priority must be 'low', 'medium', or 'high', got '%s'",
+                       s->priority);
+            return;
+        }
+    }
+}
+
+/*
+ * Device Cleanup Function
+ */
+static void vgpu_exit(PCIDevice *pci_dev)
+{
+    VGPUStubState *s = VGPU_STUB(pci_dev);
+    g_free(s->pool_id);
+    g_free(s->priority);
+}
+
+/*
+ * Device Properties
+ * Custom properties for pool assignment, priority, and VM identification
+ */
+static Property vgpu_properties[] = {
+    DEFINE_PROP_STRING("pool_id", VGPUStubState, pool_id),
+    DEFINE_PROP_STRING("priority", VGPUStubState, priority),
+    DEFINE_PROP_UINT32("vm_id", VGPUStubState, vm_id, 0),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
+/*
+ * PCI Device Class Initialization
+ * Per STEP1 Section 5: Class initialization (lines 621-632)
+ * 
+ * PCI IDs per STEP1 Section 3 (lines 217-267):
+ * - Vendor: 0x1AF4 (Red Hat) - Standard for virtual devices
+ * - Device: 0x1111 (Custom)
+ * - Class: 0x1200 (Processing Accelerator) ✅
+ *   NOT 0x0300 (VGA) - This is compute-only, not display!
+ */
+static void vgpu_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+    
+    k->realize = vgpu_realize;
+    k->exit = vgpu_exit;
+    k->vendor_id = 0x1AF4;
+    k->device_id = 0x1111;
+    k->revision = 0x01;
+    k->class_id = 0x1200;  /* Processing Accelerator - NOT VGA! */
+    
+    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
+    dc->desc = "Virtual GPU Stub Device (Processing Accelerator)";
+    dc->props = vgpu_properties;
+}
+
+/*
+ * Type Information Structure
+ * Per STEP1 Section 5: Device registration (lines 634-643)
+ */
+static const TypeInfo vgpu_info = {
+    .name          = TYPE_VGPU_STUB,
+    .parent        = TYPE_PCI_DEVICE,
+    .instance_size = sizeof(VGPUStubState),
+    .class_init    = vgpu_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+        { },
+    },
+};
+
+/*
+ * Module Initialization
+ * Per STEP1 Section 5: Type registration (lines 645-650)
+ */
+static void vgpu_register_types(void)
+{
+    type_register_static(&vgpu_info);
+}
+
+type_init(vgpu_register_types)
+EOF
+
+VERIFICATION:
+------------
+ls -lh ~/vgpu-build/rpmbuild/SOURCES/vgpu-stub.c
+# Should show a file around 7-8KB
+
+================================================================================
+                PART 4: INTEGRATING INTO QEMU BUILD SYSTEM
+================================================================================
+
+Now we need to modify the QEMU spec file to include our device.
+
+Step 1: Backup Original Spec File
+----------------------------------
+cp ~/vgpu-build/rpmbuild/SPECS/qemu.spec \
+   ~/vgpu-build/rpmbuild/SPECS/qemu.spec.backup
+
+Step 2: Add vgpu-stub.c as Source3
+-----------------------------------
+Find the line with "Source2:" in the spec file and add Source3 after it:
+
+sed -i '/^Source2:/a Source3: vgpu-stub.c' \
+    ~/vgpu-build/rpmbuild/SPECS/qemu.spec
+
+Step 3: Add Build Integration Code
+-----------------------------------
+Find the section that extracts Source2 (keycodemapdb) and add our code after:
+
+cat >> ~/vgpu-build/rpmbuild/SPECS/qemu.spec.tmp << 'EOF'
+
+# Add vgpu-stub device (per STEP1 Section 5)
+cp -a %{SOURCE3} hw/misc/vgpu-stub.c
+echo "obj-y += vgpu-stub.o" >> hw/misc/Makefile.objs
+
+EOF
+
+# Insert after the keycodemapdb section
+sed -i '/tar xzf.*SOURCE2/a \
+\
+# Add vgpu-stub device (per STEP1 Section 5)\
+cp -a %{SOURCE3} hw/misc/vgpu-stub.c\
+echo "obj-y += vgpu-stub.o" >> hw/misc/Makefile.objs' \
+    ~/vgpu-build/rpmbuild/SPECS/qemu.spec
+
+Step 4: Disable -Werror Flag
+-----------------------------
+The QEMU build treats warnings as errors. We need to disable this:
+
+sed -i 's/--enable-werror/--disable-werror/' \
+    ~/vgpu-build/rpmbuild/SPECS/qemu.spec
+
+VERIFICATION:
+------------
+# Check that all modifications were applied:
+grep "Source3: vgpu-stub.c" ~/vgpu-build/rpmbuild/SPECS/qemu.spec
+grep "vgpu-stub.c" ~/vgpu-build/rpmbuild/SPECS/qemu.spec
+grep "disable-werror" ~/vgpu-build/rpmbuild/SPECS/qemu.spec
+
+All three commands should return matching lines.
+
+================================================================================
+                     PART 5: BUILDING AND INSTALLING QEMU
+================================================================================
+
+Step 1: Start the Build
+------------------------
+cd ~/vgpu-build/rpmbuild
+
+# This will take 30-45 minutes
+rpmbuild -bb SPECS/qemu.spec
+
+Expected progress:
+- Extracting sources...
+- Applying patches...
+- Configuring...
+- Compiling (this is the longest part)...
+- Creating RPM package...
+
+Step 2: Monitor Build Progress
+-------------------------------
+# In another terminal, you can watch:
+tail -f ~/vgpu-build/rpmbuild/BUILD/qemu-4.2.1/build.log
+
+Step 3: Verify Build Success
+-----------------------------
+# Check that RPM was created:
+ls -lh ~/vgpu-build/rpmbuild/RPMS/x86_64/qemu-4.2.1-*.rpm
+
+Expected output: One or more RPM files, around 30-50MB each
+
+Step 4: Install the Custom QEMU
+--------------------------------
+# Stop any running VMs first (IMPORTANT!)
+# List running VMs:
+xe vm-list power-state=running is-control-domain=false
+
+# Stop VMs if any are running:
+# xe vm-shutdown uuid=<UUID> --force
+
+# Install the RPM (--force to overwrite existing)
+rpm -Uvh --nodeps --force ~/vgpu-build/rpmbuild/RPMS/x86_64/qemu-4.2.1-*.rpm
+
+Step 5: Verify Installation
+----------------------------
+# Check QEMU version:
+/usr/lib64/xen/bin/qemu-system-i386 --version
+
+# Check that vgpu-stub device is available:
+/usr/lib64/xen/bin/qemu-system-i386 -device help | grep vgpu
+
+Expected output: Should show "vgpu-stub" in the device list
+
+SUCCESS INDICATOR:
+-----------------
+If you see "vgpu-stub" in the device list, the build was successful!
+
+================================================================================
+                    PART 6: PATCHING qemu-wrapper (CRITICAL)
+================================================================================
+
+This is THE MOST IMPORTANT step! Without this, VMs will fail to start with
+device-model-args.
+
+THE PROBLEM:
+-----------
+The qemu-wrapper script doesn't read device-model-args from XenStore by default.
+We need to add this functionality.
+
+Step 1: Backup Original Wrapper
+--------------------------------
+cp /usr/lib64/xen/bin/qemu-wrapper \
+   /usr/lib64/xen/bin/qemu-wrapper.backup
+
+Step 2: Create the Patch
+-------------------------
+cat > /tmp/qemu-wrapper.patch << 'EOF'
+--- qemu-wrapper.original	2026-01-22 00:00:00.000000000 +0000
++++ qemu-wrapper.patched	2026-01-22 00:00:00.000000000 +0000
+@@ -200,6 +200,18 @@
+     qemu_args.extend(vif_nics)
+     qemu_args.extend(vif_vifs)
+ 
++    # Read additional device-model-args from xenstore (for vgpu-stub)
++    try:
++        extra_args_str = xenstore_read("/local/domain/%d/platform/device-model-args" % domid)
++        if isinstance(extra_args_str, bytes):
++            extra_args_str = extra_args_str.decode('utf-8')
++        if extra_args_str:
++            extra_args = extra_args_str.strip().split()
++            if extra_args:
++                print("Adding device-model-args from xenstore: %s" % extra_args)
++                qemu_args.extend(extra_args)
++    except:
++        pass  # xenstore key does not exist, which is fine
++
+     print("Exec: %s %s" % (qemu_bin, " ".join(qemu_args)))
+     os.execv(qemu_bin, [qemu_bin] + qemu_args)
+ 
+EOF
+
+Step 3: Apply the Patch Manually
+---------------------------------
+# We'll add the code right before the final "Exec:" line
+
+# Find the line number where we need to insert
+LINE_NUM=$(grep -n 'print("Exec: %s %s"' /usr/lib64/xen/bin/qemu-wrapper | cut -d: -f1)
+
+# Insert our code before that line
+sed -i "${LINE_NUM}i\\
+\\
+    # Read additional device-model-args from xenstore (for vgpu-stub)\\
+    try:\\
+        extra_args_str = xenstore_read(\"/local/domain/%d/platform/device-model-args\" % domid)\\
+        if isinstance(extra_args_str, bytes):\\
+            extra_args_str = extra_args_str.decode('utf-8')\\
+        if extra_args_str:\\
+            extra_args = extra_args_str.strip().split()\\
+            if extra_args:\\
+                print(\"Adding device-model-args from xenstore: %s\" % extra_args)\\
+                qemu_args.extend(extra_args)\\
+    except:\\
+        pass  # xenstore key does not exist, which is fine" \
+/usr/lib64/xen/bin/qemu-wrapper
+
+Step 4: Verify the Patch
+-------------------------
+# Check that the new code was added:
+grep -A 12 "Read additional device-model-args" /usr/lib64/xen/bin/qemu-wrapper
+
+You should see the full code block we added.
+
+CRITICAL NOTE:
+-------------
+This patch fixes the TypeError that occurs when xenstore_read returns bytes
+instead of a string in Python 3. The decode('utf-8') is ESSENTIAL.
+
+================================================================================
+                        PART 7: TESTING WITH A VM
+================================================================================
+
+Now we'll test the vGPU stub device with an actual VM.
+
+Step 1: Choose or Create a Test VM
+-----------------------------------
+# List available VMs:
+xe vm-list is-control-domain=false params=name-label,uuid,power-state
+
+# Choose a halted VM or create a new one for testing
+
+Step 2: Add vGPU Stub Device to VM
+-----------------------------------
+# Replace <VM_UUID> with your VM's UUID
+VM_UUID="<YOUR_VM_UUID>"
+
+# Add the device with custom properties:
+xe vm-param-set uuid=$VM_UUID \
+  platform:device-model-args="-device vgpu-stub,pool_id=B,priority=high,vm_id=200"
+
+# Verify it was set:
+xe vm-param-get uuid=$VM_UUID param-name=platform param-key=device-model-args
+
+Expected output: -device vgpu-stub,pool_id=B,priority=high,vm_id=200
+
+Step 3: Start the VM
+--------------------
+xe vm-start uuid=$VM_UUID
+
+# Wait a few seconds for it to boot
+sleep 8
+
+# Check VM status:
+xe vm-list uuid=$VM_UUID params=name-label,power-state,dom-id
+
+Expected output: power-state should be "running" and dom-id should be a number
+(not -1)
+
+Step 4: Verify QEMU Command Line
+---------------------------------
+VM_DOMID=$(xe vm-list uuid=$VM_UUID params=dom-id --minimal)
+
+# Check that device-model-args were passed to QEMU:
+grep "qemu-dm-$VM_DOMID.*vgpu-stub" /var/log/daemon.log | tail -3
+
+Expected output: You should see:
+1. "Adding device-model-args from xenstore: ['-device', 'vgpu-stub,...']"
+2. The full QEMU command line ending with "-device vgpu-stub,pool_id=B,priority=high,vm_id=200"
+
+SUCCESS INDICATOR:
+-----------------
+If the VM starts successfully and you see the device in the QEMU command line,
+the integration is working!
+
+================================================================================
+                    PART 8: VERIFICATION INSIDE GUEST
+================================================================================
+
+Now we need to verify that the device appears inside the guest VM.
+
+Step 1: Access the Guest VM
+----------------------------
+# SSH into the VM or use VNC console
+# Get VM IP address:
+xe vm-param-get uuid=$VM_UUID param-name=networks
+
+# Or use XenCenter/Xen Orchestra console
+
+Step 2: Check Device with lspci
+--------------------------------
+# Inside the guest VM, run:
+lspci
+
+Expected output: You should see a line like:
+00:06.0 Processing accelerators: Red Hat, Inc. Device 1111 (rev 01)
+
+Step 3: Get Detailed Device Information
+----------------------------------------
+# Find the device address from lspci output (e.g., 00:06.0)
+lspci -vvv -s 00:06.0
+
+Expected output:
+- Subsystem: Red Hat, Inc.
+- Region 0: Memory at <address> (32-bit, non-prefetchable) [size=4K]
+- Interrupt: pin A routed to IRQ <number>
+
+Step 4: Test MMIO Register Access (Optional but Recommended)
+-------------------------------------------------------------
+Create a test program to read the MMIO registers:
+
+# Inside guest VM:
+cat > /tmp/test_vgpu.c << 'TESTEOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#define PCI_RESOURCE "/sys/bus/pci/devices/0000:00:06.0/resource0"
+
+int main() {
+    int fd = open(PCI_RESOURCE, O_RDWR | O_SYNC);
+    if (fd < 0) {
+        perror("Failed to open (try as root)");
+        return 1;
+    }
+    
+    volatile uint32_t *mmio = mmap(NULL, 4096, PROT_READ | PROT_WRITE, 
+                                    MAP_SHARED, fd, 0);
+    if (mmio == MAP_FAILED) {
+        perror("mmap failed");
+        close(fd);
+        return 1;
+    }
+    
+    printf("=== vGPU Stub Properties ===\n");
+    printf("Pool ID:  '%c' (expected: 'B')\n", (char)mmio[0x008/4]);
+    printf("Priority: %u (expected: 2=high)\n", mmio[0x00C/4]);
+    printf("VM ID:    %u (expected: 200)\n", mmio[0x010/4]);
+    
+    munmap((void*)mmio, 4096);
+    close(fd);
+    return 0;
+}
+TESTEOF
+
+# Compile and run:
+gcc /tmp/test_vgpu.c -o /tmp/test_vgpu
+sudo /tmp/test_vgpu
+
+Expected output:
+Pool ID:  'B' (expected: 'B')
+Priority: 2 (expected: 2=high)
+VM ID:    200 (expected: 200)
+
+SUCCESS INDICATOR:
+-----------------
+If all values match, the device is fully functional with all properties working!
+
+================================================================================
+                   PART 9: TROUBLESHOOTING COMMON ERRORS
+================================================================================
+
+ERROR 1: RPM Build Fails with "werror" Warnings
+-----------------------------------------------
+SYMPTOM: Build stops with compilation warnings treated as errors
+SOLUTION: Verify --disable-werror was added to spec file:
+  grep "disable-werror" ~/vgpu-build/rpmbuild/SPECS/qemu.spec
+
+ERROR 2: RPM Installation Conflicts
+-----------------------------------
+SYMPTOM: rpm -Uvh fails with "file conflicts"
+SOLUTION: Use --force flag:
+  rpm -Uvh --nodeps --force ~/vgpu-build/rpmbuild/RPMS/x86_64/qemu-4.2.1-*.rpm
+
+ERROR 3: VM Fails to Start (Domain ID: -1)
+------------------------------------------
+SYMPTOM: xe vm-start succeeds but power-state remains "halted"
+CAUSE: qemu-wrapper not reading device-model-args correctly
+SOLUTION: 
+  1. Verify patch was applied:
+     grep "device-model-args from xenstore" /usr/lib64/xen/bin/qemu-wrapper
+  2. Check for Python errors in logs:
+     tail -50 /var/log/daemon.log | grep -i error
+  3. Ensure the decode('utf-8') line is present (Python 3 fix)
+
+ERROR 4: TypeError in qemu-wrapper
+----------------------------------
+SYMPTOM: "TypeError: sequence item 69: expected str instance, bytes found"
+CAUSE: xenstore_read returns bytes in Python 3, not string
+SOLUTION: The patch includes this fix. Verify these lines exist:
+  if isinstance(extra_args_str, bytes):
+      extra_args_str = extra_args_str.decode('utf-8')
+
+ERROR 5: Device Not Visible in Guest lspci
+------------------------------------------
+SYMPTOM: lspci doesn't show the vGPU stub device
+CAUSE: Device wasn't passed to QEMU or VM needs reboot
+SOLUTION:
+  1. Check QEMU command line: grep qemu-dm-<domid> /var/log/daemon.log
+  2. Ensure device-model-args contain "-device vgpu-stub"
+  3. Try shutting down and restarting VM (not just reboot)
+
+ERROR 6: Build Fails - "vgpu-stub.c: No such file"
+--------------------------------------------------
+SYMPTOM: RPM build can't find vgpu-stub.c
+CAUSE: File not in SOURCES directory or not listed in spec
+SOLUTION:
+  1. Verify file exists: ls ~/vgpu-build/rpmbuild/SOURCES/vgpu-stub.c
+  2. Check Source3 line in spec: grep "Source3:" SPECS/qemu.spec
+
+ERROR 7: QMP Failure / Incompatible QEMU
+----------------------------------------
+SYMPTOM: VM starts but immediately shuts down, QMP errors in log
+CAUSE: Wrong QEMU version or missing patches
+SOLUTION:
+  1. Ensure you're using v4.2.1-xcp-ng branch
+  2. Rebuild from clean checkout
+  3. Verify RPM version: rpm -qa | grep qemu
+
+================================================================================
+                   PART 10: CLEANUP AND MAINTENANCE
+================================================================================
+
+Removing the Device from a VM
+-----------------------------
+xe vm-param-remove uuid=<VM_UUID> param-name=platform param-key=device-model-args
+
+Restoring Original QEMU
+-----------------------
+# First, stop all VMs with vgpu-stub
+# Then reinstall original QEMU from XCP-ng repo:
+yum reinstall qemu-dp
+
+Restoring Original qemu-wrapper
+-------------------------------
+cp /usr/lib64/xen/bin/qemu-wrapper.backup \
+   /usr/lib64/xen/bin/qemu-wrapper
+
+Cleaning Build Directory
+------------------------
+rm -rf ~/vgpu-build
+
+Verifying System State
+----------------------
+# Check QEMU version:
+rpm -q qemu-dp
+
+# Check running VMs:
+xe vm-list power-state=running
+
+# Check logs for errors:
+tail -100 /var/log/daemon.log
+
+================================================================================
+                          FINAL VERIFICATION CHECKLIST
+================================================================================
+
+Before considering the implementation complete, verify:
+
+[✓] QEMU build completed successfully without errors
+[✓] Custom RPM installed: rpm -q qemu | grep 4.2.1
+[✓] Device available: qemu-system-i386 -device help | grep vgpu
+[✓] qemu-wrapper patched: grep "device-model-args from xenstore" /usr/lib64/xen/bin/qemu-wrapper
+[✓] Test VM boots successfully with device-model-args set
+[✓] VM has non-negative domain ID when running
+[✓] QEMU command line contains "-device vgpu-stub" in logs
+[✓] Device visible in guest: lspci shows "Processing accelerators: Red Hat"
+[✓] Device has 4KB MMIO region: lspci -vvv shows Region 0
+[✓] MMIO registers readable (optional but recommended)
+[✓] Properties correct: pool_id, priority, vm_id match expectations
+
+================================================================================
+                              USAGE EXAMPLES
+================================================================================
+
+Example 1: Basic Device with Default Properties
+-----------------------------------------------
+xe vm-param-set uuid=<VM_UUID> \
+  platform:device-model-args="-device vgpu-stub"
+
+# Uses defaults: pool_id=A, priority=medium, vm_id=0
+
+Example 2: High Priority in Pool B
+----------------------------------
+xe vm-param-set uuid=<VM_UUID> \
+  platform:device-model-args="-device vgpu-stub,pool_id=B,priority=high,vm_id=100"
+
+Example 3: Multiple Properties
+------------------------------
+xe vm-param-set uuid=<VM_UUID> \
+  platform:device-model-args="-device vgpu-stub,pool_id=A,priority=low,vm_id=42"
+
+Example 4: Adding Multiple Devices (Future)
+-------------------------------------------
+# Currently, only one device per VM is tested, but you could potentially:
+xe vm-param-set uuid=<VM_UUID> \
+  platform:device-model-args="-device vgpu-stub,id=gpu0,pool_id=A -device vgpu-stub,id=gpu1,pool_id=B"
+
+================================================================================
+                           TECHNICAL REFERENCE
+================================================================================
+
+PCI Device Details
+-----------------
+Vendor ID:    0x1AF4 (Red Hat, Inc.)
+Device ID:    0x1111 (Custom)
+Class Code:   0x1200 (Processing Accelerator)
+Revision:     0x01
+BAR0:         4KB MMIO region
+Interrupt:    Pin A (for future use)
+
+MMIO Register Map
+----------------
+Offset  | Size | Access | Description
+--------|------|--------|-----------------------------------
+0x000   | 4B   | R/W    | Command register
+0x004   | 4B   | RO     | Status register
+0x008   | 4B   | RO     | Pool ID (ASCII character)
+0x00C   | 4B   | RO     | Priority (0=low, 1=medium, 2=high)
+0x010   | 4B   | RO     | VM ID (32-bit unsigned integer)
+0x014+  | -    | RO     | Reserved (reads as 0)
+
+Properties
+----------
+pool_id   : String, "A" or "B" (default: "A")
+priority  : String, "low", "medium", or "high" (default: "medium")
+vm_id     : Integer, 0-4294967295 (default: 0)
+
+XenStore Integration
+-------------------
+Key: /local/domain/<domid>/platform/device-model-args
+Format: Space-separated QEMU arguments
+Example: "-device vgpu-stub,pool_id=B,priority=high,vm_id=200"
+
+Files Modified
+-------------
+1. /usr/lib64/xen/bin/qemu-system-i386 (replaced by custom build)
+2. /usr/lib64/xen/bin/qemu-wrapper (patched to read xenstore)
+
+Build Requirements
+-----------------
+- Disk space: ~10GB
+- Memory: 4GB+ recommended
+- Time: 30-45 minutes
+- Network: Required for git clone
+
+================================================================================
+                            SUPPORT AND NOTES
+================================================================================
+
+Known Limitations
+----------------
+1. Only tested with HVM guests (not PV)
+2. Single device per VM tested (multiple devices untested)
+3. Hot-plug/unplug not implemented
+4. MSI interrupts not implemented (uses legacy interrupts)
+5. No driver package for guest OS (reads via /sys/bus/pci)
+
+Future Enhancements
+------------------
+- MSI-X interrupt support
+- Hot-plug capability
+- Guest driver for easier access
+- Additional MMIO registers
+- DMA support
+- Multiple devices per VM
+
+Performance Considerations
+-------------------------
+- MMIO accesses cause VM exits (normal for emulated devices)
+- Minimal overhead when device is not actively accessed
+- No impact on VMs without the device
+
+Security Notes
+-------------
+- Device requires root access in guest to read MMIO
+- No DMA capability (can't access guest memory)
+- Runs in QEMU sandbox with restricted privileges
+- Properties are read-only from guest perspective
+
+Compatibility
+------------
+Tested on:
+- XCP-ng 8.2 with Xen 4.17.5
+- Ubuntu 22.04 guest (kernel 5.15)
+- CentOS 7/8 guests
+
+Should work on:
+- XCP-ng 8.x series
+- XenServer 8.x (untested)
+- Most Linux guests with PCI support
+
+================================================================================
+                              SUCCESS STORY
+================================================================================
+
+Implementation Date: January 22, 2026
+Test VM: Test-2 (UUID: 8c934907-befb-756e-c6fe-91d721291d2b)
+Configuration: pool_id=B, priority=high, vm_id=200
+Result: ✅ COMPLETE SUCCESS - FULLY VERIFIED
+
+Guest Output:
+-------------
+lspci showed:
+00:06.0 Processing accelerators: Red Hat, Inc. Device 1111 (rev 01)
+
+lspci -vvv showed:
+- 4KB MMIO region at f1843000
+- Interrupt pin A routed to IRQ 40
+- All properties accessible
+
+QEMU Log Confirmation:
+---------------------
+"Adding device-model-args from xenstore: ['-device', 'vgpu-stub,pool_id=B,priority=high,vm_id=200']"
+"Exec: /usr/lib64/xen/bin/qemu-system-i386 ... -device vgpu-stub,pool_id=B,priority=high,vm_id=200"
+
+MMIO Register Verification (Guest Test Program):
+------------------------------------------------
+root@test2:/tmp# ./test_vgpu_stub 
+=== vGPU Stub MMIO Register Test ===
+
+✅ Successfully mapped MMIO region
+
+Register Values:
+  0x000 (Command):  0x00000000
+  0x004 (Status):   0x00000000
+  0x008 (Pool ID):  0x00000042 = 'B'
+  0x00C (Priority): 0x00000002 = high
+  0x010 (VM ID):    0x000000c8 = 200
+
+Expected Values (from QEMU args):
+  Pool ID:  'B' (0x42)
+  Priority: high (2)
+  VM ID:    200 (0xC8)
+
+✅ SUCCESS! All properties match!
+
+Complete Integration Chain Verified:
+------------------------------------
+1. ✅ XenStore stores device-model-args correctly
+2. ✅ qemu-wrapper reads from XenStore (with Python 3 decode fix)
+3. ✅ QEMU receives device arguments and initializes vgpu-stub
+4. ✅ Device appears on guest PCI bus with correct class (0x1200)
+5. ✅ 4KB MMIO region mapped in guest physical address space
+6. ✅ MMIO registers contain correct property values
+7. ✅ Guest software can read properties successfully
+
+This confirms the COMPLETE end-to-end functionality of the vGPU stub device
+with full property support and guest accessibility!
+
+================================================================================
+                                  END
+================================================================================
+
+This completes the comprehensive guide for building and deploying the vGPU
+stub device on XCP-ng. If you followed all steps correctly, you should now
+have a fully functional custom PCI device visible in your VMs.
+
+For questions or issues not covered in the troubleshooting section, review:
+1. /var/log/daemon.log for QEMU errors
+2. Build logs in ~/vgpu-build/rpmbuild/BUILD/
+3. XCP-ng documentation at docs.xcp-ng.org
+
+Document Version: 1.0
+Last Updated: January 22, 2026
+Status: Verified and tested successfully

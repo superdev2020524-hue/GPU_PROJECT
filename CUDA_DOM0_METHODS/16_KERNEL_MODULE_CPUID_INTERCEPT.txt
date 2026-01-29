@@ -1,0 +1,158 @@
+================================================================================
+                    METHOD 16: Kernel Module to Intercept CPUID
+                    Intercept CPUID at kernel level to hide hypervisor bit
+================================================================================
+
+STATUS: [ ] NOT STARTED
+PRIORITY: HIGH (Most viable remaining method)
+COMPLEXITY: HIGH (Requires kernel module development)
+
+OBJECTIVE:
+----------
+Create a kernel module that intercepts CPUID instruction execution and modifies
+the ECX register result to clear the hypervisor bit (bit 19 = 0x80000) before
+returning to userspace. This will make CUDA think it's not running in a VM.
+
+HOW IT WORKS:
+-------------
+1. Kernel module registers a CPUID handler
+2. When CPUID is executed, kernel intercepts it
+3. Kernel clears bit 19 (0x80000) from ECX register
+4. Modified result returned to CUDA
+5. CUDA doesn't detect virtualization
+
+REQUIREMENTS:
+-------------
+- Kernel headers: /usr/src/kernels/$(uname -r) or /lib/modules/$(uname -r)/build
+- GCC compiler
+- Make utility
+- Root access
+- Kernel module development knowledge
+
+STEPS:
+------
+
+STEP 1: Check kernel headers availability
+------------------------------------------
+```bash
+# Check kernel version
+uname -r
+
+# Check if kernel headers exist
+ls -la /usr/src/kernels/$(uname -r) 2>/dev/null
+ls -la /lib/modules/$(uname -r)/build 2>/dev/null
+
+# Check if kernel source/config available
+ls -la /boot/config-$(uname -r) 2>/dev/null
+```
+
+STEP 2: Install kernel headers (if needed)
+------------------------------------------
+```bash
+# For XCP-ng/CentOS/RHEL
+yum install kernel-devel kernel-headers -y
+
+# Verify installation
+ls -la /usr/src/kernels/$(uname -r)
+```
+
+STEP 3: Create kernel module directory
+---------------------------------------
+```bash
+mkdir -p ~/cpuid_intercept_module
+cd ~/cpuid_intercept_module
+```
+
+STEP 4: Create Makefile
+------------------------
+```bash
+cat << 'EOF' > Makefile
+obj-m += cpuid_intercept.o
+
+KDIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+
+default:
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
+
+clean:
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
+EOF
+```
+
+STEP 5: Create kernel module source code
+----------------------------------------
+See file: 16_cpuid_intercept_module.c
+
+STEP 6: Compile the module
+--------------------------
+```bash
+make
+
+# Check if module compiled successfully
+ls -la cpuid_intercept.ko
+```
+
+STEP 7: Test loading the module
+--------------------------------
+```bash
+# Load module
+insmod cpuid_intercept.ko
+
+# Check if loaded
+lsmod | grep cpuid_intercept
+
+# Check dmesg for errors
+dmesg | tail -20
+
+# Verify CPUID is intercepted
+# Run a test program that uses CPUID
+```
+
+STEP 8: Test CUDA
+-----------------
+```bash
+# Test CUDA with module loaded
+/tmp/detailed_cuda_error
+
+# Check if error 801 is gone
+```
+
+STEP 9: Make module load at boot (if successful)
+-------------------------------------------------
+```bash
+# Copy module to system location
+cp cpuid_intercept.ko /lib/modules/$(uname -r)/extra/
+
+# Create modprobe config
+echo "cpuid_intercept" > /etc/modules-load.d/cpuid_intercept.conf
+
+# Update module dependencies
+depmod -a
+```
+
+ROLLBACK:
+---------
+If module causes issues:
+```bash
+# Remove module
+rmmod cpuid_intercept
+
+# Remove from boot
+rm /etc/modules-load.d/cpuid_intercept.conf
+depmod -a
+```
+
+RISKS:
+------
+- Kernel module can crash system if buggy
+- May interfere with other software that needs CPUID
+- Requires kernel recompilation if kernel updates
+- May break Xen functionality
+
+NEXT FILE: 16_cpuid_intercept_module.c (module source code)
+
+================================================================================
+                              END OF METHOD 16
+================================================================================
+

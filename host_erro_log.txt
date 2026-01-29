@@ -1,0 +1,1139 @@
+[08:05 xcp-ng-syovfxoz qemu]# touch .git-submodule-status
+[08:05 xcp-ng-syovfxoz qemu]# make -j$(nproc) 2>&1 | tee build-xcp-ng-clean.log
+  GEN     ui/input-keymap-linux-to-qcode.c
+  GEN     ui/input-keymap-atset1-to-qcode.c
+  GEN     ui/input-keymap-qcode-to-atset2.c
+  GEN     ui/input-keymap-qcode-to-atset1.c
+  GEN     ui/input-keymap-qcode-to-atset3.c
+  GEN     ui/input-keymap-qcode-to-linux.c
+  GEN     ui/input-keymap-qcode-to-sun.c
+  GEN     ui/input-keymap-qcode-to-qnum.c
+  GEN     ui/input-keymap-qnum-to-qcode.c
+  GEN     ui/input-keymap-usb-to-qcode.c
+  GEN     ui/input-keymap-win32-to-qcode.c
+  GEN     ui/input-keymap-x11-to-qcode.c
+  GEN     ui/input-keymap-xorgevdev-to-qcode.c
+  GEN     ui/input-keymap-xorgkbd-to-qcode.c
+  GEN     ui/input-keymap-xorgxquartz-to-qcode.c
+  GEN     ui/input-keymap-xorgxwin-to-qcode.c
+  GEN     tests/test-qapi-gen
+  GEN     trace-root.h
+  GEN     util/trace.h
+  GEN     crypto/trace.h
+  GEN     io/trace.h
+  GEN     migration/trace.h
+  GEN     block/trace.h
+  GEN     chardev/trace.h
+  GEN     hw/block/trace.h
+  GEN     hw/block/dataplane/trace.h
+  GEN     hw/char/trace.h
+  GEN     hw/intc/trace.h
+  GEN     hw/net/trace.h
+  GEN     hw/rdma/trace.h
+  GEN     hw/rdma/vmw/trace.h
+  GEN     hw/virtio/trace.h
+  GEN     hw/audio/trace.h
+  GEN     hw/misc/trace.h
+  GEN     hw/misc/macio/trace.h
+  GEN     hw/usb/trace.h
+  GEN     hw/scsi/trace.h
+  GEN     hw/nvram/trace.h
+  GEN     hw/display/trace.h
+  GEN     hw/input/trace.h
+  GEN     hw/timer/trace.h
+  GEN     hw/dma/trace.h
+  GEN     hw/sparc/trace.h
+  GEN     hw/sparc64/trace.h
+  GEN     hw/sd/trace.h
+  GEN     hw/isa/trace.h
+  GEN     hw/mem/trace.h
+  GEN     hw/i386/trace.h
+  GEN     hw/i386/xen/trace.h
+  GEN     hw/9pfs/trace.h
+  GEN     hw/ppc/trace.h
+  GEN     hw/pci/trace.h
+  GEN     hw/pci-host/trace.h
+  GEN     hw/s390x/trace.h
+  GEN     hw/vfio/trace.h
+  GEN     hw/acpi/trace.h
+  GEN     hw/arm/trace.h
+  GEN     hw/alpha/trace.h
+  GEN     hw/hppa/trace.h
+  GEN     hw/xen/trace.h
+  GEN     hw/ide/trace.h
+  GEN     hw/tpm/trace.h
+  GEN     ui/trace.h
+  GEN     audio/trace.h
+  GEN     net/trace.h
+  GEN     target/arm/trace.h
+  GEN     target/i386/trace.h
+  GEN     target/mips/trace.h
+  GEN     target/sparc/trace.h
+  GEN     target/s390x/trace.h
+  GEN     target/ppc/trace.h
+  GEN     qom/trace.h
+  GEN     linux-user/trace.h
+  GEN     qapi/trace.h
+  GEN     accel/tcg/trace.h
+  GEN     accel/kvm/trace.h
+  GEN     nbd/trace.h
+  GEN     scsi/trace.h
+  GEN     trace-root.c
+  GEN     util/trace.c
+  GEN     crypto/trace.c
+  GEN     io/trace.c
+  GEN     migration/trace.c
+  GEN     block/trace.c
+  GEN     chardev/trace.c
+  GEN     hw/block/trace.c
+  GEN     hw/block/dataplane/trace.c
+  GEN     hw/char/trace.c
+  GEN     hw/intc/trace.c
+  GEN     hw/net/trace.c
+  GEN     hw/rdma/trace.c
+  GEN     hw/rdma/vmw/trace.c
+  GEN     hw/virtio/trace.c
+  GEN     hw/audio/trace.c
+  GEN     hw/misc/trace.c
+  GEN     hw/misc/macio/trace.c
+  GEN     hw/usb/trace.c
+  GEN     hw/scsi/trace.c
+  GEN     hw/nvram/trace.c
+  GEN     hw/display/trace.c
+  GEN     hw/input/trace.c
+  GEN     hw/timer/trace.c
+  GEN     hw/dma/trace.c
+  GEN     hw/sparc/trace.c
+  GEN     hw/sparc64/trace.c
+  GEN     hw/sd/trace.c
+  GEN     hw/isa/trace.c
+  GEN     hw/mem/trace.c
+  GEN     hw/i386/trace.c
+  GEN     hw/i386/xen/trace.c
+  GEN     hw/9pfs/trace.c
+  GEN     hw/ppc/trace.c
+  GEN     hw/pci/trace.c
+  GEN     hw/pci-host/trace.c
+  GEN     hw/s390x/trace.c
+  GEN     hw/vfio/trace.c
+  GEN     hw/acpi/trace.c
+  GEN     hw/arm/trace.c
+  GEN     hw/alpha/trace.c
+  GEN     hw/hppa/trace.c
+  GEN     hw/xen/trace.c
+  GEN     hw/ide/trace.c
+  GEN     hw/tpm/trace.c
+  GEN     ui/trace.c
+  GEN     audio/trace.c
+  GEN     net/trace.c
+  GEN     target/arm/trace.c
+  GEN     target/i386/trace.c
+  GEN     target/mips/trace.c
+  GEN     target/sparc/trace.c
+  GEN     target/s390x/trace.c
+  GEN     target/ppc/trace.c
+  GEN     qom/trace.c
+  GEN     linux-user/trace.c
+  GEN     qapi/trace.c
+  GEN     accel/tcg/trace.c
+  GEN     accel/kvm/trace.c
+  GEN     nbd/trace.c
+  GEN     scsi/trace.c
+  CC      tests/qemu-iotests/socket_scm_helper.o
+  GEN     docs/version.texi
+  GEN     qemu-options.texi
+  GEN     qemu-monitor.texi
+  GEN     qemu-img-cmds.texi
+  GEN     qemu-monitor-info.texi
+  GEN     qemu-nbd.8
+  GEN     qemu-ga.8
+  GEN     qga/qapi-generated/qapi-gen
+  GEN     docs/qemu-block-drivers.7
+  CC      qapi/qapi-builtin-types.o
+  CC      qapi/qapi-types.o
+  CC      qapi/qapi-types-block-core.o
+  CC      qapi/qapi-types-block.o
+  CC      qapi/qapi-types-char.o
+  CC      qapi/qapi-types-common.o
+  CC      qapi/qapi-types-crypto.o
+  CC      qapi/qapi-types-introspect.o
+  CC      qapi/qapi-types-migration.o
+  CC      qapi/qapi-types-misc.o
+  CC      qapi/qapi-types-net.o
+  CC      qapi/qapi-types-rocker.o
+  CC      qapi/qapi-types-run-state.o
+  CC      qapi/qapi-types-sockets.o
+  CC      qapi/qapi-types-tpm.o
+  CC      qapi/qapi-types-transaction.o
+  CC      qapi/qapi-types-trace.o
+  CC      qapi/qapi-types-ui.o
+  CC      qapi/qapi-builtin-visit.o
+  CC      qapi/qapi-visit.o
+  CC      qapi/qapi-visit-block-core.o
+  CC      qapi/qapi-visit-block.o
+  CC      qapi/qapi-visit-char.o
+  CC      qapi/qapi-visit-common.o
+  CC      qapi/qapi-visit-crypto.o
+  CC      qapi/qapi-visit-introspect.o
+  CC      qapi/qapi-visit-migration.o
+  CC      qapi/qapi-visit-misc.o
+  CC      qapi/qapi-visit-net.o
+  CC      qapi/qapi-visit-rocker.o
+  CC      qapi/qapi-visit-run-state.o
+  CC      qapi/qapi-visit-sockets.o
+  CC      qapi/qapi-visit-tpm.o
+  CC      qapi/qapi-visit-trace.o
+  CC      qapi/qapi-visit-transaction.o
+  CC      qapi/qapi-visit-ui.o
+  CC      qapi/qapi-events.o
+  CC      qapi/qapi-events-block-core.o
+  CC      qapi/qapi-events-block.o
+  CC      qapi/qapi-events-char.o
+  CC      qapi/qapi-events-common.o
+  CC      qapi/qapi-events-crypto.o
+  CC      qapi/qapi-events-introspect.o
+  CC      qapi/qapi-events-migration.o
+  CC      qapi/qapi-events-misc.o
+  CC      qapi/qapi-events-net.o
+  CC      qapi/qapi-events-rocker.o
+  CC      qapi/qapi-events-run-state.o
+  CC      qapi/qapi-events-sockets.o
+  CC      qapi/qapi-events-tpm.o
+  CC      qapi/qapi-events-trace.o
+  CC      qapi/qapi-events-transaction.o
+  CC      qapi/qapi-events-ui.o
+  CC      qapi/qapi-introspect.o
+  CC      logging.o
+  CC      qapi/qapi-visit-core.o
+  CC      qapi/qapi-dealloc-visitor.o
+  CC      qapi/qobject-input-visitor.o
+  CC      qapi/qobject-output-visitor.o
+  CC      qapi/qmp-registry.o
+  CC      qapi/qmp-dispatch.o
+  CC      qapi/string-input-visitor.o
+  CC      qapi/string-output-visitor.o
+  CC      qapi/opts-visitor.o
+  CC      qapi/qapi-clone-visitor.o
+  CC      qapi/qmp-event.o
+  CC      qapi/qapi-util.o
+  CC      qobject/qnull.o
+  CC      qobject/qnum.o
+  CC      qobject/qstring.o
+  CC      qobject/qdict.o
+  CC      qobject/qlist.o
+  CC      qobject/qbool.o
+  CC      qobject/qlit.o
+  CC      qobject/qjson.o
+  CC      qobject/qobject.o
+  CC      qobject/json-lexer.o
+  CC      qobject/json-streamer.o
+  CC      qobject/json-parser.o
+  CC      trace/control.o
+  CC      trace/qmp.o
+  CC      util/osdep.o
+  CC      util/cutils.o
+  CC      util/unicode.o
+  CC      util/qemu-timer-common.o
+  CC      util/bufferiszero.o
+  CC      util/lockcnt.o
+  CC      util/aiocb.o
+  CC      util/async.o
+  CC      util/aio-wait.o
+  CC      util/thread-pool.o
+  CC      util/qemu-timer.o
+  CC      util/main-loop.o
+  CC      util/iohandler.o
+  CC      util/aio-posix.o
+  CC      util/compatfd.o
+  CC      util/event_notifier-posix.o
+  CC      util/mmap-alloc.o
+  CC      util/oslib-posix.o
+  CC      util/qemu-openpty.o
+  CC      util/qemu-thread-posix.o
+  CC      util/memfd.o
+  CC      util/envlist.o
+  CC      util/path.o
+  CC      util/module.o
+  CC      util/host-utils.o
+  CC      util/bitmap.o
+  CC      util/bitops.o
+  CC      util/hbitmap.o
+  CC      util/fifo8.o
+  CC      util/acl.o
+  CC      util/cacheinfo.o
+  CC      util/error.o
+  CC      util/qemu-error.o
+  CC      util/id.o
+  CC      util/iov.o
+  CC      util/qemu-config.o
+  CC      util/qemu-sockets.o
+  CC      util/uri.o
+  CC      util/notify.o
+  CC      util/qemu-option.o
+  CC      util/qemu-progress.o
+  CC      util/keyval.o
+  CC      util/hexdump.o
+  CC      util/crc32c.o
+  CC      util/uuid.o
+  CC      util/throttle.o
+  CC      util/getauxval.o
+  CC      util/readline.o
+  CC      util/rcu.o
+  CC      util/qemu-coroutine.o
+In file included from /usr/include/string.h:638,
+                 from /root/qemu-xcp-ng-build/qemu/include/qemu/osdep.h:69,
+                 from util/qemu-sockets.c:18:
+In function ‘strncpy’,
+    inlined from ‘unix_connect_saddr’ at util/qemu-sockets.c:925:5:
+/usr/include/bits/string3.h:120:10: warning: ‘__builtin_strncpy’ specified bound 108 equals destination size [-Wstringop-truncation]
+  120 |   return __builtin___strncpy_chk (__dest, __src, __len, __bos (__dest));
+      |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  CC      util/qemu-coroutine-lock.o
+  CC      util/qemu-coroutine-io.o
+In function ‘strncpy’,
+    inlined from ‘unix_listen_saddr’ at util/qemu-sockets.c:880:5:
+/usr/include/bits/string3.h:120:10: warning: ‘__builtin_strncpy’ specified bound 108 equals destination size [-Wstringop-truncation]
+  120 |   return __builtin___strncpy_chk (__dest, __src, __len, __bos (__dest));
+      |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  CC      util/qemu-coroutine-sleep.o
+  CC      util/coroutine-ucontext.o
+  CC      util/buffer.o
+  CC      util/timed-average.o
+  CC      util/base64.o
+  CC      util/log.o
+  CC      util/pagesize.o
+  CC      util/qdist.o
+  CC      util/qht.o
+  CC      util/range.o
+  CC      util/stats64.o
+  CC      util/systemd.o
+  CC      util/vfio-helpers.o
+  CC      trace-root.o
+  CC      util/trace.o
+  CC      crypto/trace.o
+  CC      io/trace.o
+  CC      migration/trace.o
+  CC      block/trace.o
+  CC      chardev/trace.o
+  CC      hw/block/trace.o
+  CC      hw/block/dataplane/trace.o
+  CC      hw/char/trace.o
+  CC      hw/intc/trace.o
+  CC      hw/net/trace.o
+  CC      hw/rdma/trace.o
+  CC      hw/rdma/vmw/trace.o
+  CC      hw/virtio/trace.o
+  CC      hw/audio/trace.o
+  CC      hw/misc/trace.o
+  CC      hw/misc/macio/trace.o
+  CC      hw/usb/trace.o
+  CC      hw/scsi/trace.o
+  CC      hw/nvram/trace.o
+  CC      hw/display/trace.o
+  CC      hw/input/trace.o
+  CC      hw/timer/trace.o
+  CC      hw/dma/trace.o
+  CC      hw/sparc/trace.o
+  CC      hw/sparc64/trace.o
+  CC      hw/sd/trace.o
+  CC      hw/isa/trace.o
+  CC      hw/mem/trace.o
+  CC      hw/i386/trace.o
+  CC      hw/i386/xen/trace.o
+  CC      hw/9pfs/trace.o
+  CC      hw/ppc/trace.o
+  CC      hw/pci/trace.o
+  CC      hw/pci-host/trace.o
+  CC      hw/s390x/trace.o
+  CC      hw/vfio/trace.o
+  CC      hw/acpi/trace.o
+  CC      hw/arm/trace.o
+  CC      hw/alpha/trace.o
+  CC      hw/hppa/trace.o
+  CC      hw/xen/trace.o
+  CC      hw/ide/trace.o
+  CC      hw/tpm/trace.o
+  CC      ui/trace.o
+  CC      audio/trace.o
+  CC      net/trace.o
+  CC      target/arm/trace.o
+  CC      target/i386/trace.o
+  CC      target/mips/trace.o
+  CC      target/sparc/trace.o
+  CC      target/s390x/trace.o
+  CC      target/ppc/trace.o
+  CC      qom/trace.o
+  CC      linux-user/trace.o
+  CC      qapi/trace.o
+  CC      accel/tcg/trace.o
+  CC      accel/kvm/trace.o
+  CC      nbd/trace.o
+  CC      scsi/trace.o
+  CC      crypto/pbkdf-stub.o
+  CC      stubs/arch-query-cpu-def.o
+  CC      stubs/arch-query-cpu-model-expansion.o
+  CC      stubs/arch-query-cpu-model-comparison.o
+  CC      stubs/arch-query-cpu-model-baseline.o
+  CC      stubs/bdrv-next-monitor-owned.o
+  CC      stubs/blk-commit-all.o
+  CC      stubs/blockdev-close-all-bdrv-states.o
+  CC      stubs/clock-warp.o
+  CC      stubs/cpu-get-clock.o
+  CC      stubs/cpu-get-icount.o
+  CC      stubs/crypto.o
+  CC      stubs/dump.o
+  CC      stubs/error-printf.o
+  CC      stubs/fdset.o
+  CC      stubs/gdbstub.o
+  CC      stubs/get-vm-name.o
+  CC      stubs/iothread.o
+  CC      stubs/iothread-lock.o
+  CC      stubs/is-daemonized.o
+  CC      stubs/linux-aio.o
+  CC      stubs/machine-init-done.o
+  CC      stubs/migr-blocker.o
+  CC      stubs/change-state-handler.o
+  CC      stubs/monitor.o
+  CC      stubs/notify-event.o
+  CC      stubs/qtest.o
+  CC      stubs/replay.o
+  CC      stubs/runstate-check.o
+  CC      stubs/set-fd-handler.o
+  CC      stubs/slirp.o
+  CC      stubs/sysbus.o
+  CC      stubs/tpm.o
+  CC      stubs/trace-control.o
+  CC      stubs/uuid.o
+  CC      stubs/vm-stop.o
+  CC      stubs/vmstate.o
+  CC      stubs/qmp_pc_dimm.o
+  CC      stubs/target-monitor-defs.o
+  CC      stubs/target-get-monitor-def.o
+  CC      stubs/pc_madt_cpu_entry.o
+  CC      stubs/vmgenid.o
+  CC      stubs/xen-common.o
+  CC      stubs/xen-hvm.o
+  CC      stubs/pci-host-piix.o
+  CC      stubs/ram-block.o
+  CC      contrib/ivshmem-client/ivshmem-client.o
+  CC      contrib/ivshmem-client/main.o
+  CC      contrib/ivshmem-server/ivshmem-server.o
+  CC      contrib/ivshmem-server/main.o
+  CC      qemu-nbd.o
+  CC      block.o
+  CC      blockjob.o
+  CC      qemu-io-cmds.o
+  CC      replication.o
+  CC      block/raw-format.o
+  CC      block/qcow.o
+  CC      block/vdi.o
+  CC      block/qcow2.o
+  CC      block/qcow2-refcount.o
+  CC      block/qcow2-cluster.o
+  CC      block/qcow2-snapshot.o
+  CC      block/qcow2-cache.o
+  CC      block/qcow2-bitmap.o
+  CC      block/qed.o
+block/qcow.c: In function ‘qcow_open’:
+block/qcow.c:143:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  143 |     be32_to_cpus(&header.magic);
+      |                  ^~~~~~~~~~~~~
+block/qcow.c:144:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  144 |     be32_to_cpus(&header.version);
+      |                  ^~~~~~~~~~~~~~~
+block/qcow.c:145:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  145 |     be64_to_cpus(&header.backing_file_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow.c:146:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  146 |     be32_to_cpus(&header.backing_file_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow.c:147:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  147 |     be32_to_cpus(&header.mtime);
+      |                  ^~~~~~~~~~~~~
+block/qcow.c:148:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  148 |     be64_to_cpus(&header.size);
+      |                  ^~~~~~~~~~~~
+block/qcow.c:149:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  149 |     be32_to_cpus(&header.crypt_method);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/qcow.c:150:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  150 |     be64_to_cpus(&header.l1_table_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+block/vdi.c: In function ‘vdi_header_to_cpu’:
+block/vdi.c:192:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  192 |     le32_to_cpus(&header->signature);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vdi.c:193:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  193 |     le32_to_cpus(&header->version);
+      |                  ^~~~~~~~~~~~~~~~
+block/vdi.c:194:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  194 |     le32_to_cpus(&header->header_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:195:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  195 |     le32_to_cpus(&header->image_type);
+      |                  ^~~~~~~~~~~~~~~~~~~
+block/vdi.c:196:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  196 |     le32_to_cpus(&header->image_flags);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:197:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  197 |     le32_to_cpus(&header->offset_bmap);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:198:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  198 |     le32_to_cpus(&header->offset_data);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:199:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  199 |     le32_to_cpus(&header->cylinders);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vdi.c:200:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  200 |     le32_to_cpus(&header->heads);
+      |                  ^~~~~~~~~~~~~~
+block/vdi.c:201:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  201 |     le32_to_cpus(&header->sectors);
+      |                  ^~~~~~~~~~~~~~~~
+block/vdi.c:202:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  202 |     le32_to_cpus(&header->sector_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:203:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  203 |     le64_to_cpus(&header->disk_size);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vdi.c:204:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  204 |     le32_to_cpus(&header->block_size);
+      |                  ^~~~~~~~~~~~~~~~~~~
+block/vdi.c:205:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  205 |     le32_to_cpus(&header->block_extra);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:206:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  206 |     le32_to_cpus(&header->blocks_in_image);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+block/vdi.c:207:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  207 |     le32_to_cpus(&header->blocks_allocated);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+block/vdi.c:208:21: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  208 |     qemu_uuid_bswap(&header->uuid_image);
+      |                     ^~~~~~~~~~~~~~~~~~~
+block/vdi.c:209:21: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  209 |     qemu_uuid_bswap(&header->uuid_last_snap);
+      |                     ^~~~~~~~~~~~~~~~~~~~~~~
+block/vdi.c:210:21: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  210 |     qemu_uuid_bswap(&header->uuid_link);
+      |                     ^~~~~~~~~~~~~~~~~~
+block/vdi.c:211:21: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  211 |     qemu_uuid_bswap(&header->uuid_parent);
+      |                     ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c: In function ‘vdi_header_to_le’:
+block/vdi.c:216:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  216 |     cpu_to_le32s(&header->signature);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vdi.c:217:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  217 |     cpu_to_le32s(&header->version);
+      |                  ^~~~~~~~~~~~~~~~
+block/vdi.c:218:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  218 |     cpu_to_le32s(&header->header_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:219:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  219 |     cpu_to_le32s(&header->image_type);
+      |                  ^~~~~~~~~~~~~~~~~~~
+block/vdi.c:220:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  220 |     cpu_to_le32s(&header->image_flags);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:221:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  221 |     cpu_to_le32s(&header->offset_bmap);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:222:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  222 |     cpu_to_le32s(&header->offset_data);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:223:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  223 |     cpu_to_le32s(&header->cylinders);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vdi.c:224:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  224 |     cpu_to_le32s(&header->heads);
+      |                  ^~~~~~~~~~~~~~
+block/vdi.c:225:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  225 |     cpu_to_le32s(&header->sectors);
+      |                  ^~~~~~~~~~~~~~~~
+block/vdi.c:226:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  226 |     cpu_to_le32s(&header->sector_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:227:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  227 |     cpu_to_le64s(&header->disk_size);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vdi.c:228:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  228 |     cpu_to_le32s(&header->block_size);
+      |                  ^~~~~~~~~~~~~~~~~~~
+block/vdi.c:229:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  229 |     cpu_to_le32s(&header->block_extra);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c:230:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  230 |     cpu_to_le32s(&header->blocks_in_image);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+block/vdi.c:231:18: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  231 |     cpu_to_le32s(&header->blocks_allocated);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+block/vdi.c:232:21: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  232 |     qemu_uuid_bswap(&header->uuid_image);
+      |                     ^~~~~~~~~~~~~~~~~~~
+block/vdi.c:233:21: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  233 |     qemu_uuid_bswap(&header->uuid_last_snap);
+      |                     ^~~~~~~~~~~~~~~~~~~~~~~
+block/vdi.c:234:21: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  234 |     qemu_uuid_bswap(&header->uuid_link);
+      |                     ^~~~~~~~~~~~~~~~~~
+block/vdi.c:235:21: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  235 |     qemu_uuid_bswap(&header->uuid_parent);
+      |                     ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c: In function ‘vdi_header_print’:
+block/vdi.c:259:23: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  259 |     qemu_uuid_unparse(&header->uuid_image, uuid);
+      |                       ^~~~~~~~~~~~~~~~~~~
+block/vdi.c:261:23: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  261 |     qemu_uuid_unparse(&header->uuid_last_snap, uuid);
+      |                       ^~~~~~~~~~~~~~~~~~~~~~~
+block/vdi.c:263:23: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  263 |     qemu_uuid_unparse(&header->uuid_link, uuid);
+      |                       ^~~~~~~~~~~~~~~~~~
+block/vdi.c:265:23: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  265 |     qemu_uuid_unparse(&header->uuid_parent, uuid);
+      |                       ^~~~~~~~~~~~~~~~~~~~
+block/vdi.c: In function ‘vdi_open’:
+block.c: In function ‘bdrv_drop_intermediate’:
+block/vdi.c:448:35: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  448 |     } else if (!qemu_uuid_is_null(&header.uuid_link)) {
+      |                                   ^~~~~~~~~~~~~~~~~
+block/vdi.c:452:35: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  452 |     } else if (!qemu_uuid_is_null(&header.uuid_parent)) {
+      |                                   ^~~~~~~~~~~~~~~~~~~
+block.c:3751:14: error: ‘in_relink_chain’ undeclared (first use in this function)
+ 3751 |         if (!in_relink_chain && c->role->update_filename) {
+      |              ^~~~~~~~~~~~~~~
+block.c:3751:14: note: each undeclared identifier is reported only once for each function it appears in
+block/vdi.c: In function ‘vdi_co_do_create’:
+block/vdi.c:823:24: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  823 |     qemu_uuid_generate(&header.uuid_image);
+      |                        ^~~~~~~~~~~~~~~~~~
+block/vdi.c:824:24: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  824 |     qemu_uuid_generate(&header.uuid_last_snap);
+      |                        ^~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c: In function ‘qcow2_read_extensions’:
+block/qcow2.c:208:22: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  208 |         be32_to_cpus(&ext.magic);
+      |                      ^~~~~~~~~~
+block/qcow2.c:209:22: warning: taking address of packed member of ‘struct <anonymous>’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  209 |         be32_to_cpus(&ext.len);
+      |                      ^~~~~~~~
+block/qcow2.c:277:26: warning: taking address of packed member of ‘struct Qcow2CryptoHeaderExtension’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  277 |             be64_to_cpus(&s->crypto_header.offset);
+      |                          ^~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:278:26: warning: taking address of packed member of ‘struct Qcow2CryptoHeaderExtension’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  278 |             be64_to_cpus(&s->crypto_header.length);
+      |                          ^~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:340:26: warning: taking address of packed member of ‘struct Qcow2BitmapHeaderExt’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  340 |             be32_to_cpus(&bitmaps_ext.nb_bitmaps);
+      |                          ^~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:341:26: warning: taking address of packed member of ‘struct Qcow2BitmapHeaderExt’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  341 |             be64_to_cpus(&bitmaps_ext.bitmap_directory_size);
+      |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:342:26: warning: taking address of packed member of ‘struct Qcow2BitmapHeaderExt’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  342 |             be64_to_cpus(&bitmaps_ext.bitmap_directory_offset);
+      |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c: In function ‘qcow2_do_open’:
+block/qcow2.c:1167:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1167 |     be32_to_cpus(&header.magic);
+      |                  ^~~~~~~~~~~~~
+block/qcow2.c:1168:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1168 |     be32_to_cpus(&header.version);
+      |                  ^~~~~~~~~~~~~~~
+block/qcow2.c:1169:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1169 |     be64_to_cpus(&header.backing_file_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1170:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1170 |     be32_to_cpus(&header.backing_file_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1171:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1171 |     be64_to_cpus(&header.size);
+      |                  ^~~~~~~~~~~~
+block/qcow2.c:1172:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1172 |     be32_to_cpus(&header.cluster_bits);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1173:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1173 |     be32_to_cpus(&header.crypt_method);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1174:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1174 |     be64_to_cpus(&header.l1_table_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1175:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1175 |     be32_to_cpus(&header.l1_size);
+      |                  ^~~~~~~~~~~~~~~
+block/qcow2.c:1176:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1176 |     be64_to_cpus(&header.refcount_table_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make: *** [block.o] Error 1
+make: *** Waiting for unfinished jobs....
+block/qcow2.c:1177:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1177 |     be32_to_cpus(&header.refcount_table_clusters);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1178:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1178 |     be64_to_cpus(&header.snapshots_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1179:18: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1179 |     be32_to_cpus(&header.nb_snapshots);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1215:22: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1215 |         be64_to_cpus(&header.incompatible_features);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1216:22: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1216 |         be64_to_cpus(&header.compatible_features);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1217:22: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1217 |         be64_to_cpus(&header.autoclear_features);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1218:22: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1218 |         be32_to_cpus(&header.refcount_order);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:1219:22: warning: taking address of packed member of ‘struct QCowHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1219 |         be32_to_cpus(&header.header_length);
+      |                      ^~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c: In function ‘qcow2_update_header’:
+block/qcow2.c:2346:22: warning: taking address of packed member of ‘struct Qcow2CryptoHeaderExtension’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 2346 |         cpu_to_be64s(&s->crypto_header.offset);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:2347:22: warning: taking address of packed member of ‘struct Qcow2CryptoHeaderExtension’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 2347 |         cpu_to_be64s(&s->crypto_header.length);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:2351:22: warning: taking address of packed member of ‘struct Qcow2CryptoHeaderExtension’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 2351 |         be64_to_cpus(&s->crypto_header.offset);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2.c:2352:22: warning: taking address of packed member of ‘struct Qcow2CryptoHeaderExtension’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 2352 |         be64_to_cpus(&s->crypto_header.length);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2-bitmap.c: In function ‘bitmap_dir_entry_to_cpu’:
+block/qcow2-bitmap.c:398:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  398 |     be64_to_cpus(&entry->bitmap_table_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2-bitmap.c:399:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  399 |     be32_to_cpus(&entry->bitmap_table_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2-bitmap.c:400:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  400 |     be32_to_cpus(&entry->flags);
+      |                  ^~~~~~~~~~~~~
+block/qcow2-bitmap.c:401:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  401 |     be16_to_cpus(&entry->name_size);
+      |                  ^~~~~~~~~~~~~~~~~
+block/qcow2-bitmap.c:402:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  402 |     be32_to_cpus(&entry->extra_data_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2-bitmap.c: In function ‘bitmap_dir_entry_to_be’:
+block/qcow2-bitmap.c:407:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  407 |     cpu_to_be64s(&entry->bitmap_table_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2-bitmap.c:408:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  408 |     cpu_to_be32s(&entry->bitmap_table_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+block/qcow2-bitmap.c:409:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  409 |     cpu_to_be32s(&entry->flags);
+      |                  ^~~~~~~~~~~~~
+block/qcow2-bitmap.c:410:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  410 |     cpu_to_be16s(&entry->name_size);
+      |                  ^~~~~~~~~~~~~~~~~
+block/qcow2-bitmap.c:411:18: warning: taking address of packed member of ‘struct Qcow2BitmapDirEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  411 |     cpu_to_be32s(&entry->extra_data_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+[08:05 xcp-ng-syovfxoz qemu]# cd ui/keycodemapdb
+[08:05 xcp-ng-syovfxoz keycodemapdb]# git init
+Initialized empty Git repository in /root/qemu-xcp-ng-build/qemu/ui/keycodemapdb/.git/
+[08:06 xcp-ng-syovfxoz keycodemapdb]# git remote add origin https://gitlab.com/qemu-project/keycodemapdb.git
+[08:06 xcp-ng-syovfxoz keycodemapdb]# git fetch --depth 1 origin master
+remote: Enumerating objects: 26, done.
+remote: Counting objects: 100% (26/26), done.
+remote: Compressing objects: 100% (21/21), done.
+remote: Total 26 (delta 0), reused 21 (delta 0), pack-reused 0 (from 0)
+Unpacking objects: 100% (26/26), done.
+From https://gitlab.com/qemu-project/keycodemapdb
+ * branch            master     -> FETCH_HEAD
+[08:06 xcp-ng-syovfxoz keycodemapdb]# git checkout FETCH_HEAD
+Note: checking out 'FETCH_HEAD'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by performing another checkout.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -b with the checkout command again. Example:
+
+  git checkout -b new_branch_name
+
+HEAD is now at 5478803... Fix BSD license text project name placeholder
+[08:06 xcp-ng-syovfxoz keycodemapdb]# cd ../..
+[08:06 xcp-ng-syovfxoz qemu]# make -j$(nproc) 2>&1 | tee build-xcp-ng-clean.log
+  GEN     ui/input-keymap-atset1-to-qcode.c
+  GEN     ui/input-keymap-linux-to-qcode.c
+  GEN     ui/input-keymap-qcode-to-atset1.c
+  GEN     ui/input-keymap-qcode-to-atset2.c
+  GEN     ui/input-keymap-qcode-to-atset3.c
+  GEN     ui/input-keymap-qcode-to-qnum.c
+  GEN     ui/input-keymap-qcode-to-linux.c
+  GEN     ui/input-keymap-qcode-to-sun.c
+  GEN     ui/input-keymap-qnum-to-qcode.c
+  GEN     ui/input-keymap-usb-to-qcode.c
+  GEN     ui/input-keymap-win32-to-qcode.c
+  GEN     ui/input-keymap-x11-to-qcode.c
+  GEN     ui/input-keymap-xorgevdev-to-qcode.c
+  GEN     ui/input-keymap-xorgkbd-to-qcode.c
+  GEN     ui/input-keymap-xorgxquartz-to-qcode.c
+  GEN     ui/input-keymap-xorgxwin-to-qcode.c
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+usage: keymap-gen [-h]
+                  
+                  {code-map,code-table,name-map,name-table,code-docs,name-docs}
+                  ...
+keymap-gen: error: invalid choice: 'glib2' (choose from 'code-map', 'code-table', 'name-map', 'name-table', 'code-docs', 'name-docs')
+  LINK    tests/qemu-iotests/socket_scm_helper
+  GEN     qemu-doc.html
+  GEN     qemu-doc.txt
+  GEN     qemu.1
+  GEN     qemu-img.1
+  GEN     docs/interop/qemu-qmp-ref.html
+  GEN     docs/interop/qemu-qmp-ref.txt
+  GEN     docs/interop/qemu-qmp-ref.7
+  CC      qga/commands.o
+  CC      qga/guest-agent-command-state.o
+  CC      qga/main.o
+  CC      qga/commands-posix.o
+  CC      qga/channel-posix.o
+  CC      qga/qapi-generated/qga-qapi-types.o
+  CC      qga/qapi-generated/qga-qapi-visit.o
+  CC      qga/qapi-generated/qga-qapi-commands.o
+  AR      libqemuutil.a
+  CC      block.o
+  CC      block/qed-l2-cache.o
+  CC      block/qed-table.o
+  CC      block/qed-cluster.o
+  CC      block/qed-check.o
+  CC      block/vhdx.o
+block.c: In function ‘bdrv_drop_intermediate’:
+block.c:3751:14: error: ‘in_relink_chain’ undeclared (first use in this function)
+ 3751 |         if (!in_relink_chain && c->role->update_filename) {
+      |              ^~~~~~~~~~~~~~~
+block.c:3751:14: note: each undeclared identifier is reported only once for each function it appears in
+  CC      block/vhdx-endian.o
+In file included from block/vhdx.c:26:
+./block/vhdx.h: In function ‘leguid_to_cpus’:
+./block/vhdx.h:423:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  423 |     le32_to_cpus(&guid->data1);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h:424:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  424 |     le16_to_cpus(&guid->data2);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h:425:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  425 |     le16_to_cpus(&guid->data3);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h: In function ‘cpu_to_leguids’:
+./block/vhdx.h:430:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  430 |     cpu_to_le32s(&guid->data1);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h:431:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  431 |     cpu_to_le16s(&guid->data2);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h:432:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  432 |     cpu_to_le16s(&guid->data3);
+      |                  ^~~~~~~~~~~~
+block/vhdx.c: In function ‘vhdx_parse_metadata’:
+block/vhdx.c:755:18: warning: taking address of packed member of ‘struct VHDXFileParameters’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  755 |     le32_to_cpus(&s->params.block_size);
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+block/vhdx.c:756:18: warning: taking address of packed member of ‘struct VHDXFileParameters’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  756 |     le32_to_cpus(&s->params.data_bits);
+      |                  ^~~~~~~~~~~~~~~~~~~~
+block/vhdx.c: In function ‘vhdx_create_new_metadata’:
+block/vhdx.c:1509:22: warning: taking address of packed member of ‘struct VHDXFileParameters’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+ 1509 |         cpu_to_le32s(&mt_file_params->data_bits);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~
+make: *** [block.o] Error 1
+make: *** Waiting for unfinished jobs....
+In file included from block/vhdx-endian.c:22:
+./block/vhdx.h: In function ‘leguid_to_cpus’:
+./block/vhdx.h:423:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  423 |     le32_to_cpus(&guid->data1);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h:424:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  424 |     le16_to_cpus(&guid->data2);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h:425:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  425 |     le16_to_cpus(&guid->data3);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h: In function ‘cpu_to_leguids’:
+./block/vhdx.h:430:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  430 |     cpu_to_le32s(&guid->data1);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h:431:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  431 |     cpu_to_le16s(&guid->data2);
+      |                  ^~~~~~~~~~~~
+./block/vhdx.h:432:18: warning: taking address of packed member of ‘struct MSGUID’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  432 |     cpu_to_le16s(&guid->data3);
+      |                  ^~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_header_le_import’:
+block/vhdx-endian.c:38:18: warning: taking address of packed member of ‘struct VHDXHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   38 |     le32_to_cpus(&h->signature);
+      |                  ^~~~~~~~~~~~~
+block/vhdx-endian.c:39:18: warning: taking address of packed member of ‘struct VHDXHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   39 |     le32_to_cpus(&h->checksum);
+      |                  ^~~~~~~~~~~~
+block/vhdx-endian.c:40:18: warning: taking address of packed member of ‘struct VHDXHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   40 |     le64_to_cpus(&h->sequence_number);
+      |                  ^~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:46:18: warning: taking address of packed member of ‘struct VHDXHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   46 |     le16_to_cpus(&h->log_version);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:47:18: warning: taking address of packed member of ‘struct VHDXHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   47 |     le16_to_cpus(&h->version);
+      |                  ^~~~~~~~~~~
+block/vhdx-endian.c:48:18: warning: taking address of packed member of ‘struct VHDXHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   48 |     le32_to_cpus(&h->log_length);
+      |                  ^~~~~~~~~~~~~~
+block/vhdx-endian.c:49:18: warning: taking address of packed member of ‘struct VHDXHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   49 |     le64_to_cpus(&h->log_offset);
+      |                  ^~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_log_desc_le_import’:
+block/vhdx-endian.c:83:18: warning: taking address of packed member of ‘struct VHDXLogDescriptor’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   83 |     le32_to_cpus(&d->signature);
+      |                  ^~~~~~~~~~~~~
+block/vhdx-endian.c:84:18: warning: taking address of packed member of ‘struct VHDXLogDescriptor’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   84 |     le64_to_cpus(&d->file_offset);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:85:18: warning: taking address of packed member of ‘struct VHDXLogDescriptor’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   85 |     le64_to_cpus(&d->sequence_number);
+      |                  ^~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_log_desc_le_export’:
+block/vhdx-endian.c:92:18: warning: taking address of packed member of ‘struct VHDXLogDescriptor’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   92 |     cpu_to_le32s(&d->signature);
+      |                  ^~~~~~~~~~~~~
+block/vhdx-endian.c:93:18: warning: taking address of packed member of ‘struct VHDXLogDescriptor’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   93 |     cpu_to_le32s(&d->trailing_bytes);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:94:18: warning: taking address of packed member of ‘struct VHDXLogDescriptor’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   94 |     cpu_to_le64s(&d->leading_bytes);
+      |                  ^~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:95:18: warning: taking address of packed member of ‘struct VHDXLogDescriptor’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   95 |     cpu_to_le64s(&d->file_offset);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:96:18: warning: taking address of packed member of ‘struct VHDXLogDescriptor’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+   96 |     cpu_to_le64s(&d->sequence_number);
+      |                  ^~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_log_data_le_import’:
+block/vhdx-endian.c:103:18: warning: taking address of packed member of ‘struct VHDXLogDataSector’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  103 |     le32_to_cpus(&d->data_signature);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:104:18: warning: taking address of packed member of ‘struct VHDXLogDataSector’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  104 |     le32_to_cpus(&d->sequence_high);
+      |                  ^~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:105:18: warning: taking address of packed member of ‘struct VHDXLogDataSector’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  105 |     le32_to_cpus(&d->sequence_low);
+      |                  ^~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_log_data_le_export’:
+block/vhdx-endian.c:112:18: warning: taking address of packed member of ‘struct VHDXLogDataSector’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  112 |     cpu_to_le32s(&d->data_signature);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:113:18: warning: taking address of packed member of ‘struct VHDXLogDataSector’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  113 |     cpu_to_le32s(&d->sequence_high);
+      |                  ^~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:114:18: warning: taking address of packed member of ‘struct VHDXLogDataSector’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  114 |     cpu_to_le32s(&d->sequence_low);
+      |                  ^~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_log_entry_hdr_le_import’:
+block/vhdx-endian.c:121:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  121 |     le32_to_cpus(&hdr->signature);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:122:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  122 |     le32_to_cpus(&hdr->checksum);
+      |                  ^~~~~~~~~~~~~~
+block/vhdx-endian.c:123:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  123 |     le32_to_cpus(&hdr->entry_length);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:124:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  124 |     le32_to_cpus(&hdr->tail);
+      |                  ^~~~~~~~~~
+block/vhdx-endian.c:125:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  125 |     le64_to_cpus(&hdr->sequence_number);
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:126:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  126 |     le32_to_cpus(&hdr->descriptor_count);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:128:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  128 |     le64_to_cpus(&hdr->flushed_file_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:129:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  129 |     le64_to_cpus(&hdr->last_file_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_log_entry_hdr_le_export’:
+block/vhdx-endian.c:136:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  136 |     cpu_to_le32s(&hdr->signature);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:137:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  137 |     cpu_to_le32s(&hdr->checksum);
+      |                  ^~~~~~~~~~~~~~
+block/vhdx-endian.c:138:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  138 |     cpu_to_le32s(&hdr->entry_length);
+      |                  ^~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:139:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  139 |     cpu_to_le32s(&hdr->tail);
+      |                  ^~~~~~~~~~
+block/vhdx-endian.c:140:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  140 |     cpu_to_le64s(&hdr->sequence_number);
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:141:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  141 |     cpu_to_le32s(&hdr->descriptor_count);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:143:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  143 |     cpu_to_le64s(&hdr->flushed_file_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c:144:18: warning: taking address of packed member of ‘struct VHDXLogEntryHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  144 |     cpu_to_le64s(&hdr->last_file_offset);
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_region_header_le_import’:
+block/vhdx-endian.c:153:18: warning: taking address of packed member of ‘struct VHDXRegionTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  153 |     le32_to_cpus(&hdr->signature);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:154:18: warning: taking address of packed member of ‘struct VHDXRegionTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  154 |     le32_to_cpus(&hdr->checksum);
+      |                  ^~~~~~~~~~~~~~
+block/vhdx-endian.c:155:18: warning: taking address of packed member of ‘struct VHDXRegionTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  155 |     le32_to_cpus(&hdr->entry_count);
+      |                  ^~~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_region_header_le_export’:
+block/vhdx-endian.c:162:18: warning: taking address of packed member of ‘struct VHDXRegionTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  162 |     cpu_to_le32s(&hdr->signature);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:163:18: warning: taking address of packed member of ‘struct VHDXRegionTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  163 |     cpu_to_le32s(&hdr->checksum);
+      |                  ^~~~~~~~~~~~~~
+block/vhdx-endian.c:164:18: warning: taking address of packed member of ‘struct VHDXRegionTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  164 |     cpu_to_le32s(&hdr->entry_count);
+      |                  ^~~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_region_entry_le_import’:
+block/vhdx-endian.c:172:18: warning: taking address of packed member of ‘struct VHDXRegionTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  172 |     le64_to_cpus(&e->file_offset);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:173:18: warning: taking address of packed member of ‘struct VHDXRegionTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  173 |     le32_to_cpus(&e->length);
+      |                  ^~~~~~~~~~
+block/vhdx-endian.c:174:18: warning: taking address of packed member of ‘struct VHDXRegionTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  174 |     le32_to_cpus(&e->data_bits);
+      |                  ^~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_region_entry_le_export’:
+block/vhdx-endian.c:182:18: warning: taking address of packed member of ‘struct VHDXRegionTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  182 |     cpu_to_le64s(&e->file_offset);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:183:18: warning: taking address of packed member of ‘struct VHDXRegionTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  183 |     cpu_to_le32s(&e->length);
+      |                  ^~~~~~~~~~
+block/vhdx-endian.c:184:18: warning: taking address of packed member of ‘struct VHDXRegionTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  184 |     cpu_to_le32s(&e->data_bits);
+      |                  ^~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_metadata_header_le_import’:
+block/vhdx-endian.c:193:18: warning: taking address of packed member of ‘struct VHDXMetadataTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  193 |     le64_to_cpus(&hdr->signature);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:194:18: warning: taking address of packed member of ‘struct VHDXMetadataTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  194 |     le16_to_cpus(&hdr->entry_count);
+      |                  ^~~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_metadata_header_le_export’:
+block/vhdx-endian.c:201:18: warning: taking address of packed member of ‘struct VHDXMetadataTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  201 |     cpu_to_le64s(&hdr->signature);
+      |                  ^~~~~~~~~~~~~~~
+block/vhdx-endian.c:202:18: warning: taking address of packed member of ‘struct VHDXMetadataTableHeader’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  202 |     cpu_to_le16s(&hdr->entry_count);
+      |                  ^~~~~~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_metadata_entry_le_import’:
+block/vhdx-endian.c:210:18: warning: taking address of packed member of ‘struct VHDXMetadataTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  210 |     le32_to_cpus(&e->offset);
+      |                  ^~~~~~~~~~
+block/vhdx-endian.c:211:18: warning: taking address of packed member of ‘struct VHDXMetadataTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  211 |     le32_to_cpus(&e->length);
+      |                  ^~~~~~~~~~
+block/vhdx-endian.c:212:18: warning: taking address of packed member of ‘struct VHDXMetadataTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  212 |     le32_to_cpus(&e->data_bits);
+      |                  ^~~~~~~~~~~~~
+block/vhdx-endian.c: In function ‘vhdx_metadata_entry_le_export’:
+block/vhdx-endian.c:219:18: warning: taking address of packed member of ‘struct VHDXMetadataTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  219 |     cpu_to_le32s(&e->offset);
+      |                  ^~~~~~~~~~
+block/vhdx-endian.c:220:18: warning: taking address of packed member of ‘struct VHDXMetadataTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  220 |     cpu_to_le32s(&e->length);
+      |                  ^~~~~~~~~~
+block/vhdx-endian.c:221:18: warning: taking address of packed member of ‘struct VHDXMetadataTableEntry’ may result in an unaligned pointer value [-Waddress-of-packed-member]
+  221 |     cpu_to_le32s(&e->data_bits);
+      |                  ^~~~~~~~~~~~~
+[08:06 xcp-ng-syovfxoz qemu]# 

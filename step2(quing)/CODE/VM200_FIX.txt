@@ -1,0 +1,183 @@
+================================================================================
+                    VM200 SUPPORT FIX
+                    (Dynamic VM ID Scanning)
+================================================================================
+
+PROBLEM IDENTIFIED:
+-------------------
+The mediator was hardcoded to only poll VM IDs 1-100:
+    for (vm_id = 1; vm_id <= 100; vm_id++)
+
+VM200 requests were being sent but never processed because the mediator
+never checked /var/vgpu/vm200/request.txt
+
+SOLUTION:
+---------
+Changed poll_requests() to dynamically scan /var/vgpu directory for any
+vm* directories, supporting any VM ID (vm1, vm2, vm200, vm300, etc.)
+
+CHANGES MADE:
+-------------
+1. Replaced hardcoded loop with directory scanning using opendir()/readdir()
+2. Now checks all directories matching "vm*" pattern
+3. No longer limited to VM IDs 1-100
+
+FILES MODIFIED:
+---------------
+- step2(quing)/CODE/mediator.c (poll_requests function)
+
+================================================================================
+                        DEPLOYMENT STEPS
+================================================================================
+
+STEP 1: Copy Updated mediator.c to Dom0
+---------------------------------------
+[On your local machine]
+scp step2\(quing\)/CODE/mediator.c root@<dom0-ip>:/root/
+
+OR manually copy the updated poll_requests() function.
+
+STEP 2: Recompile on Dom0
+--------------------------
+[On Dom0]
+cd /root
+gcc -o mediator mediator.c -lpthread
+
+Expected output: No errors, mediator binary created
+
+STEP 3: Stop Old Mediator (if running)
+---------------------------------------
+[On Dom0]
+pkill mediator
+# Or Ctrl+C if running in foreground
+
+STEP 4: Start Updated Mediator
+-------------------------------
+[On Dom0]
+./mediator
+
+Expected output:
+    ================================================================================
+                        GPU Mediation Daemon
+                        (Dynamic Fair Scheduling)
+    ================================================================================
+    
+    [INIT] Pool A queue initialized
+    [INIT] Pool B queue initialized
+    [START] Daemon started
+    [START] Monitoring: /var/vgpu/vm*/request.txt
+    ...
+
+STEP 5: Test from VM200
+------------------------
+[On VM200 (test2)]
+./vm_client_fixed VECTOR_ADD
+
+Expected output:
+    [STEP 1] Reading vGPU device properties...
+    [SCAN] Found vGPU stub at 0000:00:06.0
+    [MMIO] Read registers:
+      0x008 (Pool ID):  0x00000042 = 'B'
+      0x00C (Priority): 0x00000002 = 2
+      0x010 (VM ID):    0x000000c8 = 200
+    
+    [STEP 2] Sending request to mediation daemon...
+    [SEND] Request written: B:2:200:VECTOR_ADD
+    
+    [STEP 3] Waiting for response from daemon...
+    [RESPONSE] Received: 1:Vector add completed on Pool B (vm=200, prio=2)
+
+On Dom0, you should see:
+    [ENQUEUE] Pool B: vm=200, prio=2 (high), cmd=VECTOR_ADD, queue_size=1
+    [PROCESS] Pool B: vm=200, prio=2 (high), cmd=VECTOR_ADD
+    [RESPONSE] Sent to vm200: 1:Vector add completed on Pool B (vm=200, prio=2)
+
+================================================================================
+                        VERIFICATION
+================================================================================
+
+1. Check mediator is scanning correctly:
+   [On Dom0] Watch mediator output - it should show [ENQUEUE] messages
+
+2. Check request file exists:
+   [On Dom0] cat /var/vgpu/vm200/request.txt
+   Should show: B:2:200:VECTOR_ADD (before processing)
+
+3. Check response file created:
+   [On Dom0] cat /var/vgpu/vm200/response.txt
+   Should show: 1:Vector add completed on Pool B (vm=200, prio=2)
+
+4. Check NFS mount in VM:
+   [On VM200] ls -la /mnt/vgpu/vm200/
+   Should show: request.txt and response.txt
+
+================================================================================
+                        TROUBLESHOOTING
+================================================================================
+
+ISSUE: Mediator still not processing VM200 requests
+----------------------------------------------------
+- Verify mediator.c was updated (check poll_requests function uses opendir)
+- Verify mediator binary was recompiled
+- Check /var/vgpu/vm200/ directory exists on Dom0
+- Check NFS export includes vm200 directory
+- Verify mediator has read/write permissions
+
+ISSUE: Request file not found
+------------------------------
+- Ensure /var/vgpu/vm200/request.txt exists on Dom0
+- Check NFS mount in VM: mount | grep vgpu
+- Verify NFS export: cat /etc/exports | grep vgpu
+
+ISSUE: Response not received
+----------------------------
+- Check mediator logs for [ENQUEUE] and [PROCESS] messages
+- Verify response.txt is written: ls -la /var/vgpu/vm200/response.txt
+- Check file permissions: chmod 666 /var/vgpu/vm200/response.txt
+- Verify NFS sync: sync on both Dom0 and VM
+
+================================================================================
+                        TECHNICAL DETAILS
+================================================================================
+
+OLD CODE (Limited to VM1-VM100):
+---------------------------------
+void poll_requests(MediatorState *state) {
+    ...
+    for (vm_id = 1; vm_id <= 100; vm_id++) {
+        snprintf(request_file, sizeof(request_file),
+                 "/var/vgpu/vm%d/request.txt", vm_id);
+        ...
+    }
+}
+
+NEW CODE (Dynamic Scanning):
+----------------------------
+void poll_requests(MediatorState *state) {
+    DIR *dir;
+    struct dirent *entry;
+    
+    dir = opendir("/var/vgpu");
+    if (!dir) return;
+    
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        if (strncmp(entry->d_name, "vm", 2) != 0) continue;
+        
+        snprintf(request_file, sizeof(request_file),
+                 "/var/vgpu/%s/request.txt", entry->d_name);
+        ...
+    }
+    closedir(dir);
+}
+
+BENEFITS:
+---------
+- Supports any VM ID (vm1, vm2, vm200, vm300, vm999, etc.)
+- No need to modify code when adding new VMs
+- Automatically discovers new VM directories
+- More flexible and maintainable
+
+================================================================================
+End of VM200_FIX.txt
+================================================================================

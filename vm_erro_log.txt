@@ -1,0 +1,15 @@
+calvin@test2:~$ sudo showmount -e 10.25.33.10
+Export list for 10.25.33.10:
+/var/vgpu *
+calvin@test2:~$ sudo mount -t nfs 10.25.33.10:/var/vgpu /mnt/vgpu
+mount.nfs: access denied by server while mounting 10.25.33.10:/var/vgpu
+calvin@test2:~$ 
+
+
+./configure --target-list=x86_64-softmmu --prefix=/usr --disable-xen --enable-kvm --disable-werror --python=/usr/bin/python2
+
+./x86_64-softmmu/qemu-system-x86_64 -M q35 -device vgpu-stub,pool_id=A,priority=high,vm_id=123 -display none -S &
+
+xe vm-param-get uuid=14cf0700-638c-41bd-035b-206c184970dc param-name=platform param-key=device-model-args
+
+xe vm-param-get uuid=14cf0700-638c-41bd-035b-206c184970dc param-name=power-state

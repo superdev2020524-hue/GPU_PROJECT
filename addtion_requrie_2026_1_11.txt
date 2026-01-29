@@ -1,0 +1,11 @@
+Hi Bren,
+
+Let me start by saying thank you for the great work so far. What you’ve built is a strong step in the right direction and provides many of the foundational building blocks for the system we ultimately want to develop. That said, I don’t think we’re quite there yet, and I’d like to clarify how I envision the next phase.
+
+What we’re aiming for is a virtualization layer that allows us to manage multiple virtual instances and dynamically map them to physical GPU resources. Conceptually, I imagine a control panel that scans the available hardware, identifies the physical GPUs in the system, and allows an administrator to assign virtual instances to those GPUs. For example, virtual users 1 through 7 could be mapped to GPU A, while virtual users 8 through 20 are mapped to GPU B. It would also be valuable to assign priority levels—low, medium, or high—to each virtual instance so that more critical workloads are serviced first.
+
+At its most basic level, this virtualization layer would function as a queuing system. Applications running within each virtual instance would issue function calls to the GPU. These calls would be queued, and when a call is ready to be serviced by its assigned physical GPU, control of the GPU would be handed to the requesting virtual instance. Once the function completes and the resulting data is returned to the virtual instance, the GPU would be released back to the queue for the next request.
+
+I do see a potential challenge if a function call runs for an extended period, as this could block other users from accessing the GPU. For now, I think it makes sense to start with this simple model and then iterate from there. Over time, we can refine the system by introducing safeguards such as execution time limits, preemption, or scheduling timers to ensure that no single application monopolizes a physical GPU resource. But I believe we should build the core mechanism first and evolve it as we encounter real-world issues.
+
+Your thoughts.

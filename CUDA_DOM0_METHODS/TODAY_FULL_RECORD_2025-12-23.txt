@@ -1,0 +1,239 @@
+FULL RECORD (2025-12-23): XCP-ng VM creation + VNC access + custom QEMU build + vGPU-stub device
+=================================================================================================
+
+Purpose of this file
+--------------------
+This is a consolidated, beginner-friendly but *complete* record of what was done today:
+  - Creating a new VM on XCP-ng
+  - Wiring storage, ISO, and network
+  - Connecting to the installer via VNC (hosted safely via socat + SSH tunnel)
+  - Building XCP-ng’s QEMU RPM with a custom PCI device (“vgpu-stub”)
+  - Installing the new QEMU and confirming the device is registered
+
+Sources used to assemble this record
+------------------------------------
+This file was assembled from the following saved logs/notes:
+  - log.txt                    (QEMU build timeline + errors + fixes)
+  - vnc.txt                    (VM identifiers + VNC workflow + installer settings)
+  - vm_create_guid.txt         (end-to-end “create VM” command recipe)
+  - test1_vm.txt               (older VM notes / misc)
+  - BEGINNER_VGPU_STUB_GUIDE_XCPNG.txt (final simplified how-to)
+
+If you want *perfectly exact* command echo/output for every single line, keep running your shell
+with “set -x” and append terminal output to a log file. For today, the key commands and outputs
+are captured in the files above.
+
+
+PART A — Environment identifiers (today’s lab)
+----------------------------------------------
+Host (dom0):
+  - XCP-ng dom0 IP: 10.25.33.10
+  - QEMU device model binary: /usr/lib64/xen/bin/qemu-system-i386
+  - QEMU wrapper:             /usr/lib64/xen/bin/qemu-wrapper
+  - QEMU version:             4.2.1
+
+New VM created today:
+  - VM name-label:            ubuntu-fresh
+  - VM UUID:                  b9b93a6d-a38e-5f77-76bb-1f23a4898c8d
+
+ISO / storage / network used:
+  - ISO SR name-label:        SMB ISO library
+  - ISO SR UUID:              097e2b8c-af1a-d945-1432-8c0e7d0163fa
+  - ISO name-label:           ubuntu-24.04.2-live-server-amd64.iso
+  - ISO VDI UUID:             86d22032-6eda-4869-b6db-26b9d8faf023
+
+  - Disk SR name-label:       Local storage
+  - Disk SR UUID:             a38d2218-0ae3-cfa9-3ab1-bd16def94b3c
+  - Disk VDI UUID:            28cfc551-b242-42e1-a7c3-30f87df01fd1  (40GiB)
+  - Disk VBD UUID:            d655bf07-0acd-4634-c79f-0bc4933b58f4  (userdevice=0)
+
+  - CD VBD UUID:              719cb042-cb37-d2a6-3120-1990d1e1aa01  (userdevice=3)
+
+  - Network UUID:             9ad61c24-289c-b654-aa85-6e95df85a2de  (bridge xenbr0)
+  - VIF UUID:                 64566ec8-b359-b684-58e9-4462d4f5bfe6
+  - VIF MAC:                  12:c8:3f:fe:a2:fc
+
+Guest (desired installer configuration):
+  - Static IP:                10.25.33.11/24
+  - Gateway:                  10.25.33.1
+  - DNS:                      8.8.8.8
+  - Username:                 david
+  - Password:                 calvin123
+  - SSH server:               OpenSSH installed, password auth allowed
+
+Security note:
+  This file contains a lab password. Do NOT reuse it anywhere else.
+
+
+PART B — Create and wire up the VM (dom0)
+-----------------------------------------
+Why this matters:
+  In XCP-ng, “creating a VM” is multiple objects:
+    VM + Disk (VDI) + Disk attachment (VBD) + CD attachment (VBD) + ISO (VDI) + Network (VIF)
+  Missing any of these commonly causes “VM won’t boot” or “no network/SSH”.
+
+Reference command recipe (vm_create_guid.txt):
+  set -x
+  VM_UUID=$(xe vm-install template-uuid=552bce37-51b2-445d-84f2-5f33fa112d7e new-name-label="ubuntu-fresh")
+  echo "VM_UUID=$VM_UUID"
+  xe vm-param-set uuid=$VM_UUID affinity=$(xe host-list --minimal)
+  xe vm-param-set uuid=$VM_UUID other-config:install-repository=cdrom
+  xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+  xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+  xe vm-memory-limits-set uuid=$VM_UUID static-min=4GiB static-max=4GiB dynamic-min=4GiB dynamic-max=4GiB
+  xe vm-vcpu-max-set uuid=$VM_UUID max=4
+  xe vm-vcpu-params-set uuid=$VM_UUID VCPUs-at-startup=4
+  xe vm-start uuid=$VM_UUID
+  xe vm-param-get uuid=$VM_UUID param-name=dom-id
+  set +x
+
+Important lesson learned today (from vnc.txt):
+  - “CD device/userdevice MUST be numeric (0,1,2,3...)”.
+  - Using a string like “xvdd” for the CD VBD slot can break boot.
+
+
+PART C — Console access: VNC hosted via socat + SSH tunnel
+----------------------------------------------------------
+Why this matters:
+  - On XCP-ng, QEMU exposes VNC as a unix socket: /var/run/xen/vnc-<DOMID>
+  - DOMID changes on every boot/reboot, so the VNC socket path changes too.
+  - “Hosting” here means: bridge that unix socket to TCP 5901 on dom0 using socat,
+    then tunnel it securely to your workstation via SSH.
+
+Workflow (from vnc.txt):
+
+1) On dom0: start the VM and fetch DOMID
+  xe vm-param-get uuid=b9b93a6d-a38e-5f77-76bb-1f23a4898c8d param-name=power-state
+  xe vm-param-get uuid=b9b93a6d-a38e-5f77-76bb-1f23a4898c8d param-name=dom-id
+
+2) On dom0: expose the unix VNC socket via TCP 5901
+  yum install -y socat
+  pkill socat || true
+  nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-<DOMID> >/root/socat-vnc.log 2>&1 &
+  ss -ltnp | grep :5901
+
+3) On your Ubuntu workstation: create an SSH tunnel to dom0
+  ssh -N -L 5901:127.0.0.1:5901 root@10.25.33.10
+
+4) On your Ubuntu workstation: connect TigerVNC to
+  127.0.0.1:5901
+
+Reboots:
+  After a reboot, repeat steps (1) and (2) because dom-id changes and the socket becomes /var/run/xen/vnc-<NEW_DOMID>.
+
+
+PART D — Ubuntu installer (inside VNC)
+--------------------------------------
+Goal: make the VM reachable by SSH without needing VNC later.
+
+Installer configuration recorded today (vnc.txt):
+  - Network: set static IPv4 (Manual)
+      Address: 10.25.33.11/24
+      Gateway: 10.25.33.1
+      DNS:     8.8.8.8
+  - User:
+      Username: david
+      Password: calvin123
+  - SSH:
+      Install OpenSSH server: ENABLED
+      Allow password authentication: ENABLED
+
+Optional post-install cleanup:
+  Eject ISO (recorded in vnc.txt):
+    xe vbd-eject uuid=719cb042-cb37-d2a6-3120-1990d1e1aa01
+    xe vbd-param-get uuid=719cb042-cb37-d2a6-3120-1990d1e1aa01 param-name=empty
+
+
+PART E — vGPU stub implementation: build custom QEMU (XCP-ng RPM)
+------------------------------------------------------------------
+Why this matters:
+  - XCP-ng expects a Xen-capable, patched QEMU build.
+  - Dropping in a random upstream QEMU often breaks due to Xen headers/APIs.
+  - The safe route is rebuilding the XCP-ng QEMU RPM with your device source included.
+
+Working build root (from logs):
+  - Build workspace:          /root/qemu-xcpng
+  - Spec file:                /root/qemu-xcpng/SPECS/qemu.spec
+  - Sources:                  /root/qemu-xcpng/SOURCES/
+  - Output RPMs:              /root/qemu-xcpng/RPMS/x86_64/
+
+Key spec modifications already present (from prior log):
+  - Copy custom device source into hw/misc/vgpu-stub.c in %prep
+  - Add vgpu-stub.o into hw/misc/Makefile.objs
+  - Ensure keycodemapdb is unpacked into ui/keycodemapdb (fixes keymap-gen mismatch)
+
+Device source used today:
+  - File: /root/qemu-xcpng/SOURCES/vgpu-stub.c
+  - Implements a minimal PCI device named "vgpu-stub" with a 4KiB MMIO BAR.
+  - Vendor/device IDs (example): 0x1af4 / 0x1111
+
+
+PART F — Build failures encountered today (and how they were fixed)
+-------------------------------------------------------------------
+1) Build error: class_id overflow
+   Symptom (log.txt):
+     error: large integer implicitly truncated to unsigned type [-Werror=overflow]
+     k->class_id = 0x120000;
+   Fix:
+     On QEMU 4.2.1, use 0x1200 (class<<8|subclass), not 0x120000.
+
+2) Runtime crash after installing QEMU: “conventional || pcie” assertion
+   Symptom:
+     /usr/lib64/xen/bin/qemu-system-i386 -device help | grep -i vgpu-stub
+     qemu-system-i386: hw/pci/pci.c:2657: pci_device_class_base_init: Assertion `conventional || pcie' failed.
+   Investigation (captured today):
+     In /root/qemu-xcpng/BUILD/qemu-4.2.1/hw/pci/pci.c, base init asserts that all non-abstract
+     PCI device classes implement either:
+       - conventional-pci-device interface OR pcie-device interface
+   Fix:
+     Add INTERFACE_CONVENTIONAL_PCI_DEVICE to the TypeInfo .interfaces list for vgpu-stub.
+
+3) Packaging gotcha: “already installed” / files not replaced
+   Symptom (today):
+     rpm -Uvh ... says package already installed (or conflicts with itself) and QEMU still asserts.
+   Fix:
+     Force reinstall the same NEVR build:
+       rpm -Uvh --replacepkgs --replacefiles /root/qemu-xcpng/RPMS/x86_64/qemu-4.2.1-5.2.15.1.xcpng8.3.x86_64.rpm
+
+
+PART G — Successful build artifacts produced today
+--------------------------------------------------
+From your successful rpmbuild output (today):
+  Wrote: /root/qemu-xcpng/SRPMS/qemu-4.2.1-5.2.15.1.xcpng8.3.src.rpm
+  Wrote: /root/qemu-xcpng/RPMS/x86_64/qemu-4.2.1-5.2.15.1.xcpng8.3.x86_64.rpm
+  Wrote: /root/qemu-xcpng/RPMS/x86_64/qemu-debuginfo-4.2.1-5.2.15.1.xcpng8.3.x86_64.rpm
+
+Install performed today:
+  - VM was shut down first:
+      xe vm-shutdown uuid=b9b93a6d-a38e-5f77-76bb-1f23a4898c8d
+  - QEMU installed:
+      rpm -Uvh ./qemu-4.2.1-5.2.15.1.xcpng8.3.x86_64.rpm
+  - Then later force-reinstalled to ensure the fixed build replaced binaries:
+      rpm -Uvh --replacepkgs --replacefiles /root/qemu-xcpng/RPMS/x86_64/qemu-4.2.1-5.2.15.1.xcpng8.3.x86_64.rpm
+
+
+PART H — Final verification completed today (host-side)
+-------------------------------------------------------
+After the final reinstall, QEMU correctly lists the new device type:
+
+  /usr/lib64/xen/bin/qemu-system-i386 -device help | grep -i vgpu-stub
+    name "vgpu-stub", bus PCI
+
+This confirms:
+  - Your custom QEMU binary is installed and runnable
+  - The "vgpu-stub" device type is registered
+  - You are ready for the next validation step: attach to VM + verify in guest via lspci
+
+
+PART I — Next actions to complete “Step 1 success” (guest-side lspci)
+---------------------------------------------------------------------
+You still need the final proof inside the guest:
+  - Inject: xe vm-param-set uuid=<VM_UUID> platform:device-model-args="-device vgpu-stub"
+  - Start VM
+  - SSH into guest (david@10.25.33.11) and run:
+      lspci -nn | grep -i "1af4:1111"
+      lspci -nnv | grep -nA8 -B2 "1af4:1111"
+
+If lspci shows the device, “Step 1” is officially complete: the device is truly enumerated by the guest’s PCI subsystem.
+
+

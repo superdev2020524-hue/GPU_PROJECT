@@ -1,0 +1,278 @@
+================================================================================
+                    VM_CLIENT ERROR DIAGNOSTIC GUIDE
+================================================================================
+
+If vm_client fails, follow these steps to identify the problem:
+
+================================================================================
+                    COMMON ERROR #1: Device Not Found
+================================================================================
+
+Error Message:
+--------------
+"[ERROR] vGPU stub device not found"
+"Failed to open vGPU device"
+
+Diagnosis:
+----------
+1. Check if device is visible:
+   lspci | grep -i "processing\|accelerator"
+
+2. Check vendor/device ID:
+   lspci -nn | grep 1af4:1111
+
+3. Check if resource0 exists:
+   ls -la /sys/bus/pci/devices/*/resource0
+
+4. Verify device is attached to VM:
+   # On Dom0:
+   xe vm-param-get uuid=<VM_UUID> param-name=platform:device-model-args
+   
+   Should show: "-device vgpu-stub,pool_id=..."
+
+Solution:
+---------
+✅ Use FIXED version (vm_client_fixed.c) - auto-detects device
+✅ Or manually find device:
+   for d in /sys/bus/pci/devices/*; do
+       if [ -f "$d/resource0" ]; then
+           vendor=$(cat "$d/vendor")
+           device=$(cat "$d/device")
+           if [ "$vendor" = "0x1af4" ] && [ "$device" = "0x1111" ]; then
+               echo "Found at: $d"
+           fi
+       fi
+   done
+
+================================================================================
+                    COMMON ERROR #2: Permission Denied
+================================================================================
+
+Error Message:
+--------------
+"Failed to open vGPU device: Permission denied"
+
+Diagnosis:
+----------
+1. Check if running as root:
+   whoami
+   # Should output: root
+
+2. Check file permissions:
+   ls -la /sys/bus/pci/devices/*/resource0
+
+Solution:
+---------
+✅ Run with sudo:
+   sudo ./vm_client VECTOR_ADD
+
+✅ Or run as root user:
+   su -
+   ./vm_client VECTOR_ADD
+
+================================================================================
+                    COMMON ERROR #3: NFS Not Mounted
+================================================================================
+
+Error Message:
+--------------
+"Failed to open request file"
+"Directory does not exist"
+
+Diagnosis:
+----------
+1. Check NFS mount:
+   mount | grep /mnt/vgpu
+
+2. Check if directory exists:
+   ls -la /mnt/vgpu/
+
+3. Check NFS connectivity:
+   ping <host-ip>
+   showmount -e <host-ip>
+
+Solution:
+---------
+✅ Mount NFS:
+   sudo mkdir -p /mnt/vgpu
+   sudo mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu
+
+✅ Create per-VM directory (on Dom0):
+   mkdir -p /var/vgpu/vm<id>
+   chmod 777 /var/vgpu/vm<id>
+   echo "0:Ready" > /var/vgpu/vm<id>/response.txt
+
+================================================================================
+                    COMMON ERROR #4: MMIO Read Fails
+================================================================================
+
+Error Message:
+--------------
+"Failed to mmap MMIO"
+"Segmentation fault" (after reading)
+
+Diagnosis:
+----------
+1. Check MMIO region size:
+   cat /sys/bus/pci/devices/0000:XX:XX.X/resource | grep resource0
+
+2. Verify offsets match vgpu-stub.c:
+   - 0x008: Pool ID
+   - 0x00C: Priority
+   - 0x010: VM ID
+
+3. Test with simple read:
+   # Test program
+   #include <stdio.h>
+   #include <fcntl.h>
+   #include <sys/mman.h>
+   int main() {
+       int fd = open("/sys/bus/pci/devices/0000:XX:XX.X/resource0", O_RDONLY);
+       void *mmio = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+       printf("Pool ID: %c\n", ((uint32_t*)mmio)[0x008/4]);
+       return 0;
+   }
+
+Solution:
+---------
+✅ Use FIXED version - has better error handling
+✅ Verify device is properly initialized
+✅ Check QEMU logs for device errors
+
+================================================================================
+                    COMMON ERROR #5: Timeout Waiting for Response
+================================================================================
+
+Error Message:
+--------------
+"[ERROR] Timeout waiting for response (30s)"
+
+Diagnosis:
+----------
+1. Check if mediator is running (on Dom0):
+   ps aux | grep mediator
+
+2. Check mediator logs:
+   # If running in foreground, check terminal
+   # If running as service, check logs
+
+3. Check request file was read:
+   cat /var/vgpu/vm<id>/request.txt
+   # Should be empty or cleared if processed
+
+4. Check response file:
+   cat /var/vgpu/vm<id>/response.txt
+   # Should not be "0:Ready"
+
+Solution:
+---------
+✅ Start mediator:
+   cd /path/to/CODE
+   sudo ./mediator
+
+✅ Check mediator is processing:
+   # Should see [ENQUEUE] and [PROCESS] messages
+
+✅ Verify file permissions:
+   ls -la /var/vgpu/vm<id>/
+
+================================================================================
+                    QUICK DIAGNOSTIC SCRIPT
+================================================================================
+
+Run this script in VM to diagnose issues:
+
+#!/bin/bash
+echo "=== VM_CLIENT DIAGNOSTIC ==="
+echo ""
+
+echo "1. Checking for vGPU device..."
+if lspci | grep -qi "processing\|accelerator"; then
+    echo "   ✅ Device found"
+    lspci | grep -i "processing\|accelerator"
+else
+    echo "   ❌ Device NOT found"
+fi
+echo ""
+
+echo "2. Checking vendor/device ID..."
+if lspci -nn | grep -q "1af4:1111"; then
+    echo "   ✅ Correct vendor/device"
+    lspci -nn | grep "1af4:1111"
+else
+    echo "   ❌ Wrong vendor/device"
+fi
+echo ""
+
+echo "3. Checking PCI resource access..."
+DEVICE=$(find /sys/bus/pci/devices -name resource0 -exec sh -c 'vendor=$(cat "$(dirname "$1")/vendor"); device=$(cat "$(dirname "$1")/device"); if [ "$vendor" = "0x1af4" ] && [ "$device" = "0x1111" ]; then echo "$1"; fi' _ {} \; | head -1)
+if [ -n "$DEVICE" ]; then
+    echo "   ✅ Found resource0: $DEVICE"
+    if [ -r "$DEVICE" ]; then
+        echo "   ✅ Readable"
+    else
+        echo "   ❌ Not readable (need root)"
+    fi
+else
+    echo "   ❌ resource0 not found"
+fi
+echo ""
+
+echo "4. Checking NFS mount..."
+if mount | grep -q "/mnt/vgpu"; then
+    echo "   ✅ NFS mounted"
+    mount | grep "/mnt/vgpu"
+else
+    echo "   ❌ NFS NOT mounted"
+fi
+echo ""
+
+echo "5. Checking per-VM directory..."
+if [ -d "/mnt/vgpu/vm1" ]; then
+    echo "   ✅ Directory exists"
+    ls -la /mnt/vgpu/vm1/
+else
+    echo "   ❌ Directory missing (create on Dom0)"
+fi
+echo ""
+
+echo "6. Checking permissions..."
+if [ -w "/mnt/vgpu" ]; then
+    echo "   ✅ Writable"
+else
+    echo "   ❌ Not writable"
+fi
+echo ""
+
+echo "=== DIAGNOSTIC COMPLETE ==="
+
+Save as: diagnostic.sh
+Run: sudo bash diagnostic.sh
+
+================================================================================
+                    USING THE FIXED VERSION
+================================================================================
+
+The FIXED version (vm_client_fixed.c) includes:
+
+✅ Automatic device detection (no hardcoded PCI address)
+✅ Better error messages with troubleshooting steps
+✅ Detailed logging of each step
+✅ Validation of directories before use
+
+To use:
+
+1. Build:
+   gcc -o vm_client_fixed vm_client_fixed.c
+   chmod +x vm_client_fixed
+
+2. Run:
+   sudo ./vm_client_fixed VECTOR_ADD
+
+3. Compare output:
+   - Old version: May fail silently or with vague errors
+   - Fixed version: Shows exactly what it's doing and why it fails
+
+================================================================================
+End of Diagnostic Guide
+================================================================================

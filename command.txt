@@ -1,0 +1,66 @@
+netdown case: /usr/sbin/sshd ( in xcp-ng)
+""""""""""""""""""""""""""""""""""""""""""
+vgchange -ay VG_XenStorage-a38d2218-0ae3-cfa9-3ab1-bd16def94b3c
+
+# Check if device now exists
+ls /dev/mapper/ | grep cuda
+
+# Mount it
+mount /dev/VG_XenStorage-a38d2218-0ae3-cfa9-3ab1-bd16def94b3c/cuda_install /mnt/cuda_install
+
+# Test nvcc
+/mnt/cuda_install/cuda-12.3/bin/nvcc --version
+
+"""""""""""""""""""""""""""""""""""""""
+nano /etc/fstab :boot err
+nano /boot/efi/EFI/xenserver/grub.cfg
+nano /etc/default/grub
+
+""""""""""""""""""""""""""""""
+ls -la /mnt/cuda_install/
+
+# Check if the logical volume is active
+lvs | grep cuda_install
+
+# If mount doesn't exist, activate and mount
+lvchange -ay VG_XenStorage-a38d2218-0ae3-cfa9-3ab1-bd16def94b3c/cuda_install
+mount /dev/mapper/VG_XenStorage--a38d2218--0ae3--cfa9--3ab1--bd16def94b3c-cuda_install /mnt/cuda_install
+
+# Add to PATH
+export PATH=/mnt/cuda_install/cuda-12.3/bin:$PATH
+"""""""""""""""""""""""""""""
+iommu=pt dom0=pvh
+
+""""""""""""""""
+VM -VIEW:
+
+set -x
+xe vm-list is-control-domain=false params=uuid,name-label,power-state | sed -n '1,200p'
+set +x
+
+VM-START:
+xe vm-start uuid=57e01e2c-ae40-f429-0a28-cf475b79e58c
+xe vm-param-get uuid=57e01e2c-ae40-f429-0a28-cf475b79e58c param-name=power-state
+
+vm-get mac adress:
+xe vif-list vm-uuid=57e01e2c-ae40-f429-0a28-cf475b79e58c params=uuid,device,MAC,network-uuid
+"""""""""""""""""""""""""
+calvin@test2:~$ whoami
+calvin
+calvin@test2:~$ sudo -i
+root@test2:~# ^C
+root@test2:~# 
+""""""""""""""
+xl list
+xe vm-list dom-id=$ID params=uuid,name-label,power-state
+xe vm-reboot uuid=<printed-uuid> force=true
+"""""""""""""""""""
+ip route | awk '/default/ {print $3}':on host
+sudo ip route replace default via <REAL_GATEWAY> dev enX0
+ping -c 3 <REAL_GATEWAY>
+ping -c 3 8.8.8.8
+sudo apt update
+"""""""""
+xe vm-shutdown uuid=14cf0700-638c-41bd-035b-206c184970dc force=true
+xe vm-param-set uuid=14cf0700-638c-41bd-035b-206c184970dc platform:device-model-args="-device vgpu-stub"
+xe vm-start uuid=14cf0700-638c-41bd-035b-206c184970dc

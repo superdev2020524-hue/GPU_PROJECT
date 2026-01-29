@@ -1,0 +1,253 @@
+================================================================================
+STEP 1 QUICK REFERENCE: MINIMAL VGPU STUB PCI DEVICE
+================================================================================
+
+OBJECTIVE
+---------
+Create emulated PCI device visible in VM's lspci output.
+No functionality required - just enumeration.
+
+SUCCESS CRITERIA
+----------------
+✓ Device appears in VM: lspci
+✓ Shows vendor: 1af4 (Red Hat)
+✓ Shows device: 1111 (custom)
+✓ Shows class: Processing accelerator
+✓ No kernel errors in VM
+
+================================================================================
+PCI DEVICE SPECIFICATION
+================================================================================
+
+Vendor ID:      0x1AF4 (Red Hat, Inc.)
+Device ID:      0x1111 (Custom)
+Class Code:    0x120000 (Processing Accelerator, General Purpose)
+Subclass:      0x00 (General Purpose)
+Revision:      0x01
+Header Type:   0x00 (Standard PCI device)
+Subsystem VID: 0x1AF4
+Subsystem DID: 0x1111
+
+BAR0:           4KB MMIO region (memory-mapped I/O)
+BAR1-5:         Unused (0x00000000)
+
+================================================================================
+MINIMAL PCI CONFIG SPACE (REQUIRED FIELDS)
+================================================================================
+
+Offset  Field              Value      Required
+------  -----              -----      --------
+0x00    Vendor ID          0x1AF4     YES
+0x02    Device ID          0x1111     YES
+0x04    Command            0x0000     YES
+0x06    Status             0x0010     YES
+0x08    Revision           0x01       YES
+0x09    Class (base)       0x12       YES (Processing Accelerator)
+0x0A    Class (sub)        0x00       YES (General Purpose)
+0x0B    Class (prog)       0x00       YES (Generic)
+0x0E    Header Type        0x00       YES
+0x10    BAR0               <MMIO>     YES
+0x2C    Subsystem VID      0x1AF4     RECOMMENDED
+0x2E    Subsystem DID      0x1111     RECOMMENDED
+
+================================================================================
+IMPLEMENTATION FILES
+================================================================================
+
+QEMU Device:
+  File: hw/misc/vgpu-stub.c
+  Functions:
+    - vgpu_realize()          - Device initialization
+    - vgpu_mmio_read()         - BAR read handler
+    - vgpu_mmio_write()        - BAR write handler
+    - vgpu_register_types()    - Device registration
+
+Build System:
+  File: hw/misc/meson.build (or Makefile.objs)
+  Add: softmmu_ss.add(when: 'CONFIG_VGPU_STUB', if_true: files('vgpu-stub.c'))
+
+Configuration:
+  File: configure or meson_options.txt
+  Add: --enable-vgpu-stub option
+
+================================================================================
+BUILD STEPS
+================================================================================
+
+1. Add vgpu-stub.c to hw/misc/
+2. Update build system (meson.build or Makefile.objs)
+3. Add CONFIG_VGPU_STUB to configure
+4. Build: ./configure --enable-vgpu-stub && make
+5. Install: cp qemu-system-x86_64 /usr/lib/xen/bin/
+6. Verify: qemu-system-x86_64 -device help | grep vgpu-stub
+
+================================================================================
+DEVICE ATTACHMENT (XCP-NG)
+================================================================================
+
+Method 1: xl config file
+------------------------
+device_model_args = [ "-device", "vgpu-stub" ]
+
+Method 2: xl command line
+--------------------------
+xl create vm.cfg device_model_args='["-device","vgpu-stub"]'
+
+Method 3: xe command (XAPI)
+---------------------------
+xe vm-param-set uuid=<vm-uuid> \
+    other-config:device_model_args='["-device","vgpu-stub"]'
+
+================================================================================
+VERIFICATION COMMANDS
+================================================================================
+
+Host Side:
+----------
+# Check device is compiled
+qemu-system-x86_64 -device help | grep vgpu-stub
+
+# Check device is on command line
+ps aux | grep qemu | grep vgpu-stub
+
+# Check QEMU logs
+tail -f /var/log/xen/qemu-dm-<vm-name>.log
+
+# Check Xen messages
+xl dmesg | tail -50
+
+VM Side:
+--------
+# List PCI devices
+lspci
+
+# Verbose listing
+lspci -v
+
+# Check for our device specifically
+lspci -d 1af4:1111
+
+# Check kernel messages
+dmesg | grep -i pci
+dmesg | grep -i vgpu
+
+# Check PCI sysfs
+ls -la /sys/bus/pci/devices/
+cat /sys/bus/pci/devices/*/vendor | grep 1af4
+
+================================================================================
+TROUBLESHOOTING CHECKLIST
+================================================================================
+
+Device not in lspci:
+□ Device compiled into QEMU? (qemu -device help)
+□ Device on QEMU command line? (ps aux | grep vgpu)
+□ Config space handler working? (check QEMU logs)
+□ Vendor/Device IDs correct? (verify in code)
+□ BAR registered? (check realize() function)
+□ VM kernel has PCI support? (dmesg | grep pci)
+
+Device appears with wrong IDs:
+□ Check pci_set_word() calls in realize()
+□ Verify vendor_id = 0x1AF4, device_id = 0x1111
+
+Device appears but no BAR:
+□ Check pci_register_bar() is called
+□ Verify bar_size > 0
+□ Check memory_region_init_io() is called
+
+Kernel errors in VM:
+□ Check dmesg for PCI errors
+□ Verify all required config space fields set
+□ Check for invalid values (0xFFFF, etc.)
+
+================================================================================
+KEY CODE SECTIONS
+================================================================================
+
+1. PCI Config Space Setup (in vgpu_realize):
+   pci_set_word(pci_conf + PCI_VENDOR_ID, 0x1AF4);
+   pci_set_word(pci_conf + PCI_DEVICE_ID, 0x1111);
+   pci_set_byte(pci_conf + PCI_CLASS_DEVICE + 0, 0x12);  // Processing Accelerator
+   pci_set_byte(pci_conf + PCI_CLASS_DEVICE + 1, 0x00);  // General Purpose
+   pci_set_byte(pci_conf + PCI_CLASS_DEVICE + 2, 0x00);  // Generic
+
+2. BAR Registration (in vgpu_realize):
+   memory_region_init_io(&s->mmio, OBJECT(s), &vgpu_mmio_ops, s,
+                         "vgpu-stub-mmio", 0x1000);
+   pci_register_bar(pci_dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
+
+3. Device Registration:
+   static const TypeInfo vgpu_stub_info = {
+       .name = TYPE_VGPU_STUB,
+       .parent = TYPE_PCI_DEVICE,
+       .instance_size = sizeof(VGPUStubState),
+       .class_init = vgpu_class_init,
+   };
+   type_register_static(&vgpu_stub_info);
+
+================================================================================
+EXPECTED lspci OUTPUT
+================================================================================
+
+Inside VM, after successful implementation:
+
+$ lspci
+00:00.0 Host bridge: Intel Corporation 440FX - 82441FX PMC [Natoma]
+00:01.0 ISA bridge: Intel Corporation 82371SB PIIX3 ISA [Natoma/Triton II]
+00:01.1 IDE interface: Intel Corporation 82371SB PIIX3 IDE [Natoma/Triton II]
+00:01.3 Bridge: Intel Corporation 82371AB/EB/MB PIIX4 ACPI
+00:02.0 VGA compatible controller: Cirrus Logic GD 5446
+01:00.0 Processing accelerator: Red Hat, Inc. Device 1111  <-- OUR DEVICE
+02:00.0 Ethernet controller: Intel Corporation 82540EM Gigabit Ethernet
+
+$ lspci -d 1af4:1111 -v
+01:00.0 Processing accelerator: Red Hat, Inc. Device 1111
+        Subsystem: Red Hat, Inc. Device 1111
+        Flags: bus master, fast devsel, latency 0
+        Memory at fea00000 (32-bit, non-prefetchable) [size=4K]
+        Capabilities: [??] Power Management version ??
+
+================================================================================
+ARCHITECTURE SUMMARY
+================================================================================
+
+┌─────────────────────────────────────┐
+│  QEMU Device Model                   │
+│  ┌───────────────────────────────┐   │
+│  │  vgpu-stub device            │   │
+│  │  - PCI config space          │   │
+│  │  - BAR0 (4KB MMIO)           │   │
+│  └───────────┬───────────────────┘   │
+└──────────────┼───────────────────────┘
+               │ Hypervisor interface
+               ↓
+┌─────────────────────────────────────┐
+│  Guest VM                            │
+│  ┌───────────────────────────────┐   │
+│  │  Linux PCI Subsystem         │   │
+│  │  - Scans PCI bus             │   │
+│  │  - Reads config space        │   │
+│  │  - Enumerates devices       │   │
+│  └───────────┬───────────────────┘   │
+└──────────────┼───────────────────────┘
+               ↓
+         lspci output
+
+================================================================================
+NEXT STEPS (After Step 1 Complete)
+================================================================================
+
+Step 2: Add shared memory ring buffer for VM↔Host communication
+Step 3: Add event channels for async notifications
+Step 4: Implement guest kernel driver (/dev/vgpu_stub)
+Step 5: Implement host mediation daemon
+Step 6: Add CUDA execution on real H100
+
+================================================================================
+END OF QUICK REFERENCE
+================================================================================
+
+For detailed implementation guide, see: STEP1_PCI_STUB_IMPLEMENTATION.txt
+For code skeleton, see: STEP1_CODE_SKELETON.c
+

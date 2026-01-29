@@ -1,0 +1,1987 @@
+On your workstation, open terminal/command prompt:
+
+Windows:
+  Open Command Prompt and type:
+  > ssh root@<your-host-ip>
+  
+  Example:
+  > ssh root@192.168.1.100
+
+Linux/Mac:
+  Open Terminal and type:
+  $ ssh root@<your-host-ip>
+  
+  Example:
+  $ ssh root@192.168.1.100
+
+Enter your root password when prompted.
+
+You should now see a prompt like:
+[root@xenserver ~]#
+
+Step 1.2: Verify XCP-ng is Running
+-----------------------------------
+
+Type this command:
+# cat /etc/redhat-release
+
+Expected output:
+XCP-ng release 8.2 or similar
+
+If you see this, XCP-ng is installed correctly! ✓
+
+Step 1.3: Verify H100 GPU is Detected
+--------------------------------------
+
+Type this command:
+# nvidia-smi
+
+Expected output:
++-----------------------------------------------------------------------------+
+| NVIDIA-SMI 535+ (example: 545.xx.xx)  Driver Version: 535+    CUDA Version: 12.x |
+|-------------------------------+----------------------+----------------------+
+| GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |
+|   0  NVIDIA H100 PCIe    Off  | 00000000:17:00.0 Off |                    0 |
+...
+
+If you see the H100 listed, your GPU is working! ✓
+
+If you see "command not found", you need to install NVIDIA drivers first.
+(Ask for help with driver installation if needed)
+
+Step 1.4: Check What VMs Are Running
+-------------------------------------
+
+Type this command:
+# xl list
+
+Expected output:
+Name                                        ID   Mem VCPUs	State	Time(s)
+Domain-0                                     0  8192     4     r-----    1234.5
+test-vm                                      1  4096     2     -b----      56.7
+
+The Domain-0 is your host. Any other entries are VMs.
+Write down the name and ID of your test VM.
+
+My VM name: _________________
+My VM ID: _________________
+
+If you don't have a VM, you need to create one first.
+
+Step 1.5: Connect to Your VM
+-----------------------------
+
+From the host, connect to your VM:
+
+# ssh root@<vm-ip-address>
+
+Or use XCP-ng console:
+# xl console <vm-name>
+
+To exit `xl console` back to the host, press Ctrl+] then type `q`.
+
+Inside the VM, verify it's Linux:
+# uname -a
+
+Should show Linux kernel version.
+
+Step 1.6: Install Development Tools on Host
+--------------------------------------------
+
+On the XCP-ng host, run:
+
+# yum install -y gcc make kernel-devel
+
+Wait for installation to complete (may take 1-5 minutes).
+
+Expected output at end:
+Complete!
+
+Step 1.7: Install Development Tools on VM
+------------------------------------------
+
+Connect to your VM and run:
+
+If VM is Ubuntu/Debian:
+NOTE: You must run apt as root (use sudo) or you'll see:
+  "Could not open lock file /var/lib/dpkg/lock-frontend ... Permission denied"
+
+# sudo apt update
+# sudo apt install -y build-essential
+
+If VM is CentOS/RHEL:
+# yum install -y gcc make
+
+Wait for completion.
+
+✓ Your environment is now ready!
+
+================================================================================
+PART 2: CREATE HOST↔VM FILE-BASED COMMUNICATION (2 HOURS)
+================================================================================
+
+This is a fast, beginner-friendly way to get the VM talking to the host using a
+shared folder exported over the network (NFS or sshfs).
+
+NOTE: This is NOT "true shared memory" between Dom0 and the VM. We'll start with
+an mmap() proof-of-concept in Part 2, then switch to a network-safe approach in
+Part 3 (because mmap() over NFS/sshfs is not reliable).
+
+Overview:
+---------
+1. Create a folder on the host (in /dev/shm)
+2. Export it to the VM (NFS or sshfs)
+3. Write a host program that monitors a file in that folder
+4. Write a VM program that writes to that file
+5. Test communication
+
+Let's start!
+
+Step 2.1: Create Shared Folder on Host
+---------------------------------------
+
+On your XCP-ng HOST, type these commands one by one:
+
+# cd /dev/shm
+
+This changes to the memory-backed tmpfs directory on the host.
+
+# mkdir vgpu
+
+This creates a folder named "vgpu".
+
+# chmod 777 vgpu
+
+This makes the folder accessible to all programs.
+
+# ls -ld vgpu
+
+Expected output:
+drwxrwxrwx  2 root root   40 Dec 14 10:00 vgpu
+
+✓ Shared folder created!
+
+Step 2.2: Create Host Mediator Program
+---------------------------------------
+
+We'll create a C program that waits for commands from the VM.
+
+On the HOST, type:
+
+# cd /root
+
+This goes to your home directory.
+
+# nano simple_host_mediator.c
+
+This opens a text editor. You'll now type/paste the program.
+
+Type or paste this ENTIRE program:
+
+---BEGIN FILE simple_host_mediator.c---
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <sys/stat.h>
+
+#define SHM_PATH "/dev/shm/vgpu/commands"
+#define SHM_SIZE 4096
+
+typedef struct {
+    uint32_t command;
+    uint32_t status;
+    char data[256];
+} vgpu_message;
+
+int main() {
+    int fd;
+    vgpu_message *msg;
+    
+    printf("===========================================\n");
+    printf("vGPU Host Mediator - Phase 1 Proof of Concept\n");
+    printf("===========================================\n");
+    
+    // Create shared memory file
+    // NOTE: Default umask may turn 0666 into 0644, causing non-root VM users
+    // to get "Permission denied" when opening O_RDWR over the mounted share.
+    umask(000);
+    fd = open(SHM_PATH, O_CREAT | O_RDWR, 0666);
+    if (fd < 0) {
+        perror("Error: Failed to open shared memory");
+        printf("Make sure /dev/shm/vgpu directory exists!\n");
+        return 1;
+    }
+
+    // Ensure it is writable by others even if umask changes later
+    fchmod(fd, 0666);
+    
+    // Set file size
+    if (ftruncate(fd, SHM_SIZE) < 0) {
+        perror("Error: Failed to set shared memory size");
+        close(fd);
+        return 1;
+    }
+    
+    // Map shared memory
+    msg = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE,
+               MAP_SHARED, fd, 0);
+    if (msg == MAP_FAILED) {
+        perror("Error: Failed to map shared memory");
+        close(fd);
+        return 1;
+    }
+    
+    printf("✓ Shared memory initialized at %s\n", SHM_PATH);
+    printf("✓ Size: %d bytes\n", SHM_SIZE);
+    printf("\n");
+    
+    // Initialize
+    msg->command = 0;
+    msg->status = 0;
+    strcpy(msg->data, "Ready");
+    
+    printf("Waiting for commands from VM...\n");
+    printf("(Press Ctrl+C to stop)\n");
+    printf("\n");
+    
+    // Main loop
+    while (1) {
+        if (msg->command != 0) {
+            printf(">>> Received command: %u\n", msg->command);
+            
+            // Simulate processing
+            printf(">>> Processing...\n");
+            sleep(1);
+            
+            // Send response
+            msg->status = 1;  // Success
+            snprintf(msg->data, sizeof(msg->data), 
+                     "Command %u completed successfully", msg->command);
+            
+            printf(">>> Response sent: %s\n", msg->data);
+            
+            // Clear command for next request
+            msg->command = 0;
+            
+            printf("\n");
+            printf("Waiting for next command...\n");
+        }
+        
+        // Poll every 10ms
+        usleep(10000);
+    }
+    
+    // Cleanup (never reached unless Ctrl+C)
+    munmap(msg, SHM_SIZE);
+    close(fd);
+    
+    return 0;
+}
+---END FILE simple_host_mediator.c---
+
+After typing/pasting:
+- Press Ctrl+O (to save)
+- Press Enter (to confirm filename)
+- Press Ctrl+X (to exit)
+
+Verify the file was created:
+# ls -la simple_host_mediator.c
+
+Expected output:
+-rw-r--r-- 1 root root 2048 Dec 14 10:00 simple_host_mediator.c
+
+✓ Host program created!
+
+Step 2.3: Compile Host Mediator Program
+----------------------------------------
+
+Still on the HOST, type:
+
+# gcc -o mediator simple_host_mediator.c
+
+Wait a few seconds. If successful, you'll see no output.
+
+If you see errors, check that you typed the program correctly.
+
+Verify it compiled:
+# ls -la mediator
+
+Expected output:
+-rwxr-xr-x 1 root root 16384 Dec 14 10:01 mediator
+
+The 'x' means it's executable! ✓
+
+Step 2.4: Share Host Folder to VM (NFS or sshfs)
+------------------------------------------------
+
+Now we need to share the host folder to the VM.
+
+For Phase 1, we'll use NFS (Network File System).
+
+On the HOST, install NFS:
+
+# yum install -y nfs-utils rpcbind
+
+IMPORTANT (XCP-ng / tmpfs note):
+--------------------------------
+`/dev/shm` is a tmpfs (RAM-backed filesystem). Exporting tmpfs paths directly
+over NFS often causes errors like:
+  `exportfs: /dev/shm/vgpu requires fsid= for NFS export`
+
+To avoid this, we will export a normal on-disk path (`/var/vgpu`) over NFS, and
+then point `/dev/shm/vgpu` at it so our host programs can keep using the same
+paths.
+
+Create the export path:
+# mkdir -p /var/vgpu
+# chmod 777 /var/vgpu
+
+Point `/dev/shm/vgpu` to `/var/vgpu` (choose ONE):
+
+Option A (recommended, simplest): use a symlink
+# rm -rf /dev/shm/vgpu
+# ln -s /var/vgpu /dev/shm/vgpu
+
+Option B (alternative): bind-mount the on-disk dir into /dev/shm
+# mount --bind /var/vgpu /dev/shm/vgpu
+
+If you previously ran the WRONG bind-mount direction:
+  `mount --bind /dev/shm/vgpu /var/vgpu`
+then `/var/vgpu` becomes tmpfs-backed and NFS exports commonly break.
+Fix it (HOST):
+# umount /var/vgpu
+# rm -rf /var/vgpu
+# mkdir -p /var/vgpu
+# chmod 777 /var/vgpu
+# rm -rf /dev/shm/vgpu
+# ln -s /var/vgpu /dev/shm/vgpu
+
+If `umount /var/vgpu` says "target is busy":
+1) See what's mounted where:
+   # mount | grep vgpu
+   # findmnt /var/vgpu
+
+2) Stop NFS temporarily (it may keep references open):
+   # systemctl stop nfs-server
+   # exportfs -au
+
+3) Identify and kill processes using the path (if available):
+   # fuser -vm /var/vgpu
+   # fuser -km /var/vgpu
+
+4) Retry unmount, and if still busy use a lazy unmount:
+   # umount /var/vgpu
+   # umount -l /var/vgpu
+
+Then restart NFS after fixing `/etc/exports`:
+   # systemctl start nfs-server
+
+Edit NFS exports:
+# nano /etc/exports
+
+Add this line:
+/var/vgpu *(rw,sync,no_root_squash,no_subtree_check,fsid=1,insecure)
+
+Save and exit (Ctrl+O, Enter, Ctrl+X)
+
+Start NFS:
+# systemctl enable --now rpcbind nfs-server
+# exportfs -rav
+
+Verify the export is correct:
+# exportfs -v
+
+IMPORTANT: If you still see `/dev/shm/vgpu` in `exportfs -v`, you did NOT update
+`/etc/exports` correctly. Fix `/etc/exports` to export `/var/vgpu`, then rerun:
+# exportfs -rav
+# systemctl restart rpcbind nfs-server
+
+Get your host's IP address:
+# hostname -I
+
+If `hostname -I` is empty on your system, use:
+# ip -4 addr show
+
+Look for something like: inet 192.168.1.100/24
+
+My host IP: _________________
+
+Step 2.5: Mount Shared Folder in VM
+------------------------------------
+
+Switch to your VM (ssh to it or use xl console).
+
+In the VM, install NFS client:
+
+If Ubuntu/Debian:
+# apt update
+# apt install -y nfs-common
+
+If CentOS/RHEL:
+# yum install -y nfs-utils
+
+Create mount point:
+# mkdir -p /mnt/vgpu
+
+Before mounting, let's test connectivity:
+
+# ping -c 3 <host-ip>
+
+Example:
+# ping -c 3 10.25.33.10
+
+If ping works, continue. If not, check VM network configuration.
+
+Now try to mount:
+# mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu
+
+Example:
+# mount 10.25.33.10:/var/vgpu /mnt/vgpu
+
+IMPORTANT: Use `sudo` on Ubuntu/Debian guests:
+# sudo mount -t nfs 10.25.33.10:/var/vgpu /mnt/vgpu
+
+--- ALTERNATIVE 2: Direct File Copy Method ---
+
+If network mounting is problematic, use a simpler polling approach:
+
+On HOST, modify the mediator to write results to a file:
+# mkdir -p /var/vgpu
+# chmod 777 /var/vgpu
+
+In VM, use SSH to read/write files:
+# ssh root@10.25.33.10 "ls -la /var/vgpu"
+# ssh root@10.25.33.10 "cat /var/vgpu/command.txt"
+# ssh root@10.25.33.10 "cat /var/vgpu/response.txt"
+
+This is slower but guaranteed to work if SSH works.
+
+Choose whichever method works for your environment!
+
+Step 2.6: Create VM Client Program
+-----------------------------------
+
+Still in the VM, type:
+
+# cd /root
+# nano simple_vm_client.c
+
+NOTE: If you used sshfs in Step 2.5, the path /mnt/vgpu should work.
+      If you used NFS, the path /mnt/vgpu should work.
+      Both use the same path, so the code below works for either method!
+
+Type or paste this program:
+
+---BEGIN FILE simple_vm_client.c---
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <string.h>
+
+#define SHM_PATH "/mnt/vgpu/commands"
+#define SHM_SIZE 4096
+
+typedef struct {
+    uint32_t command;
+    uint32_t status;
+    char data[256];
+} vgpu_message;
+
+int main(int argc, char *argv[]) {
+    int fd;
+    vgpu_message *msg;
+    uint32_t cmd_number = 42;  // Default command
+    int timeout = 0;
+    
+    printf("===========================================\n");
+    printf("vGPU VM Client - Phase 1 Test\n");
+    printf("===========================================\n");
+    
+    // Parse command line argument
+    if (argc > 1) {
+        cmd_number = atoi(argv[1]);
+    }
+    
+    // Open shared memory (note: requires write permission on SHM_PATH)
+    fd = open(SHM_PATH, O_RDWR);
+    if (fd < 0) {
+        perror("Error: Cannot open shared memory");
+        printf("Make sure /mnt/vgpu is mounted!\n");
+        printf("Run: sudo mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu\n");
+        printf("If your shell prompt ends with '$', you're not root. Try: sudo ./gpu_test\n");
+        return 1;
+    }
+    
+    // Map shared memory
+    msg = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE,
+               MAP_SHARED, fd, 0);
+    if (msg == MAP_FAILED) {
+        perror("Error: Failed to map shared memory");
+        close(fd);
+        return 1;
+    }
+    
+    printf("✓ Connected to host mediator\n");
+    printf("\n");
+    
+    // Check if host is ready
+    if (msg->status == 0 && msg->command == 0) {
+        printf("✓ Host mediator is ready\n");
+    }
+    
+    // Send command
+    printf(">>> Sending command: %u\n", cmd_number);
+    msg->status = 0;  // Clear previous status
+    msg->command = cmd_number;
+    
+    printf(">>> Waiting for response from host...\n");
+    
+    // Wait for response (with timeout)
+    while (msg->status == 0 && timeout < 100) {
+        usleep(100000);  // Wait 100ms
+        timeout++;
+    }
+    
+    if (timeout >= 100) {
+        printf("✗ TIMEOUT: No response from host!\n");
+        printf("Make sure host mediator is running!\n");
+        munmap(msg, SHM_SIZE);
+        close(fd);
+        return 1;
+    }
+    
+    // Display response
+    printf(">>> Response received!\n");
+    printf("\n");
+    printf("Status: %s\n", msg->status == 1 ? "SUCCESS" : "FAILED");
+    printf("Message: %s\n", msg->data);
+    printf("\n");
+    printf("===========================================\n");
+    printf("✓ Communication test PASSED!\n");
+    printf("===========================================\n");
+    
+    // Cleanup
+    munmap(msg, SHM_SIZE);
+    close(fd);
+    
+    return 0;
+}
+---END FILE simple_vm_client.c---
+
+Save and exit (Ctrl+O, Enter, Ctrl+X)
+
+Step 2.7: Compile VM Client Program
+------------------------------------
+
+In the VM, type:
+
+# gcc -o gpu_test simple_vm_client.c
+
+Verify:
+# ls -la gpu_test
+
+Expected output:
+-rwxr-xr-x 1 root root 16384 Dec 14 10:05 gpu_test
+
+✓ VM client program created!
+
+================================================================================
+PART 3: TEST THE COMMUNICATION (15 MINUTES)
+================================================================================
+
+Now let's test if VM can talk to host!
+
+IMPORTANT NOTE: Network Filesystem Limitation
+----------------------------------------------
+Using NFS/sshfs with mmap() has synchronization issues. The host can see
+VM writes, but VM cannot reliably see host writes due to caching.
+
+SOLUTION: We'll use a different approach that works over network filesystems.
+
+Step 3.0: FIX - Create Network-Safe Programs
+---------------------------------------------
+
+The issue: mmap() doesn't work well over NFS/sshfs for bidirectional communication.
+Solution: Use explicit file read/write instead.
+
+On the HOST, create a new mediator:
+
+# cd /root
+# nano network_safe_mediator.c
+
+Copy this code:
+
+---BEGIN FILE network_safe_mediator.c---
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdint.h>
+
+#define CMD_FILE "/dev/shm/vgpu/command.txt"
+#define RSP_FILE "/dev/shm/vgpu/response.txt"
+
+int main() {
+    FILE *cmd_fp, *rsp_fp;
+    uint32_t last_cmd = 0;
+    uint32_t current_cmd = 0;
+    unsigned int cmd_count = 0;
+    
+    printf("===========================================\n");
+    printf("vGPU Host Mediator - Network Safe Version\n");
+    printf("===========================================\n");
+    
+    // Initialize response file
+    rsp_fp = fopen(RSP_FILE, "w");
+    if (rsp_fp) {
+        fprintf(rsp_fp, "0:Ready\n");
+        fclose(rsp_fp);
+    }
+    
+    printf("✓ Using file-based communication\n");
+    printf("✓ Command file: %s\n", CMD_FILE);
+    printf("✓ Response file: %s\n", RSP_FILE);
+    printf("\n");
+    printf("Waiting for commands from VM...\n");
+    printf("(Press Ctrl+C to stop)\n");
+    printf("\n");
+    
+    while (1) {
+        // Read command file
+        cmd_fp = fopen(CMD_FILE, "r");
+        if (cmd_fp) {
+            if (fscanf(cmd_fp, "%u", &current_cmd) == 1) {
+                // New command received
+                if (current_cmd != last_cmd && current_cmd != 0) {
+                    cmd_count++;
+                    printf(">>> Received command #%u: %u\n", cmd_count, current_cmd);
+                    printf(">>> Processing...\n");
+                    
+                    // Simulate processing
+                    sleep(1);
+                    
+                    // Write response
+                    rsp_fp = fopen(RSP_FILE, "w");
+                    if (rsp_fp) {
+                        fprintf(rsp_fp, "1:Command %u completed successfully\n", 
+                                current_cmd);
+                        fflush(rsp_fp);
+                        fclose(rsp_fp);
+                    }
+                    
+                    printf(">>> Response sent\n\n");
+                    last_cmd = current_cmd;
+                }
+            }
+            fclose(cmd_fp);
+        }
+        
+        usleep(50000);  // Poll every 50ms
+    }
+    
+    return 0;
+}
+---END FILE network_safe_mediator.c---
+
+Save (Ctrl+O, Enter, Ctrl+X) and compile:
+# gcc -o network_mediator network_safe_mediator.c
+
+On the VM, create a new client:
+
+# cd /root  
+# nano network_safe_client.c
+
+Copy this code:
+
+---BEGIN FILE network_safe_client.c---
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <string.h>
+
+#define CMD_FILE "/mnt/vgpu/command.txt"
+#define RSP_FILE "/mnt/vgpu/response.txt"
+
+int main(int argc, char *argv[]) {
+    FILE *cmd_fp, *rsp_fp;
+    uint32_t cmd_number = 42;
+    char response[256];
+    int status;
+    int timeout = 0;
+    
+    printf("===========================================\n");
+    printf("vGPU VM Client - Network Safe Version\n");
+    printf("===========================================\n");
+    
+    if (argc > 1) {
+        cmd_number = atoi(argv[1]);
+    }
+    
+    // Write command
+    cmd_fp = fopen(CMD_FILE, "w");
+    if (!cmd_fp) {
+        perror("Error: Cannot write command file");
+        printf("Make sure /mnt/vgpu is mounted!\n");
+        return 1;
+    }
+    
+    fprintf(cmd_fp, "%u\n", cmd_number);
+    fflush(cmd_fp);
+    fclose(cmd_fp);
+    
+    printf("✓ Connected to host\n");
+    printf(">>> Sending command: %u\n", cmd_number);
+    printf(">>> Waiting for response...\n");
+    
+    // Wait for response
+    sleep(1);  // Give host time to process
+    
+    while (timeout < 50) {  // 5 second timeout
+        rsp_fp = fopen(RSP_FILE, "r");
+        if (rsp_fp) {
+            if (fgets(response, sizeof(response), rsp_fp)) {
+                if (sscanf(response, "%d:", &status) == 1) {
+                    if (status != 0) {  // Got a real response
+                        fclose(rsp_fp);
+                        break;
+                    }
+                }
+            }
+            fclose(rsp_fp);
+        }
+        
+        usleep(100000);  // Wait 100ms
+        timeout++;
+    }
+    
+    if (timeout >= 50) {
+        printf("✗ TIMEOUT: No response from host!\n");
+        return 1;
+    }
+    
+    // Parse and display response
+    char *colon = strchr(response, ':');
+    if (colon) {
+        printf(">>> Response received!\n");
+        printf("\nStatus: %s\n", status == 1 ? "SUCCESS" : "FAILED");
+        printf("Message: %s\n", colon + 1);
+        printf("\n===========================================\n");
+        printf("✓ Communication test PASSED!\n");
+        printf("===========================================\n");
+    }
+    
+    return 0;
+}
+---END FILE network_safe_client.c---
+
+Save and compile:
+# gcc -o gpu_test_v2 network_safe_client.c
+
+Step 3.1: Start Host Mediator (Fixed Version)
+----------------------------------------------
+
+On the HOST:
+
+# cd /root
+# ./network_mediator
+
+You should see:
+===========================================
+vGPU Host Mediator - Network Safe Version
+===========================================
+✓ Using file-based communication
+✓ Command file: /dev/shm/vgpu/command.txt
+✓ Response file: /dev/shm/vgpu/response.txt
+
+Waiting for commands from VM...
+(Press Ctrl+C to stop)
+
+Leave this running! ✓
+
+Step 3.2: Run VM Client (Fixed Version)
+----------------------------------------
+
+In your VM terminal:
+
+# cd /root
+# ./gpu_test_v2
+
+You should now see:
+===========================================
+vGPU VM Client - Network Safe Version
+===========================================
+✓ Connected to host
+>>> Sending command: 42
+>>> Waiting for response...
+>>> Response received!
+
+Status: SUCCESS
+Message: Command 42 completed successfully
+
+===========================================
+✓ Communication test PASSED!
+===========================================
+
+Step 3.3: Check Host Mediator Output
+-------------------------------------
+
+Switch back to host terminal (where mediator is running).
+
+You should see:
+>>> Received command #1: 42
+>>> Processing...
+>>> Response sent
+
+🎉 SUCCESS! VM and host are communicating! 🎉
+
+Why This Works:
+---------------
+- Uses explicit file read/write instead of mmap()
+- Files are synced across network filesystem properly
+- Each read/write is a fresh operation (no caching issues)
+- Works reliably with NFS, sshfs, or any network filesystem
+
+Step 3.4: Test Multiple Commands
+---------------------------------
+
+In the VM, try sending different commands:
+
+# ./gpu_test_v2 100
+# ./gpu_test_v2 200
+# ./gpu_test_v2 999
+
+Watch the host mediator terminal - it should show each command!
+
+You should see the command counter increment on the host.
+
+Step 3.5: Test From Second VM (Optional)
+-----------------------------------------
+
+If you have a second VM:
+
+1. Mount NFS/sshfs share in VM2:
+   # sshfs root@<host-ip>:/var/vgpu /mnt/vgpu
+   OR
+   # sudo mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu
+
+2. Copy network_safe_client.c to VM2 and compile:
+   # gcc -o gpu_test_v2 network_safe_client.c
+
+3. Run: # ./gpu_test_v2
+
+Both VMs can send commands to the same host! ✓
+
+Note: There may be race conditions if both send at exact same time,
+but for Phase 1 testing, this proves multi-VM capability works.
+
+================================================================================
+PART 4: ADD CUDA SUPPORT (1-2 HOURS)
+================================================================================
+
+Now let's make the host actually use the GPU!
+
+Step 4.1: Install CUDA Toolkit on Host
+---------------------------------------
+
+IMPORTANT: Check Compatibility FIRST!
+--------------------------------------
+
+Before downloading CUDA, verify which version works with your system.
+
+Step A: Check Your Current NVIDIA Driver Version
+# nvidia-smi
+
+Look at the top right corner of the output:
++-----------------------------------------------------------------------------+
+| NVIDIA-SMI 525.147.05   Driver Version: 525.147.05   CUDA Version: 12.0   |
++-----------------------------------------------------------------------------+
+
+The key numbers:
+- Driver Version: 525.147.05  (your actual driver)
+- CUDA Version: 12.0          (MAX CUDA version this driver supports)
+
+Step B: Check Your GPU Model
+# nvidia-smi -L
+
+Example output:
+GPU 0: NVIDIA H100 PCIe (UUID: GPU-xxxxx)
+
+Step C: Find Compatible CUDA Version
+-------------------------------------
+
+Based on your driver version, here's what CUDA versions you can install:
+
+Driver Version    | Max CUDA Version Supported
+------------------|---------------------------
+525.60.13+        | CUDA 12.0, 12.1, 12.2, 12.3
+520.61.05+        | CUDA 12.0, 12.1
+515.43.04+        | CUDA 11.7, 11.8
+510.39.01+        | CUDA 11.6
+495.29.05+        | CUDA 11.5
+470.57.02+        | CUDA 11.4
+460.32.03+        | CUDA 11.2, 11.3
+450.80.02+        | CUDA 11.1
+
+Rule: Your driver must be >= the minimum driver for that CUDA version.
+
+Example:
+- If nvidia-smi shows driver 525.147.05, you can install CUDA 12.0, 12.1, 12.2, or 12.3
+- If nvidia-smi shows driver 470.199.02, you can only install up to CUDA 11.4
+
+Step D: Determine What to Download
+-----------------------------------
+
+NOTE: If `wget` is not installed on the host, install it first:
+# yum install -y wget
+
+Case 1: Driver version is NEW enough for CUDA 12.3 (driver >= 525.60)
+# wget https://developer.download.nvidia.com/compute/cuda/12.3.0/local_installers/cuda_12.3.0_545.23.06_linux.run
+
+Case 2: Driver version only supports CUDA 11.8 (driver >= 515.43)
+# wget https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run
+
+Case 3: Driver version only supports CUDA 11.4 (driver >= 470.57)
+# wget https://developer.download.nvidia.com/compute/cuda/11.4.0/local_installers/cuda_11.4.0_470.42.01_linux.run
+
+IMPORTANT: The driver version in the CUDA filename (e.g., 545.23.06) is ONLY used
+if you choose to install the driver. Since you're using --toolkit only, it doesn't
+matter! What matters is YOUR INSTALLED driver version.
+
+Step E: Quick Check Command
+----------------------------
+Run this to see your driver and max CUDA version:
+
+# nvidia-smi | head -3
+
+Output shows both your driver version and the max CUDA version it supports!
+
+Step F: Check if CUDA is Already Installed
+--------------------------------------------
+
+On the HOST, check:
+
+# nvcc --version
+
+If you see version info, CUDA is installed! ✓ Skip to Step 4.2.
+
+If not installed, continue below.
+
+Step G: Check Available Disk Space (IMPORTANT!)
+------------------------------------------------
+
+XCP-ng systems often have small root partitions but HUGE LVM storage.
+
+# df -h /
+
+Look at the "Avail" column. CUDA needs at least 15 GB free.
+
+If you have less than 15 GB free:
+❌ DON'T try to install to /usr/local - it will fail!
+✓ Use the LVM space method below (Step H)
+
+If you have 15+ GB free:
+✓ You can use the simple installation (Step I)
+
+Step H: SOLUTION FOR SMALL ROOT PARTITION (Most XCP-ng Systems)
+----------------------------------------------------------------
+
+This is the RECOMMENDED method for XCP-ng 8.x with limited root space.
+
+Part 1: Check Your LVM Free Space
+----------------------------------
+
+# vgs
+
+Look for "VFree" column. You likely have TERABYTES free!
+
+Example output:
+VG                                                 VFree 
+VG_XenStorage-a38d2218-0ae3-cfa9-3ab1-bd16def94b3c  1.61t
+VG_XenStorage-a61dc008-affe-0f3a-8e1e-125c075e19fd  1.69t
+
+Write down the VG name with free space: ___________________________
+
+Part 2: Create a Large Logical Volume for CUDA
+-----------------------------------------------
+
+Replace VG_NAME with your actual VG name from above:
+
+# lvcreate -L 50G -n cuda_install <VG_NAME>
+
+Example:
+# lvcreate -L 50G -n cuda_install VG_XenStorage-a38d2218-0ae3-cfa9-3ab1-bd16def94b3c
+
+Expected output:
+  Logical volume "cuda_install" created.
+
+Part 3: Format and Mount the New Volume
+----------------------------------------
+
+# mkfs.ext4 /dev/<VG_NAME>/cuda_install
+
+Wait 30 seconds for formatting to complete.
+
+# mkdir -p /mnt/cuda_install
+# mount /dev/<VG_NAME>/cuda_install /mnt/cuda_install
+
+Verify it worked:
+# df -h /mnt/cuda_install
+
+Should show ~50G available! ✓
+
+Part 4: Download CUDA to the New Location
+------------------------------------------
+
+# cd /mnt/cuda_install
+# wget https://developer.download.nvidia.com/compute/cuda/12.3.0/local_installers/cuda_12.3.0_545.23.06_linux.run
+
+Wait for download (3.6 GB, may take 5-15 minutes).
+
+Verify download completed:
+# ls -lh cuda_12.3.0_545.23.06_linux.run
+
+Should show approximately 3.6 GB.
+
+Part 5: Install CUDA to Custom Location
+----------------------------------------
+
+# cd /mnt/cuda_install
+
+# Create temp directory in our large space
+# mkdir -p /mnt/cuda_install/tmp
+# export TMPDIR=/mnt/cuda_install/tmp
+
+# Install CUDA (toolkit only, no driver)
+# sh cuda_12.3.0_545.23.06_linux.run \
+    --toolkit \
+    --installpath=/mnt/cuda_install/cuda-12.3 \
+    --silent \
+    --override \
+    --no-drm \
+    --no-man-page \
+    --tmpdir=/mnt/cuda_install/tmp
+
+This takes 3-5 minutes. Wait for prompt to return.
+
+Part 6: Verify Installation
+----------------------------
+
+# ls -la /mnt/cuda_install/cuda-12.3/
+
+Should show directories: bin, lib64, include, etc.
+
+# /mnt/cuda_install/cuda-12.3/bin/nvcc --version
+
+Should show:
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2023 NVIDIA Corporation
+Built on ...
+Cuda compilation tools, release 12.3, V12.3.107
+
+✓ CUDA is installed!
+
+Part 7: Make CUDA Accessible System-Wide
+-----------------------------------------
+
+Create a symlink so system can find CUDA:
+
+# ln -sf /mnt/cuda_install/cuda-12.3 /usr/local/cuda
+
+Add CUDA to your PATH:
+
+# echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
+# echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+# source ~/.bashrc
+
+Part 8: Test CUDA Commands Work
+--------------------------------
+
+# nvcc --version
+
+Should now show CUDA 12.3 version! ✓
+
+# nvidia-smi
+
+Should still show your H100 GPU! ✓
+
+Part 9: Make Mount Permanent (Optional but Recommended)
+--------------------------------------------------------
+
+To auto-mount on reboot, add to /etc/fstab:
+
+# echo "/dev/<VG_NAME>/cuda_install /mnt/cuda_install ext4 defaults 0 0" >> /etc/fstab
+
+Verify:
+# cat /etc/fstab | grep cuda
+
+🎉 CUDA 12.3 is now installed and ready to use! 🎉
+
+Skip to Step 4.2 (Create CUDA Test Kernel).
+
+Step I: SIMPLE INSTALLATION (Only if you have 15+ GB free on /)
+----------------------------------------------------------------
+
+If df -h / shows 15+ GB available, you can use this simpler method:
+
+# cd /root
+# wget https://developer.download.nvidia.com/compute/cuda/12.3.0/local_installers/cuda_12.3.0_545.23.06_linux.run
+# sh cuda_12.3.0_545.23.06_linux.run --toolkit --silent --override
+
+Add to PATH:
+# echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
+# echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+# source ~/.bashrc
+
+Verify:
+# nvcc --version
+
+================================================================================
+TROUBLESHOOTING CUDA INSTALLATION ERRORS
+================================================================================
+
+⚠️ NOTE: If you got "Extraction failed" or "Insufficient disk space" errors,
+   use the LVM method in Step H above instead of these troubleshooting steps!
+   The solutions below are for OTHER installation errors.
+
+If you encounter errors during installation, try these solutions:
+
+ERROR 1: "Permission denied" or "Cannot execute binary file"
+Solution:
+  # chmod +x cuda_12.3.0_545.23.06_linux.run
+  # sh cuda_12.3.0_545.23.06_linux.run
+  
+  Or run with sudo:
+  # sudo sh cuda_12.3.0_545.23.06_linux.run
+
+ERROR 2: "Install of driver component failed" with code 256
+           "[ERROR]: Install of 545.23.06 failed, quitting"
+Solution:
+  This means the driver installation failed, but you don't need it!
+  Since nvidia-smi already works (you verified in Step 1.3), skip driver install.
+  
+  **THIS IS YOUR FIX - Use toolkit-only installation:**
+  # sh cuda_12.3.0_545.23.06_linux.run --toolkit --samples --silent --override
+  
+  This installs ONLY the CUDA compiler and libraries, not the driver.
+  
+  If you still get errors, try even more minimal:
+  # sh cuda_12.3.0_545.23.06_linux.run --toolkit --silent
+  
+  Or check the detailed error first:
+  # cat /var/log/nvidia-installer.log | tail -n 50
+  
+  Common reasons driver install fails on XCP-ng:
+  - Custom kernel without matching headers
+  - Existing driver from different source
+  - Secure boot enabled
+  
+  But you DON'T need the driver install, just the toolkit! ✓
+
+ERROR 3: "Existing driver installation detected"
+Solution:
+  The installer may conflict with existing NVIDIA drivers.
+  
+  Option A - Install CUDA without driver (recommended if nvidia-smi works):
+  # sh cuda_12.3.0_545.23.06_linux.run --toolkit --silent
+  
+  Option B - Let installer handle everything:
+  # sh cuda_12.3.0_545.23.06_linux.run --override
+  
+  Option C - Remove old drivers first (CAUTION!):
+  # nvidia-uninstall
+  # sh cuda_12.3.0_545.23.06_linux.run
+
+ERROR 4: "Insufficient disk space" or "Extraction failed"
+Solution:
+  This is COMMON on XCP-ng! Root partition is only 18 GB.
+  
+  ✓ BEST SOLUTION: Use the LVM method in Step H above!
+    This uses your terabytes of free LVM space for CUDA installation.
+  
+  Or try cleanup (less reliable):
+  # yum clean all
+  # rm -rf /tmp/*
+  # df -h /
+  
+  Need at least 15 GB free for CUDA 12.3.
+  If still not enough space, you MUST use Step H (LVM method).
+
+ERROR 5: "Missing kernel headers" or "Unable to find kernel source"
+Solution:
+  Install kernel development packages:
+  # yum install -y kernel-devel-$(uname -r)
+  # yum install -y kernel-headers-$(uname -r)
+  
+  If still fails, try matching kernel:
+  # uname -r
+  # yum list available kernel-devel
+  # yum install -y kernel-devel
+
+ERROR 6: "X server is running" or "Nouveau kernel driver is loaded"
+Solution:
+  Option A - Use silent install (works with X running):
+  # sh cuda_12.3.0_545.23.06_linux.run --silent --toolkit --samples
+  
+  Option B - Disable nouveau and reboot:
+  # echo "blacklist nouveau" > /etc/modprobe.d/blacklist-nouveau.conf
+  # echo "options nouveau modeset=0" >> /etc/modprobe.d/blacklist-nouveau.conf
+  # dracut --force
+  # reboot
+
+ERROR 7: "Installer failed" or "Installation incomplete"
+Solution:
+  Check the installation log:
+  # cat /var/log/nvidia-installer.log
+  # cat /var/log/cuda-installer.log
+  
+  Try manual extraction and installation:
+  # sh cuda_12.3.0_545.23.06_linux.run --extract=/tmp/cuda_extract
+  # cd /tmp/cuda_extract
+  # ls -la
+  # sudo ./cuda-installer --toolkit
+
+ERROR 8: Download fails or file corrupted
+Solution:
+  Use alternative download method:
+  # wget --no-check-certificate https://developer.download.nvidia.com/compute/cuda/12.3.0/local_installers/cuda_12.3.0_545.23.06_linux.run
+  
+  Or use curl:
+  # curl -O https://developer.download.nvidia.com/compute/cuda/12.3.0/local_installers/cuda_12.3.0_545.23.06_linux.run
+  
+  Verify file size (should be ~3-4 GB):
+  # ls -lh cuda_12.3.0_545.23.06_linux.run
+
+ERROR 9: boost::filesystem::copy_file "No such file or directory"
+         OR "Extraction failed. Ensure there is enough space in /tmp"
+         
+         Example error:
+         what(): boost::filesystem::copy_file: No such file or directory:
+         "./builds/cuda_cupti/extras/CUPTI/lib64/libcheckpoint.so",
+         "/usr/local/cuda-12.3/extras/CUPTI/lib64/libcheckpoint.so"
+         
+         OR:
+         Extraction failed.
+         Ensure there is enough space in /tmp and that the installation 
+         package is not corrupt
+
+Solution:
+  This means EITHER not enough disk space OR corrupted download.
+  
+  ✓ RECOMMENDED: Use the LVM method in Step H above!
+    This gives you 50 GB of space and avoids all extraction issues.
+  
+  OR try manual extraction (if you have 15+ GB free on /):
+  
+  Step A - Check you have free space:
+  # df -h / /tmp /usr/local
+  
+  If less than 15 GB free anywhere, use Step H (LVM method) instead!
+
+  Step B - Extract to a clean directory with custom TMPDIR:
+  # mkdir -p /root/cuda_12.3_extract
+  # mkdir -p /root/cuda_tmp
+  # export TMPDIR=/root/cuda_tmp
+  # sh cuda_12.3.0_545.23.06_linux.run --extract=/root/cuda_12.3_extract
+
+  Step C - Verify file size is correct (~3.6 GB):
+  # ls -lh cuda_12.3.0_545.23.06_linux.run
+  
+  If much smaller than 3.6 GB, re-download:
+  # rm -f cuda_12.3.0_545.23.06_linux.run
+  # wget https://developer.download.nvidia.com/compute/cuda/12.3.0/local_installers/cuda_12.3.0_545.23.06_linux.run
+
+ERROR 10: "Driver version mismatch"
+Solution:
+  Check current driver version:
+  # nvidia-smi
+  
+  If driver works but version is old:
+  # sh cuda_12.3.0_545.23.06_linux.run --toolkit --toolkitpath=/usr/local/cuda-12.3 --no-drm
+  
+  Then update symlink:
+  # ln -sf /usr/local/cuda-12.3 /usr/local/cuda
+
+ERROR 11: Installation hangs or freezes
+Solution:
+  Use silent mode with no questions:
+  # sh cuda_12.3.0_545.23.06_linux.run --silent --toolkit --samples --override
+  
+  Or run with verbose logging:
+  # sh cuda_12.3.0_545.23.06_linux.run --verbose --log=/tmp/cuda-install.log
+
+ALTERNATIVE: Use Repository Installation (Does NOT work on XCP-ng 8.x!)
+-----------------------------------------------------------------------
+⚠️ WARNING: Repository installation FAILS on XCP-ng 8.x! ⚠️
+
+XCP-ng 8.x is based on CentOS 7, but CUDA 12.3 repositories require RHEL 8.
+If you try: yum install cuda-toolkit-12-3
+
+You will get:
+"Packages skipped because of dependency problems:
+    cuda-toolkit-12-3-12.3.2-1.x86_64 from cuda-rhel8-x86_64
+    ... (100+ packages skipped)"
+
+The RHEL 8 packages need libraries not available in CentOS 7:
+- libxcb-icccm.so.4, libxcb-image.so.0, libxcb-keysyms.so.1
+- libOpenGL.so.0 (EL8 mesa libs)
+- libatomic.so.1 (newer gcc)
+- Many X11/GUI dependencies for nsight-systems
+
+SOLUTION: You MUST use the runfile method on XCP-ng 8.x!
+---------------------------------------------------------
+Repository install only works on RHEL 8+/Rocky 8+/Alma 8+.
+
+For XCP-ng 8.x, go back to ERROR 9 above and use the extraction method.
+
+If you're on actual RHEL 8/Rocky 8/Alma 8 (not XCP-ng), repository works:
+# wget https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+# mv cuda-rhel8.repo /etc/yum.repos.d/
+# yum clean all
+# yum install -y cuda-toolkit-12-3
+
+After installation, verify:
+# nvcc --version
+# nvidia-smi
+
+If both work, CUDA is properly installed! ✓
+
+STILL HAVING ISSUES?
+--------------------
+Please provide the specific error message you're seeing, and I can give you 
+targeted help. Common things to share:
+
+1. The exact error message
+2. Output of: nvidia-smi
+3. Output of: uname -r
+4. Output of: cat /etc/redhat-release
+5. Output of: df -h
+6. Last 20 lines of: /var/log/nvidia-installer.log (if exists)
+
+Step 4.2: Create CUDA Test Kernel
+----------------------------------
+
+Goal (what you asked for):
+--------------------------
+Send an instruction from the VM to the host mediator, execute REAL CUDA on the
+mediator (dom0), and return the result back to the VM.
+
+Reality check (dom0 CUDA):
+--------------------------
+Some Xen/XCP-ng setups allow real CUDA in dom0; some don't (even if `nvidia-smi`
+works). We'll *test* CUDA in dom0 first. If it works, proceed with real CUDA.
+
+Step 4.2A: CUDA Sanity Test in dom0 (REQUIRED)
+----------------------------------------------
+
+On the HOST, create this file:
+# nano cuda_sanity.cu
+
+Paste this:
+
+---BEGIN FILE cuda_sanity.cu---
+#include <stdio.h>
+#include <cuda_runtime.h>
+
+int main() {
+    int count = 0;
+    cudaError_t err = cudaGetDeviceCount(&count);
+    if (err != cudaSuccess) {
+        printf("cudaGetDeviceCount failed: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
+    printf("CUDA devices: %d\n", count);
+    if (count < 1) return 1;
+
+    cudaSetDevice(0);
+    void *p = NULL;
+    err = cudaMalloc(&p, 4);
+    if (err != cudaSuccess) {
+        printf("cudaMalloc failed: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
+    cudaFree(p);
+    printf("CUDA sanity OK\n");
+    return 0;
+}
+---END FILE cuda_sanity.cu---
+
+Compile and run:
+# nvcc -O2 -o cuda_sanity cuda_sanity.cu
+# ./cuda_sanity
+
+Expected output:
+CUDA devices: 1   (or more)
+CUDA sanity OK
+
+If this FAILS in dom0:
+- You cannot do "CUDA on the mediator (dom0)" on this host configuration.
+- The correct architecture is: VM → mediator → GPU-enabled VM worker (passthrough)
+  → mediator → VM. (We can add this as Phase 2+ if needed.)
+
+If this PASSES, continue to Step 4.2B.
+
+Step 4.2B: Create REAL CUDA Vector Add Function (dom0 mediator)
+---------------------------------------------------------------
+
+On the HOST, create this file:
+# nano cuda_vector_add_real.cu
+
+Paste this:
+
+---BEGIN FILE cuda_vector_add_real.cu---
+#include <stdio.h>
+#include <stdlib.h>
+#include <cuda_runtime.h>
+
+// CUDA kernel for vector addition
+__global__ void vectorAdd(float *a, float *b, float *c, int n) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx < n) {
+        c[idx] = a[idx] + b[idx];
+    }
+}
+
+// Export a C symbol so it can be called from the mediator (C file)
+extern "C" int run_vector_add_test(char *result_msg, int max_len) {
+    const int N = 1024;
+    const int SIZE = N * sizeof(float);
+    float *h_a, *h_b, *h_c;
+    float *d_a, *d_b, *d_c;
+    int errors = 0;
+    cudaError_t err;
+    
+    h_a = (float*)malloc(SIZE);
+    h_b = (float*)malloc(SIZE);
+    h_c = (float*)malloc(SIZE);
+    
+    for (int i = 0; i < N; i++) {
+        h_a[i] = (float)i;
+        h_b[i] = (float)(i * 2);
+    }
+
+    cudaSetDevice(0);
+    err = cudaMalloc(&d_a, SIZE);
+    if (err != cudaSuccess) {
+        snprintf(result_msg, max_len, "CUDA Error: cudaMalloc(d_a): %s", cudaGetErrorString(err));
+        free(h_a); free(h_b); free(h_c);
+        return -1;
+    }
+    err = cudaMalloc(&d_b, SIZE);
+    if (err != cudaSuccess) {
+        snprintf(result_msg, max_len, "CUDA Error: cudaMalloc(d_b): %s", cudaGetErrorString(err));
+        cudaFree(d_a);
+        free(h_a); free(h_b); free(h_c);
+        return -1;
+    }
+    err = cudaMalloc(&d_c, SIZE);
+    if (err != cudaSuccess) {
+        snprintf(result_msg, max_len, "CUDA Error: cudaMalloc(d_c): %s", cudaGetErrorString(err));
+        cudaFree(d_a); cudaFree(d_b);
+        free(h_a); free(h_b); free(h_c);
+        return -1;
+    }
+    
+    cudaMemcpy(d_a, h_a, SIZE, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b, SIZE, cudaMemcpyHostToDevice);
+    
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
+    vectorAdd<<<blocksPerGrid, threadsPerBlock>>>(d_a, d_b, d_c, N);
+    
+    cudaDeviceSynchronize();
+    
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        snprintf(result_msg, max_len, "CUDA Error: %s", cudaGetErrorString(err));
+        cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+        free(h_a); free(h_b); free(h_c);
+        return -1;
+    }
+    
+    cudaMemcpy(h_c, d_c, SIZE, cudaMemcpyDeviceToHost);
+    
+    for (int i = 0; i < N; i++) {
+        if (h_c[i] != (h_a[i] + h_b[i])) {
+            errors++;
+        }
+    }
+    
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_c);
+    free(h_a);
+    free(h_b);
+    free(h_c);
+    
+    if (errors == 0) {
+        snprintf(result_msg, max_len, 
+                 "Vector add PASSED: %d elements, 0 errors (CUDA on H100)", N);
+        return 0;
+    } else {
+        snprintf(result_msg, max_len, 
+                 "Vector add FAILED: %d errors out of %d", errors, N);
+        return -1;
+    }
+}
+---END FILE cuda_vector_add_real.cu---
+
+Save and exit.
+
+Step 4.2C (optional fallback): Simulated Vector Add (only if CUDA sanity fails)
+-------------------------------------------------------------------------------
+
+If `cuda_sanity` fails in dom0, you cannot run CUDA in the mediator here.
+In that case, keep using the simulated function from earlier versions of this
+guide, OR move to a GPU-passthrough VM worker design.
+
+Step 4.3: Create Enhanced Host Mediator with CUDA
+--------------------------------------------------
+
+# nano cuda_host_mediator.c
+
+Type this (network-safe version with CUDA):
+
+---BEGIN FILE cuda_host_mediator.c---
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <time.h>
+
+#define CMD_FILE "/dev/shm/vgpu/command.txt"
+#define RSP_FILE "/dev/shm/vgpu/response.txt"
+
+// Command codes
+#define CMD_NOP          0
+#define CMD_VECTOR_ADD   1
+#define CMD_GPU_INFO     2
+
+// External CUDA function
+extern int run_vector_add_test(char *result_msg, int max_len);
+
+void get_timestamp(char *buffer, int size) {
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    strftime(buffer, size, "%H:%M:%S", t);
+}
+
+int main() {
+    FILE *cmd_fp, *rsp_fp;
+    uint32_t last_cmd = 0;
+    uint32_t current_cmd = 0;
+    unsigned int cmd_count = 0;
+    char timestamp[32];
+    char result_msg[512];
+    int result;
+    
+    printf("===========================================\n");
+    printf("vGPU Host Mediator with CUDA - Phase 1\n");
+    printf("===========================================\n");
+    
+    // Initialize response file
+    rsp_fp = fopen(RSP_FILE, "w");
+    if (rsp_fp) {
+        fprintf(rsp_fp, "0:Ready - CUDA enabled\n");
+        fclose(rsp_fp);
+    }
+    
+    printf("✓ Using file-based communication\n");
+    printf("✓ CUDA support enabled\n");
+    printf("\n");
+    printf("Waiting for commands from VM...\n");
+    printf("(Press Ctrl+C to stop)\n");
+    printf("\n");
+    
+    while (1) {
+        cmd_fp = fopen(CMD_FILE, "r");
+        if (cmd_fp) {
+            if (fscanf(cmd_fp, "%u", &current_cmd) == 1) {
+                if (current_cmd != last_cmd && current_cmd != 0) {
+                    cmd_count++;
+                    get_timestamp(timestamp, sizeof(timestamp));
+                    
+                    printf("[%s] Command #%u: ", timestamp, cmd_count);
+                    
+                    switch (current_cmd) {
+                        case CMD_VECTOR_ADD:
+                            printf("VECTOR_ADD\n");
+                            printf("           Executing CUDA vector add on GPU...\n");
+                            
+                            result = run_vector_add_test(result_msg, sizeof(result_msg));
+                            
+                            rsp_fp = fopen(RSP_FILE, "w");
+                            if (rsp_fp) {
+                                fprintf(rsp_fp, "%d:%s\n", 
+                                        (result == 0) ? 1 : 2, result_msg);
+                                fflush(rsp_fp);
+                                fclose(rsp_fp);
+                            }
+                            
+                            printf("           Result: %s\n", result_msg);
+                            break;
+                            
+                        case CMD_GPU_INFO:
+                            printf("GPU_INFO\n");
+                            
+                            rsp_fp = fopen(RSP_FILE, "w");
+                            if (rsp_fp) {
+                                fprintf(rsp_fp, "1:GPU: NVIDIA H100 (see nvidia-smi for exact model/VRAM)\n");
+                                fflush(rsp_fp);
+                                fclose(rsp_fp);
+                            }
+                            break;
+                            
+                        default:
+                            printf("UNKNOWN (%u)\n", current_cmd);
+                            
+                            rsp_fp = fopen(RSP_FILE, "w");
+                            if (rsp_fp) {
+                                fprintf(rsp_fp, "2:Unknown command: %u\n", current_cmd);
+                                fflush(rsp_fp);
+                                fclose(rsp_fp);
+                            }
+                            break;
+                    }
+                    
+                    last_cmd = current_cmd;
+                    printf("\n");
+                }
+            }
+            fclose(cmd_fp);
+        }
+        
+        usleep(50000);
+    }
+    
+    return 0;
+}
+---END FILE cuda_host_mediator.c---
+
+Save and exit.
+
+Step 4.4: Compile CUDA-Enabled Mediator
+----------------------------------------
+
+Before compiling, ensure gcc is installed:
+# gcc --version
+
+Compile the network-safe mediator and link in the REAL CUDA function:
+
+# nvcc -O2 -o cuda_mediator cuda_host_mediator.c cuda_vector_add_real.cu
+
+Wait for compilation (should complete in a few seconds).
+
+TROUBLESHOOTING Compilation Errors (Real CUDA):
+--------------------------------------------------------------------
+
+ERROR: "nvcc: command not found"
+
+Solution:
+  CUDA toolkit (nvcc) is not installed. Return to Step 4.1 and install the toolkit,
+  then ensure `/usr/local/cuda/bin` is on your PATH.
+
+ERROR: "undefined reference to 'run_vector_add_test'"
+Solution:
+  Ensure your `cuda_vector_add_real.cu` contains:
+    extern "C" int run_vector_add_test(...)
+  and you compiled exactly:
+    nvcc -O2 -o cuda_mediator cuda_host_mediator.c cuda_vector_add_real.cu
+
+Verify compilation succeeded:
+# ls -la cuda_mediator
+
+Expected output:
+-rwxr-xr-x 1 root root 16384 Dec 14 10:01 cuda_mediator
+
+The 'x' means it's executable! ✓ CUDA mediator compiled!
+
+Step 4.5: Test CUDA Mediator
+-----------------------------
+
+Stop the old mediator (Ctrl+C in Terminal 1).
+
+Start new CUDA mediator:
+# ./cuda_mediator
+
+You should see:
+===========================================
+vGPU Host Mediator with CUDA - Phase 1
+===========================================
+✓ Using file-based communication
+✓ CUDA support enabled
+
+Waiting for commands from VM...
+
+Step 4.6: Update VM Client for CUDA Commands
+---------------------------------------------
+
+In the VM, create new test program:
+
+# nano gpu_cuda_test.c
+
+---BEGIN FILE gpu_cuda_test.c---
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <string.h>
+
+#define CMD_FILE "/mnt/vgpu/command.txt"
+#define RSP_FILE "/mnt/vgpu/response.txt"
+
+#define CMD_VECTOR_ADD   1
+#define CMD_GPU_INFO     2
+
+int send_command(uint32_t cmd, const char *cmd_name) {
+    FILE *cmd_fp, *rsp_fp;
+    char response[512];
+    int status;
+    int timeout = 0;
+    
+    printf(">>> Sending: %s\n", cmd_name);
+    
+    // Write command
+    cmd_fp = fopen(CMD_FILE, "w");
+    if (!cmd_fp) {
+        printf("✗ Cannot write command\n");
+        return -1;
+    }
+    fprintf(cmd_fp, "%u\n", cmd);
+    fflush(cmd_fp);
+    fclose(cmd_fp);
+    
+    // Wait for response
+    sleep(2);  // Give host time to process (Phase 1 may simulate GPU work)
+    
+    while (timeout < 100) {
+        rsp_fp = fopen(RSP_FILE, "r");
+        if (rsp_fp) {
+            if (fgets(response, sizeof(response), rsp_fp)) {
+                if (sscanf(response, "%d:", &status) == 1) {
+                    if (status != 0) {
+                        char *colon = strchr(response, ':');
+                        if (colon) {
+                            printf(">>> Response: %s", colon + 1);
+                            printf(">>> Status: %s\n\n", 
+                                   status == 1 ? "SUCCESS" : "ERROR");
+                        }
+                        fclose(rsp_fp);
+                        return status == 1 ? 0 : -1;
+                    }
+                }
+            }
+            fclose(rsp_fp);
+        }
+        usleep(100000);
+        timeout++;
+    }
+    
+    printf("✗ TIMEOUT\n\n");
+    return -1;
+}
+
+int main() {
+    printf("===========================================\n");
+    printf("vGPU CUDA Test Client\n");
+    printf("===========================================\n");
+    printf("✓ Connected to host\n\n");
+    
+    // Test 1: Get GPU info
+    send_command(CMD_GPU_INFO, "GET GPU INFO");
+    
+    // Test 2: Run CUDA vector addition (executed by host mediator)
+    send_command(CMD_VECTOR_ADD, "RUN VECTOR ADD (CUDA)");
+    
+    printf("===========================================\n");
+    printf("✓ All tests completed!\n");
+    printf("===========================================\n");
+    
+    return 0;
+}
+---END FILE gpu_cuda_test.c---
+
+Save and exit.
+
+Compile:
+# gcc -o gpu_cuda_test gpu_cuda_test.c
+
+Step 4.7: Run Phase 1 Test!
+-------------------------
+
+In the VM:
+# ./gpu_cuda_test
+
+Expected output:
+===========================================
+vGPU CUDA Test Client
+===========================================
+✓ Connected to host
+
+>>> Sending: GET GPU INFO
+>>> Response: GPU: NVIDIA H100 (see nvidia-smi for exact model/VRAM)
+>>> Status: SUCCESS
+
+>>> Sending: RUN VECTOR ADD (CUDA)
+>>> Response: Vector add PASSED: 1024 elements, 0 errors (CUDA on H100)
+>>> Status: SUCCESS
+
+===========================================
+✓ All tests completed!
+===========================================
+
+🎉 CONGRATULATIONS! 🎉
+You completed Phase 1 proof-of-concept!
+
+NOTE: If `cuda_sanity` fails in dom0, you cannot run CUDA on the mediator in this
+configuration; in that case use a GPU-passthrough VM worker architecture.
+
+================================================================================
+PART 5: VERIFY PHASE 1 SUCCESS
+================================================================================
+
+Phase 1 Success Criteria Checklist:
+------------------------------------
+
+✓ Reliable VM ↔ host command path exists (via NFS/sshfs shared folder)
+✓ VM → host → VM round-trip response works reliably
+✓ A test workload completes successfully through the mediation daemon
+✓ Two VMs can run mediated workloads (test with 2nd VM)
+✓ Architecture and communication flow proven
+
+What You've Accomplished:
+-------------------------
+1. ✓ Set up file-based communication between VM and host (NFS/sshfs)
+2. ✓ Created host mediation daemon that receives commands
+3. ✓ Created VM client that sends commands
+4. ✓ Integrated GPU workload execution via CUDA (Phase 1)
+5. ✓ Tested end-to-end: VM → host → processing → back to VM
+6. ✓ Proven the mediation architecture works
+
+About the CUDA-in-dom0 requirement:
+-----------------------------------
+For this guide's "CUDA on mediator" design, dom0 must pass the CUDA sanity test
+(Step 4.2A). If CUDA is not available in dom0 on your host configuration:
+
+- XCP-ng runs on Xen hypervisor
+- Some dom0 configurations restrict or complicate CUDA workloads
+- Common symptom: `cudaMalloc`/GPU memory ops failing in dom0
+
+Then you must switch to a GPU-passthrough VM worker architecture (mediator
+orchestrates; GPU work runs in the GPU-enabled VM).
+
+For Phase 2+ (alternative architecture if dom0 CUDA fails):
+- Move GPU execution to a VM with GPU passthrough
+- Maintain the same mediation architecture and command protocol
+- Host mediator delegates to a GPU-enabled VM worker
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+You've completed the FASTEST proof-of-concept path!
+
+Now you can:
+
+Option 1: Test with Second VM
+------------------------------
+- Set up second VM
+- Mount NFS share
+- Run gpu_cuda_test from both VMs simultaneously
+- Verify no crashes
+
+Option 2: Add Proper PCI Device
+--------------------------------
+- Follow QUICKSTART_PHASE1.txt Step 3 (QEMU device)
+- Make device appear in lspci
+- More "proper" virtualization
+
+Option 3: Move to Phase 2
+--------------------------
+- Add per-VM queues
+- Implement round-robin scheduling
+- Add metrics and monitoring
+
+Option 4: Improve Current System
+---------------------------------
+- Add more CUDA kernels (matrix multiply, etc.)
+- Add error handling
+- Add logging
+- Add performance metrics
+
+================================================================================
+TROUBLESHOOTING COMMON ISSUES
+================================================================================
+
+Problem: VM cannot write/read command/response files
+Solution: 
+  - Check /mnt/vgpu is mounted: mount | grep /mnt/vgpu
+  - Remount: sudo mount -t nfs <host-ip>:/var/vgpu /mnt/vgpu
+  - Check host NFS is running: systemctl status nfs-server
+
+Problem: Vector add test fails / "CUDA Error" in Phase 2
+Solution:
+  - Check nvidia-smi shows GPU
+  - Check CUDA path: nvcc --version
+  - Verify no other program is using GPU
+
+Problem: Mediator shows "Timeout"
+Solution:
+  - Make sure mediator is running on host
+  - Check firewall not blocking NFS
+  - Verify /dev/shm/vgpu/command.txt and /dev/shm/vgpu/response.txt exist
+
+Problem: Compilation errors
+Solution:
+  - Install gcc: yum install gcc
+  - Install CUDA: check /usr/local/cuda exists
+  - Check for typos in code
+
+Problem: NFS mount fails
+Solution:
+  - Check host IP is correct
+  - Ping host from VM: ping <host-ip>
+  - Check NFS exports: exportfs -v
+  - Restart NFS: systemctl restart nfs-server
+
+================================================================================
+SUMMARY
+================================================================================
+
+What You Built:
+---------------
+A working VM-to-host GPU mediation system that:
+- Allows VM to send GPU commands to host
+- Executes CUDA workloads in dom0 (when `cuda_sanity` passes)
+- Returns results back to VM
+- Supports multiple VMs concurrently
+
+Time Spent:
+-----------
+- Part 1 (Setup): 30 minutes
+- Part 2 (Communication): 2 hours
+- Part 3 (Testing): 15 minutes
+- Part 4 (CUDA): 1-2 hours
+Total: ~4 hours
+
+This is your Phase 1 proof-of-concept! ✓
+
+You can now show the client that:
+1. VM can communicate with host
+2. Host can execute a mediated test workload and return results
+3. Multiple VMs can share the mediation path (and later, the GPU)
+4. The mediation architecture works
+
+Congratulations on completing Phase 1! 🎉
+
+================================================================================
+END OF BEGINNER'S GUIDE
+================================================================================

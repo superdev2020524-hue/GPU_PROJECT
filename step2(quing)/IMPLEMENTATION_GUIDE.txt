@@ -1,0 +1,641 @@
+================================================================================
+          PHASE 2: PRACTICAL IMPLEMENTATION GUIDE
+          Queue-Based Mediation with Pool Separation
+================================================================================
+
+Date: January 24, 2026
+Purpose: Solve the REAL problems - not theoretical steps
+
+================================================================================
+                    THE CORE PROBLEMS TO SOLVE
+================================================================================
+
+Problem 1: How does VM send priority information to daemon?
+-----------------------------------------------------------
+Answer: VM reads from vGPU stub MMIO registers, then sends via file
+
+Problem 2: How to maintain two separate pool queues (A and B)?
+--------------------------------------------------------------
+Answer: Two independent priority queues in daemon, indexed by pool_id
+
+Problem 3: How to ensure pools don't interfere with each other?
+---------------------------------------------------------------
+Answer: Per-pool processing, separate queue management, independent scheduling
+
+Problem 4: How to order requests by priority within same pool?
+--------------------------------------------------------------
+Answer: Priority queue data structure (heap or sorted list) + FIFO tie-breaking
+
+================================================================================
+                    ARCHITECTURE: DATA FLOW
+================================================================================
+
+Step-by-Step Data Flow:
+----------------------
+
+1. VM Startup:
+   - VM boots with vGPU stub device attached
+   - Properties set: pool_id=A, priority=high, vm_id=100
+   - VM can read these via MMIO at /sys/bus/pci/devices/0000:00:06.0/resource0
+
+2. VM Reads Own Properties:
+   - Open MMIO region: /sys/bus/pci/devices/0000:00:06.0/resource0
+   - Read offset 0x008: pool_id ('A' or 'B')
+   - Read offset 0x00C: priority (0=low, 1=medium, 2=high)
+   - Read offset 0x010: vm_id (unique identifier)
+
+3. VM Sends Request:
+   - Create request file: /mnt/vgpu/vm<id>/request.txt
+   - Format: "pool_id:priority:vm_id:command"
+   - Example: "A:2:100:VECTOR_ADD"
+
+4. Daemon Polls:
+   - Watch /var/vgpu/vm*/request.txt files
+   - Parse each request
+   - Insert into correct pool queue (A or B) based on pool_id
+   - Sort by priority (high=2 first, medium=1, low=0)
+   - FIFO within same priority (timestamp)
+
+5. Daemon Processes:
+   - For Pool A: pop highest priority request
+   - Execute GPU workload
+   - Write response: /var/vgpu/vm<id>/response.txt
+   - For Pool B: independent processing
+
+6. VM Receives Response:
+   - Poll /mnt/vgpu/vm<id>/response.txt
+   - Read result
+   - Display or process
+
+================================================================================
+                    SOLUTION 1: VM CLIENT IMPLEMENTATION
+================================================================================
+
+File: CODE/vm_client.c
+Purpose: Read vGPU properties and send request to daemon
+
+Key Functions:
+-------------
+
+1. Read vGPU Properties from MMIO
+---------------------------------
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <string.h>
+
+typedef struct {
+    char pool_id;        // 'A' or 'B'
+    uint32_t priority;   // 0=low, 1=medium, 2=high
+    uint32_t vm_id;      // Unique VM identifier
+} VGPUProperties;
+
+int read_vgpu_properties(VGPUProperties *props) {
+    const char *pci_resource = "/sys/bus/pci/devices/0000:00:06.0/resource0";
+    int fd;
+    volatile uint32_t *mmio;
+    
+    // Open PCI resource
+    fd = open(pci_resource, O_RDONLY);
+    if (fd < 0) {
+        perror("Failed to open vGPU device (need root or vgpu-stub not attached)");
+        return -1;
+    }
+    
+    // Map MMIO region (4KB)
+    mmio = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+    if (mmio == MAP_FAILED) {
+        perror("Failed to mmap MMIO");
+        close(fd);
+        return -1;
+    }
+    
+    // Read properties from MMIO registers
+    props->pool_id = (char)mmio[0x008/4];      // Offset 0x008: Pool ID
+    props->priority = mmio[0x00C/4];           // Offset 0x00C: Priority
+    props->vm_id = mmio[0x010/4];              // Offset 0x010: VM ID
+    
+    // Cleanup
+    munmap((void*)mmio, 4096);
+    close(fd);
+    
+    return 0;
+}
+
+2. Send Request to Daemon
+-------------------------
+
+int send_request(VGPUProperties *props, const char *command) {
+    char request_file[256];
+    char request_data[512];
+    FILE *fp;
+    
+    // Construct per-VM request file path
+    snprintf(request_file, sizeof(request_file), 
+             "/mnt/vgpu/vm%u/request.txt", props->vm_id);
+    
+    // Format: "pool_id:priority:vm_id:command"
+    snprintf(request_data, sizeof(request_data),
+             "%c:%u:%u:%s\n",
+             props->pool_id, props->priority, props->vm_id, command);
+    
+    // Write request (explicit I/O, no buffering)
+    fp = fopen(request_file, "w");
+    if (!fp) {
+        perror("Failed to open request file");
+        return -1;
+    }
+    
+    fprintf(fp, "%s", request_data);
+    fflush(fp);  // Force write
+    fclose(fp);  // Ensure data is on disk
+    
+    printf("Sent request: %s", request_data);
+    return 0;
+}
+
+3. Wait for Response
+-------------------
+
+int wait_for_response(VGPUProperties *props, char *response, size_t len) {
+    char response_file[256];
+    FILE *fp;
+    int timeout = 30;  // 30 seconds
+    int waited = 0;
+    
+    // Construct per-VM response file path
+    snprintf(response_file, sizeof(response_file),
+             "/mnt/vgpu/vm%u/response.txt", props->vm_id);
+    
+    // Poll for response
+    while (waited < timeout) {
+        fp = fopen(response_file, "r");
+        if (fp) {
+            if (fgets(response, len, fp)) {
+                // Check if response is not "0:Ready"
+                if (strncmp(response, "0:", 2) != 0) {
+                    fclose(fp);
+                    return 0;  // Got response
+                }
+            }
+            fclose(fp);
+        }
+        
+        sleep(1);
+        waited++;
+    }
+    
+    return -1;  // Timeout
+}
+
+4. Complete VM Client Program
+-----------------------------
+
+int main(int argc, char *argv[]) {
+    VGPUProperties props;
+    char response[512];
+    const char *command = "VECTOR_ADD";
+    
+    if (argc > 1) {
+        command = argv[1];
+    }
+    
+    printf("=== VM GPU Request Client ===\n");
+    
+    // Step 1: Read vGPU properties from MMIO
+    if (read_vgpu_properties(&props) < 0) {
+        fprintf(stderr, "ERROR: Cannot read vGPU properties\n");
+        fprintf(stderr, "Make sure VM has vgpu-stub device attached\n");
+        return 1;
+    }
+    
+    printf("vGPU Properties:\n");
+    printf("  Pool ID:  %c\n", props.pool_id);
+    printf("  Priority: %u (%s)\n", props.priority,
+           props.priority == 2 ? "high" : 
+           props.priority == 1 ? "medium" : "low");
+    printf("  VM ID:    %u\n", props.vm_id);
+    printf("\n");
+    
+    // Step 2: Send request to daemon
+    if (send_request(&props, command) < 0) {
+        fprintf(stderr, "ERROR: Failed to send request\n");
+        return 1;
+    }
+    
+    // Step 3: Wait for response
+    printf("Waiting for response...\n");
+    if (wait_for_response(&props, response, sizeof(response)) < 0) {
+        fprintf(stderr, "ERROR: Timeout waiting for response\n");
+        return 1;
+    }
+    
+    printf("Response: %s", response);
+    
+    // Parse response status
+    if (strncmp(response, "1:", 2) == 0) {
+        printf("✅ SUCCESS!\n");
+        return 0;
+    } else if (strncmp(response, "2:", 2) == 0) {
+        printf("❌ ERROR from daemon\n");
+        return 1;
+    }
+    
+    return 0;
+}
+
+Build Instructions:
+------------------
+gcc -o vm_client vm_client.c
+chmod +x vm_client
+
+Usage (must run as root to access PCI):
+---------------------------------------
+sudo ./vm_client VECTOR_ADD
+
+================================================================================
+                    SOLUTION 2: DAEMON QUEUE MANAGEMENT
+================================================================================
+
+File: CODE/mediator.c
+Purpose: Maintain two separate pool queues with priority ordering
+
+Key Data Structures:
+-------------------
+
+1. Request Structure
+-------------------
+
+typedef struct Request {
+    char pool_id;           // 'A' or 'B'
+    uint32_t priority;      // 2=high, 1=medium, 0=low
+    uint32_t vm_id;         // Unique VM ID
+    char command[256];      // Command to execute
+    time_t timestamp;       // For FIFO tie-breaking
+    struct Request *next;   // Linked list
+} Request;
+
+2. Pool Queue Structure
+----------------------
+
+typedef struct {
+    char pool_id;           // 'A' or 'B'
+    Request *head;          // Head of priority queue
+    int count;              // Number of requests
+    pthread_mutex_t lock;   // Thread safety
+} PoolQueue;
+
+3. Mediation Daemon State
+-------------------------
+
+typedef struct {
+    PoolQueue pool_a;       // Queue for Pool A
+    PoolQueue pool_b;       // Queue for Pool B
+    int running;            // Control flag
+} MediatorState;
+
+Key Functions:
+-------------
+
+1. Initialize Pool Queues
+-------------------------
+
+void init_pool_queue(PoolQueue *queue, char pool_id) {
+    queue->pool_id = pool_id;
+    queue->head = NULL;
+    queue->count = 0;
+    pthread_mutex_init(&queue->lock, NULL);
+}
+
+void init_mediator(MediatorState *state) {
+    init_pool_queue(&state->pool_a, 'A');
+    init_pool_queue(&state->pool_b, 'B');
+    state->running = 1;
+}
+
+2. Insert Request into Queue (Priority-Sorted)
+----------------------------------------------
+
+void insert_request(PoolQueue *queue, Request *new_req) {
+    pthread_mutex_lock(&queue->lock);
+    
+    // Empty queue - insert at head
+    if (queue->head == NULL) {
+        queue->head = new_req;
+        new_req->next = NULL;
+        queue->count++;
+        pthread_mutex_unlock(&queue->lock);
+        return;
+    }
+    
+    // Find insertion point based on priority
+    // Higher priority first (2 > 1 > 0)
+    // Within same priority, FIFO (earlier timestamp first)
+    Request *curr = queue->head;
+    Request *prev = NULL;
+    
+    while (curr != NULL) {
+        // New request has HIGHER priority - insert before current
+        if (new_req->priority > curr->priority) {
+            break;
+        }
+        
+        // Same priority - check timestamp (FIFO)
+        if (new_req->priority == curr->priority &&
+            new_req->timestamp < curr->timestamp) {
+            break;
+        }
+        
+        prev = curr;
+        curr = curr->next;
+    }
+    
+    // Insert at head
+    if (prev == NULL) {
+        new_req->next = queue->head;
+        queue->head = new_req;
+    }
+    // Insert in middle or end
+    else {
+        prev->next = new_req;
+        new_req->next = curr;
+    }
+    
+    queue->count++;
+    pthread_mutex_unlock(&queue->lock);
+}
+
+3. Pop Highest Priority Request
+-------------------------------
+
+Request* pop_request(PoolQueue *queue) {
+    pthread_mutex_lock(&queue->lock);
+    
+    if (queue->head == NULL) {
+        pthread_mutex_unlock(&queue->lock);
+        return NULL;
+    }
+    
+    // Head is always highest priority (sorted insert)
+    Request *req = queue->head;
+    queue->head = req->next;
+    queue->count--;
+    
+    pthread_mutex_unlock(&queue->lock);
+    
+    return req;
+}
+
+4. Parse Incoming Request
+-------------------------
+
+Request* parse_request(const char *data) {
+    Request *req = malloc(sizeof(Request));
+    if (!req) return NULL;
+    
+    // Format: "pool_id:priority:vm_id:command"
+    // Example: "A:2:100:VECTOR_ADD"
+    
+    char pool[2];
+    unsigned int prio, vmid;
+    
+    if (sscanf(data, "%1[AB]:%u:%u:%255s", 
+               pool, &prio, &vmid, req->command) != 4) {
+        free(req);
+        return NULL;
+    }
+    
+    req->pool_id = pool[0];
+    req->priority = prio;
+    req->vm_id = vmid;
+    req->timestamp = time(NULL);
+    req->next = NULL;
+    
+    return req;
+}
+
+5. Poll for New Requests
+------------------------
+
+void poll_requests(MediatorState *state) {
+    char request_file[256];
+    char buffer[512];
+    FILE *fp;
+    
+    // Poll all VM directories (vm1 through vm10 for example)
+    for (int vm_id = 1; vm_id <= 10; vm_id++) {
+        snprintf(request_file, sizeof(request_file),
+                 "/var/vgpu/vm%d/request.txt", vm_id);
+        
+        fp = fopen(request_file, "r");
+        if (!fp) continue;
+        
+        if (fgets(buffer, sizeof(buffer), fp)) {
+            // Check if it's a new request (not empty, not just newline)
+            if (strlen(buffer) > 2) {
+                Request *req = parse_request(buffer);
+                if (req) {
+                    // Insert into correct pool queue
+                    if (req->pool_id == 'A') {
+                        insert_request(&state->pool_a, req);
+                        printf("[QUEUE] Pool A: Added priority=%u, vm=%u, count=%d\n",
+                               req->priority, req->vm_id, state->pool_a.count);
+                    } else if (req->pool_id == 'B') {
+                        insert_request(&state->pool_b, req);
+                        printf("[QUEUE] Pool B: Added priority=%u, vm=%u, count=%d\n",
+                               req->priority, req->vm_id, state->pool_b.count);
+                    }
+                    
+                    // Clear request file (mark as processed)
+                    fclose(fp);
+                    fp = fopen(request_file, "w");
+                    if (fp) fclose(fp);
+                }
+            }
+        } else {
+            fclose(fp);
+        }
+    }
+}
+
+6. Process Pool Queue
+---------------------
+
+void process_pool(PoolQueue *queue) {
+    Request *req = pop_request(queue);
+    if (!req) return;  // Queue empty
+    
+    printf("[PROCESS] Pool %c: Processing vm=%u, priority=%u, command=%s\n",
+           queue->pool_id, req->vm_id, req->priority, req->command);
+    
+    // Execute GPU workload (placeholder - CUDA integration later)
+    char result[512];
+    snprintf(result, sizeof(result),
+             "1:Pool %c processed: %s (prio=%u, vm=%u)",
+             queue->pool_id, req->command, req->priority, req->vm_id);
+    
+    // Write response to VM
+    char response_file[256];
+    snprintf(response_file, sizeof(response_file),
+             "/var/vgpu/vm%u/response.txt", req->vm_id);
+    
+    FILE *fp = fopen(response_file, "w");
+    if (fp) {
+        fprintf(fp, "%s\n", result);
+        fflush(fp);
+        fclose(fp);
+    }
+    
+    printf("[RESPONSE] Sent to vm%u: %s\n", req->vm_id, result);
+    
+    free(req);
+}
+
+7. Main Daemon Loop
+------------------
+
+int main() {
+    MediatorState state;
+    init_mediator(&state);
+    
+    printf("=== GPU Mediation Daemon Started ===\n");
+    printf("Pool A Queue: Ready\n");
+    printf("Pool B Queue: Ready\n");
+    printf("\n");
+    
+    while (state.running) {
+        // Step 1: Poll for new requests from all VMs
+        poll_requests(&state);
+        
+        // Step 2: Process Pool A (if has requests)
+        process_pool(&state.pool_a);
+        
+        // Step 3: Process Pool B (if has requests)
+        process_pool(&state.pool_b);
+        
+        // Sleep briefly to avoid busy-waiting
+        usleep(100000);  // 100ms
+    }
+    
+    return 0;
+}
+
+Build Instructions:
+------------------
+gcc -o mediator mediator.c -lpthread
+chmod +x mediator
+
+Usage:
+------
+sudo ./mediator
+
+================================================================================
+                    SOLUTION 3: TESTING PRIORITY ORDERING
+================================================================================
+
+Test Scenario: Verify Priority Works
+------------------------------------
+
+1. Setup: Three VMs with different priorities
+   - VM1: pool_id=A, priority=0 (low),    vm_id=1
+   - VM2: pool_id=A, priority=2 (high),   vm_id=2
+   - VM3: pool_id=A, priority=1 (medium), vm_id=3
+
+2. Submit requests in this order:
+   - VM1 submits (low priority)
+   - VM2 submits (high priority)
+   - VM3 submits (medium priority)
+
+3. Expected processing order:
+   - VM2 processed first (high priority)
+   - VM3 processed second (medium priority)
+   - VM1 processed last (low priority)
+
+4. Verification:
+   - Check mediator logs for processing order
+   - Confirm queue count changes correctly
+
+Test Command Sequence:
+---------------------
+
+[Terminal 1 - Start Daemon]
+./mediator | tee mediator.log
+
+[Terminal 2 - VM1 (low priority)]
+# Submit after 1 second
+sleep 1 && ./vm_client TEST_LOW
+
+[Terminal 3 - VM2 (high priority)]
+# Submit after 2 seconds
+sleep 2 && ./vm_client TEST_HIGH
+
+[Terminal 4 - VM3 (medium priority)]
+# Submit after 3 seconds
+sleep 3 && ./vm_client TEST_MEDIUM
+
+[Check mediator.log]
+grep PROCESS mediator.log
+
+Expected output order:
+[PROCESS] Pool A: vm=2, priority=2, command=TEST_HIGH
+[PROCESS] Pool A: vm=3, priority=1, command=TEST_MEDIUM
+[PROCESS] Pool A: vm=1, priority=0, command=TEST_LOW
+
+================================================================================
+                    SOLUTION 4: POOL SEPARATION TEST
+================================================================================
+
+Test Scenario: Verify Pools Don't Interfere
+-------------------------------------------
+
+1. Setup: Two VMs in different pools
+   - VM1: pool_id=A, priority=1, vm_id=1
+   - VM2: pool_id=B, priority=1, vm_id=2
+
+2. Submit simultaneously:
+   - VM1 submits to Pool A
+   - VM2 submits to Pool B
+
+3. Expected behavior:
+   - Both requests processed independently
+   - No queue interference
+   - Each pool maintains separate count
+
+4. Verification:
+   - Both VMs get responses
+   - Mediator shows separate pool queues
+   - Counts are independent
+
+================================================================================
+                    KEY IMPLEMENTATION POINTS
+================================================================================
+
+✅ VM Client:
+- Reads pool_id, priority, vm_id from vGPU stub MMIO
+- Sends "pool_id:priority:vm_id:command" format
+- Uses per-VM request/response files (/mnt/vgpu/vm<id>/)
+
+✅ Daemon:
+- Maintains two separate PoolQueue structures (A and B)
+- Each PoolQueue is a priority-sorted linked list
+- insert_request() does sorted insertion (priority + timestamp)
+- pop_request() always returns highest priority
+- Mutex locks prevent race conditions
+
+✅ Priority Ordering:
+- Higher number = higher priority (2 > 1 > 0)
+- Within same priority: FIFO (timestamp comparison)
+- Sorted at insertion time, O(n) insert, O(1) pop
+
+✅ Pool Separation:
+- Completely independent queues
+- No shared state between pools
+- Can process concurrently (future enhancement)
+
+================================================================================
+End of Implementation Guide
+================================================================================

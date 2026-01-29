@@ -1,0 +1,95 @@
+STEP 1: IOMMU Security Foundation
+Objective: Establish hardware-enforced isolation for DOD/DHS compliance
+Deliverables:
+IOMMU enabled and configured on host
+H100 GPU bound to VFIO driver for IOMMU-protected access
+IOMMU-protected communication channels established (replacing NFS)
+Xen grant tables configured for secure VM-host memory sharing
+Verification: All VM-host data transfer uses IOMMU-mapped memory
+Success Criteria:
+- IOMMU active with no fault logs
+- GPU accessible via VFIO with hardware DMA isolation
+- Communication channels IOMMU-protected
+- Existing Phase 1 functionality preserved
+Milestone: Security-compliant foundation established
+STEP 2: Pool and Priority Metadata System
+Objective: Enable pool assignment (GPU A/B) and priority levels per VM
+Deliverables:
+Enhanced vgpu-stub device with properties: pool_id, priority, vm_id
+Rebuilt QEMU with property support
+Metadata transmission via IOMMU-protected channels
+VM startup process includes pool and priority assignment
+Verification: Commands include pool and priority information
+Success Criteria:
+- VMs start with pool assignment (A or B)
+- Each VM has priority level (low/medium/high)
+- Metadata flows securely through IOMMU channels
+- No metadata leakage between VMs
+Milestone: VMs can be assigned to pools with priorities
+STEP 3: Priority-Based Queue Implementation
+Objective: Implement queuing system with priority-based scheduling
+Deliverables:
+Pool-based queue data structures (separate queues for Pool A and Pool B)
+Three-level priority queues per pool (high, medium, low)
+Scheduler that dequeues highest-priority commands first
+IOMMU-isolated GPU memory per VM
+Verification: High-priority commands execute before lower priorities
+Success Criteria:
+- Commands queue in correct pool
+- High-priority VMs serviced first
+- Within same priority: FIFO ordering
+- Pool A and Pool B remain independent
+- IOMMU enforces memory boundaries
+Milestone: Priority-based queuing operational
+STEP 4: Control Panel - Configuration Database
+Objective: Persistent storage for VM-to-pool assignments and priorities
+Deliverables:
+SQLite database with schema for VMs, pools, priorities
+Configuration API for managing assignments
+VM registration and query functions
+IOMMU domain tracking per VM
+Validation rules for pool capacity and priority values
+Success Criteria:
+- Database stores all VM assignments
+- Configuration persists across reboots
+- Can query: which VMs in Pool A? Which have high priority?
+- IOMMU policies tracked per VM
+Milestone: Configuration management system operational
+STEP 5: Control Panel - Administrative CLI
+Objective: Administrator interface for managing GPU virtualization
+Deliverables:
+CLI tool: vgpu-admin
+Commands: register-vm, list-pools, set-priority, show-vm
+Integration with XAPI for VM startup automation
+IOMMU status queries and validation
+Help documentation and error handling
+Example Commands:
+vgpu-admin register-vm --vm-id=1 --pool=A --priority=highvgpu-admin list-poolsvgpu-admin show-iommu-status --vm-id=1
+Success Criteria:
+- Can assign VMs 1-7 to Pool A, VMs 8-20 to Pool B
+- Can set/modify priorities via CLI
+- Can query system state and configuration
+- Integrates with VM lifecycle management
+Milestone: Control panel fully operational
+STEP 6: Multi-VM Validation & Client Demonstration
+Objective: Prove system meets all Phase 2 requirements at scale
+Deliverables:
+7-10 VMs configured across Pool A and Pool B
+Real workload testing (TensorFlow inference as validation)
+Performance metrics: latency by priority, queue depths, throughput
+IOMMU security validation under load
+Demonstration script showing all Phase 2 features
+Documentation: architecture, administrator guide, troubleshooting
+Test Scenarios:
+Pool Assignment: VMs 1-7  - Pool A, VMs 8-10 - Pool B
+Priority Scheduling: High-priority jobs complete first
+Pool Isolation: Pool A and Pool B operate independently
+Concurrent Load: All VMs submit workloads simultaneously
+Security: IOMMU blocks unauthorized cross-VM access
+Success Criteria:
+- All VMs complete workloads successfully
+- Priority ordering maintained under load
+- Pool isolation verified
+- IOMMU security validated
+- System stable for sustained operation
+- Real ML workloads (TensorFlow) execute correctly

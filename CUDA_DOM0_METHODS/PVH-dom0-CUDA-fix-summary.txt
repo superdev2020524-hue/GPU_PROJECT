@@ -1,0 +1,135 @@
+HOST-ONLY CUDA ON XCP-ng (dom0) — What we did, and why it worked
+Date: 2025-12-19
+
+Goal
+----
+Run CUDA in the XCP-ng host (dom0) ONLY (no passthrough, no vGPU, no CUDA inside VMs).
+
+
+1) The symptom
+-------------
+You could:
+- See the GPU (lspci showed NVIDIA H100 bound to the `nvidia` driver)
+- Run `nvidia-smi` and query device properties
+
+But CUDA “real work” failed immediately:
+- `cudaMalloc: operation not supported`
+- `cudaSetDevice: operation not supported`
+
+
+2) The key discovery in your logs (the root cause)
+--------------------------------------------------
+Your dom0 was booting as Xen PV (paravirtualized) dom0.
+
+The dmesg output contained BOTH of these critical lines:
+- "Hypervisor detected: Xen PV"
+- "NVRM: PAT configuration unsupported."
+
+Also, Linux reported:
+- "x86/PAT: MTRRs disabled, skipping PAT initialization too."
+
+What that means (beginner explanation):
+- NVIDIA’s driver needs specific CPU memory-cache attributes for certain GPU memory mappings
+  (especially write-combining / PAT-related behavior).
+- In Xen PV dom0, PAT/MTRR behavior is restricted/virtualized in a way that NVIDIA’s driver
+  considers unsupported.
+- So the driver can still do “lightweight” operations (enumeration, queries), but when CUDA
+  tries to do the first real allocation / GPU work submission path, the driver refuses and
+  you get “operation not supported”.
+
+In short:
+  CUDA failed because the NVIDIA kernel driver did not have a supported PAT setup in Xen PV dom0.
+
+
+3) The fix strategy (why we chose it)
+-------------------------------------
+We didn’t chase CUDA code changes or random driver versions because your logs already pointed to
+a *platform/boot-mode* problem.
+
+So we targeted the most likely architectural fix:
+  Switch dom0 from Xen PV to Xen PVH.
+
+Why PVH?
+- PVH dom0 runs much closer to a normal hardware-backed Linux environment than PV dom0.
+- That usually restores the platform behavior NVIDIA’s driver expects for PAT/WC handling.
+
+Important safety choice:
+- We did the change as a TEMPORARY one-time boot edit in GRUB first (pressing 'e'),
+  because it’s safer than permanently editing boot files when you’re testing.
+- You had iDRAC console access, so even if it didn’t boot, you could recover by choosing the
+  normal boot entry again.
+
+
+4) What happened on the first PVH attempt (why it rebooted)
+-----------------------------------------------------------
+When you first added:
+  dom0=pvh
+
+The host reboot-looped. The Xen boot log clearly said:
+  "Panic on CPU 0: Currently, iommu must be enabled for PVH hardware domain"
+
+Meaning:
+- On your system, PVH dom0 REQUIRES IOMMU enabled at the Xen level.
+- But your Xen command line still had: iommu=no
+
+
+5) The working change (what you actually did to fix it)
+-------------------------------------------------------
+In the GRUB “edit” screen, on the line that loads Xen (the one containing `xen.gz`):
+
+A) You enabled IOMMU for Xen:
+   Change:
+     iommu=no
+   To:
+     iommu=pt
+
+   (iommu=pt means “IOMMU enabled, but use passthrough-style mappings when possible” — a common
+   performance-friendly mode.)
+
+B) You set dom0 to PVH:
+     dom0=pvh
+
+After booting with those settings, Xen reported:
+- xen_commandline included: "iommu=pt dom0=pvh"
+
+And Linux dmesg now showed:
+- "Booting paravirtualized kernel on Xen PVH"
+- PAT/MTRR lines that no longer indicated PAT was being skipped
+- Crucially, the NVIDIA driver did NOT print:
+    "NVRM: PAT configuration unsupported."
+
+
+6) Proof it worked
+------------------
+After PVH + IOMMU enabled:
+- `./test_cuda2` succeeded:
+  - cudaMalloc: no error
+  - cudaMemcpy: no error
+  - cudaSetDevice: no error
+
+That’s the exact confirmation we needed: real CUDA allocations and basic operations now work in dom0.
+
+
+7) Why “iommu=pt + dom0=pvh” fixed CUDA (one-paragraph summary)
+---------------------------------------------------------------
+Your original PV dom0 environment caused NVIDIA’s driver to reject PAT-based memory attribute handling,
+which blocks the CUDA execution/memory-allocation path even though enumeration works. Switching dom0 to
+PVH made dom0’s CPU/memory behavior look “real enough” for the NVIDIA driver to accept PAT configuration,
+and enabling IOMMU (iommu=pt) satisfied Xen’s requirement for PVH dom0 on your machine—so CUDA could
+successfully allocate and submit work.
+
+
+8) Optional next step (recommended): make it persistent (do NOT do blindly)
+---------------------------------------------------------------------------
+Right now, your change may still be a “one boot only” GRUB edit unless you also updated the boot config.
+
+If you want this fix to survive reboots, the safe approach is:
+- Make a backup of the Xen GRUB config
+- Duplicate the existing boot entry
+- Add "iommu=pt dom0=pvh" only to the new entry
+- Reboot and select the new entry
+
+If you want, tell me whether you changed GRUB permanently already, and I’ll give you exact commands
+to verify persistence and safely update the config with a rollback option.
+
+

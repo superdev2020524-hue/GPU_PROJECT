@@ -1,0 +1,193 @@
+TIGERVNC / XCP-ng Ubuntu VM Install Progress (ACCURATE, built from screenshots + dom0 output)
+Date: 2025-12-24 (VM2) + 2025-12-23 (VM1 historical notes)
+
+How this document is maintained
+-------------------------------
+- Each screenshot you upload is incorporated IN ORDER as "IMAGE 01", "IMAGE 02", ...
+- For each image, the exact values/choices shown are written into the matching step below.
+- If something is not shown in any image or dom0 output, it is left as "UNKNOWN" until you provide it.
+
+GOAL
+- Two Ubuntu Server VMs reachable via SSH from your Ubuntu machine:
+  - VM1 IP: 10.25.33.11/24
+  - VM2 IP: 10.25.33.12/24
+  - Gateway: 10.25.33.1
+  - DNS: 8.8.8.8
+  - User: david
+  - Password: calvin123
+- These VMs will be used for Step 1 vGPU-stub verification on TWO VMs.
+
+CURRENT STATUS (IMPORTANT IDENTIFIERS)
+- XCP-ng dom0 IP: 10.25.33.10
+
+- VM1 name-label: ubuntu-fresh
+- VM1 UUID: b9b93a6d-a38e-5f77-76bb-1f23a4898c8d
+
+- VM2 name-label: ubuntu-fresh-2
+- VM2 UUID: 18e12484-8d39-57ff-75f2-42f95d69fd9c
+- ISO SR: "SMB ISO library" (SR UUID: 097e2b8c-af1a-d945-1432-8c0e7d0163fa)
+- ISO VDI UUID: 86d22032-6eda-4869-b6db-26b9d8faf023
+- ISO name-label: ubuntu-24.04.2-live-server-amd64.iso
+- Disk SR: "Local storage" (SR UUID: a38d2218-0ae3-cfa9-3ab1-bd16def94b3c)
+- Disk VDI UUID: 28cfc551-b242-42e1-a7c3-30f87df01fd1 (40GiB)
+- Disk VBD UUID: d655bf07-0acd-4634-c79f-0bc4933b58f4 (userdevice=0)
+- CD VBD UUID: 719cb042-cb37-d2a6-3120-1990d1e1aa01 (userdevice=3)
+- VIF UUID: 64566ec8-b359-b684-58e9-4462d4f5bfe6
+- Network UUID: 9ad61c24-289c-b654-aa85-6e95df85a2de (bridge xenbr0)
+- VM1 VIF MAC: 12:c8:3f:fe:a2:fc
+
+- VM2 VDI/VIF (from dom0 output on 2025-12-24):
+  - VM2 Disk VDI UUID: ba1db8b3-1207-4845-a9eb-c2d4a4697999 (40GiB)
+  - VM2 Disk VBD UUID: e2072b0d-8977-93ea-c80d-3bacdbb6a16c (device=0)
+  - VM2 CD  VBD UUID: f2b93394-02df-cee9-8f0a-0731f0f97f1f (device=3)
+  - VM2 VIF UUID:     e2de0391-ff22-134a-afe7-0a170850bd90 (device=0)
+  - VM2 VIF MAC:      46:a9:e6:51:9f:d8   (CONFIRMED by IMAGE 01/02)
+
+IMPORTANT LESSONS / FIXES WE MADE
+1) XCP-ng QEMU device model binary is NOT /usr/lib/xen/bin/qemu-system-x86_64.
+   On this host it’s /usr/lib64/xen/bin/qemu-system-i386 and the wrapper reads
+   platform:device-model-args from xenstore:
+   /local/domain/<domid>/platform/device-model-args
+
+2) VNC socket changes whenever VM dom-id changes:
+   - The QEMU cmdline shows: -vnc unix:/var/run/xen/vnc-<DOMID>
+   - Always re-point socat to /var/run/xen/vnc-<DOMID>.
+   - dom-id changes on every VM start/reboot. If it changes rapidly, the VM is restarting/crashing.
+     A common cause during Ubuntu install is too little RAM. Use 2–4GiB+ RAM.
+
+3) DO NOT create a CD VBD with userdevice "xvdd".
+   userdevice must be numeric (0,1,2,3,...). We fixed this by recreating the CD
+   VBD with device=3 and inserting the ISO via vbd-insert.
+
+HOW WE CONNECT VIA TIGERVNC (WORKING METHOD)
+A) On dom0, confirm VM is running and get DOMID:
+   - For VM1:
+       xe vm-param-get uuid=b9b93a6d-a38e-5f77-76bb-1f23a4898c8d param-name=power-state
+       xe vm-param-get uuid=b9b93a6d-a38e-5f77-76bb-1f23a4898c8d param-name=dom-id
+   - For VM2:
+       xe vm-param-get uuid=18e12484-8d39-57ff-75f2-42f95d69fd9c param-name=power-state
+       xe vm-param-get uuid=18e12484-8d39-57ff-75f2-42f95d69fd9c param-name=dom-id
+
+B) On dom0, point socat at the correct VNC socket for that DOMID:
+   pkill socat || true
+   - For VM1 (example port 5901):
+       nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-<VM1_DOMID> >/root/socat-vnc-vm1.log 2>&1 &
+       ss -ltnp | grep :5901
+   - For VM2 (recommended use a different port to avoid clashes, e.g. 5902):
+       nohup socat TCP-LISTEN:5902,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-<VM2_DOMID> >/root/socat-vnc-vm2.log 2>&1 &
+       ss -ltnp | grep :5902
+
+C) On your Ubuntu workstation, create SSH tunnel to dom0:
+   - For VM1 on 5901:
+       ssh -N -L 5901:127.0.0.1:5901 root@10.25.33.10
+   - For VM2 on 5902:
+       ssh -N -L 5902:127.0.0.1:5902 root@10.25.33.10
+
+D) In TigerVNC Viewer, connect to:
+   - VM1: 127.0.0.1:5901
+   - VM2: 127.0.0.1:5902
+
+CURRENT INSTALLER PROGRESS (INSIDE UBUNTU INSTALLER)
+
+VM2 (ubuntu-fresh-2) — installer progress built from screenshots
+---------------------------------------------------------------
+
+IMAGE 01 — “Edit enX0 IPv4 configuration”
+  Screen: "Configure at least one interface..." → enX0 → Edit IPv4 configuration
+  Observed:
+    - Interface: enX0 (eth)
+    - Autoconfiguration: failed (shown as "disabled autoconfiguration failed")
+    - MAC shown: 46:a9:e6:51:9f:d8
+  Correct entries to type (Manual IPv4):
+    - Subnet:       10.25.33.0/24
+    - Address:      10.25.33.12
+    - Gateway:      10.25.33.1
+    - Name servers: 8.8.8.8
+    - Search domains: (blank)
+  Action:
+    - Select [Save]
+
+IMAGE 02 — Network summary screen
+  Screen: interface list shows:
+    - enX0  eth  static 10.25.33.12/24
+    - MAC: 46:a9:e6:51:9f:d8
+  Action:
+    - Select [Done]
+
+IMAGE 03 — Proxy screen (UPLOAD NEEDED)
+  - Proxy: UNKNOWN (expected: blank)
+
+IMAGE 04 — Mirror screen (UPLOAD NEEDED)
+  - Mirror: UNKNOWN (expected: default)
+
+IMAGE 05 — Storage screen (UPLOAD NEEDED)
+  - Storage choice: UNKNOWN (expected: Guided, /dev/xvda, LVM ok, no encryption)
+
+IMAGE 06 — Profile / user creation screen (UPLOAD NEEDED)
+  - Your name: UNKNOWN (expected: David)
+  - Hostname: UNKNOWN (expected: ubuntu-fresh-2)
+  - Username: UNKNOWN (expected: david)
+  - Password: UNKNOWN (expected: calvin123)
+
+IMAGE 07 — SSH screen (UPLOAD NEEDED)
+  - Install OpenSSH server: UNKNOWN (must be enabled)
+  - Allow password authentication: UNKNOWN (recommended enabled)
+  - Action: select [Done]
+
+WHAT TO DO NEXT (AFTER SSH SCREEN)
+1) Finish the remaining installer screens (defaults are fine).
+2) Wait for "Installation complete" and reboot.
+3) After reboot, the VM dom-id will change; if you still need VNC:
+   - Repeat the socat step using /var/run/xen/vnc-<NEW_DOMID>.
+4) From your Ubuntu workstation, test SSH:
+   - VM1: ssh david@10.25.33.11
+   - VM2: ssh david@10.25.33.12
+
+IMAGE 08 — Post-install CD/ISO eject + boot-from-disk fix (dom0) (OUTPUT/SCREENSHOT OK)
+  Problem this fixes:
+    - After installation, the ISO is still inserted (CD VBD empty=false), so the VM may keep booting
+      the installer or show “CD failure” messages.
+  Correct actions (run on dom0 for the VM you just installed):
+    VM2_UUID=18e12484-8d39-57ff-75f2-42f95d69fd9c
+    # Find the CD VBD UUID (type=CD). It should have userdevice=3.
+    xe vbd-list vm-uuid=$VM2_UUID type=CD params=uuid,userdevice,empty,vdi-uuid
+
+    # Eject the ISO (makes empty=true)
+    CD_VBD2=f2b93394-02df-cee9-8f0a-0731f0f97f1f
+    xe vbd-eject uuid=$CD_VBD2
+    xe vbd-param-get uuid=$CD_VBD2 param-name=empty
+
+    # Ensure the VM boots from disk (c) instead of CD first (dc)
+    xe vm-param-set uuid=$VM2_UUID HVM-boot-params:order=c
+
+    # Reboot once to confirm it boots from disk
+    xe vm-reboot uuid=$VM2_UUID force=true
+
+  Reminder:
+    - `xe` uses VM UUIDs. `xl list` shows Xen domain IDs (domid). If you only
+      know the domid (example: 107), map it to a UUID with:
+        xe vm-list dom-id=107 params=uuid,name-label,power-state
+      Then reboot with that UUID.
+
+  Notes:
+    - If you run `xe vbd-eject` after the ISO is already removed, you may see:
+        "Operation could not be performed because the drive is empty"
+      This is NOT an error. The real check is:
+        xe vbd-param-get uuid=$CD_VBD2 param-name=empty
+      which should print: true
+
+NOTES
+- SSH as "root" will typically fail on Ubuntu (root login disabled). Use "david".
+"""""""""""""""""
+when done install packege:
+
+set -x
+# Eject ISO from the VM's CD drive
+xe vbd-eject uuid=719cb042-cb37-d2a6-3120-1990d1e1aa01
+
+# Verify CD is now empty
+xe vbd-param-get uuid=719cb042-cb37-d2a6-3120-1990d1e1aa01 param-name=empty
+set +x
+
+
+

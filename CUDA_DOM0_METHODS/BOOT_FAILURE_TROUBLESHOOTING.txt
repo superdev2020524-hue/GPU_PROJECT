@@ -1,0 +1,102 @@
+================================================================================
+                    BOOT FAILURE TROUBLESHOOTING GUIDE
+================================================================================
+
+SYSTEM DID NOT BOOT SUCCESSFULLY
+=================================
+
+IMMEDIATE ACTIONS:
+------------------
+
+STEP 1: Try to Access the System
+---------------------------------
+1. Try SSH: ssh root@10.25.33.10
+2. If SSH doesn't work, use iDRAC/iLO console
+3. If you can access console, try to log in
+
+STEP 2: If You Can Access Console/SSH
+--------------------------------------
+Check if the system is actually running but just not accessible via network:
+
+# Check if system is up
+ping 10.25.33.10
+
+# Try to access via console (iDRAC/iLO)
+# Look for login prompt
+
+STEP 3: If System is Stuck or Won't Boot
+-----------------------------------------
+The modified Xen may be causing issues. We need to restore the original.
+
+ROLLBACK PROCEDURE:
+==================
+
+OPTION A: If You Can Access Console (iDRAC/iLO)
+-----------------------------------------------
+1. Access via iDRAC/iLO virtual console
+2. If you see a login prompt, log in
+3. Restore original Xen:
+
+   cp /boot/xen-4.17.5-13.gz.backup /boot/xen-4.17.5-13.gz
+   ln -sf /boot/xen-4.17.5-13.gz /boot/xen.gz
+   reboot
+
+OPTION B: If System is Completely Unresponsive
+----------------------------------------------
+1. Use iDRAC/iLO to:
+   - Power cycle the system
+   - Boot into rescue/emergency mode if available
+   - Or boot from a rescue CD/USB
+
+2. If you can boot into rescue mode:
+   - Mount the root filesystem
+   - Restore the backup files
+   - Reboot
+
+OPTION C: Boot from Rescue Media
+---------------------------------
+1. Boot from a Linux rescue CD/USB
+2. Mount the root partition
+3. Restore files:
+
+   # Mount root filesystem (adjust device name)
+   mount /dev/sda1 /mnt  # or whatever your root partition is
+   
+   # Restore Xen
+   cp /mnt/boot/xen-4.17.5-13.gz.backup /mnt/boot/xen-4.17.5-13.gz
+   ln -sf /mnt/boot/xen-4.17.5-13.gz /mnt/boot/xen.gz
+   
+   # Unmount and reboot
+   umount /mnt
+   reboot
+
+DIAGNOSIS:
+==========
+
+What errors are you seeing?
+---------------------------
+- System hangs during boot?
+- Kernel panic?
+- Xen errors?
+- Network not working?
+- Just can't SSH in?
+
+The USB errors in the boot log are usually harmless and shouldn't prevent boot.
+
+CHECK THESE:
+------------
+1. Can you see a login prompt on console?
+2. Does the system respond to ping?
+3. What's the last message you see before it stops?
+4. Is there a kernel panic or error message?
+
+NEXT STEPS:
+===========
+1. Try to access via iDRAC/iLO console first
+2. If you can log in, restore original Xen immediately
+3. Report back what you see/access
+
+================================================================================
+                              END OF TROUBLESHOOTING GUIDE
+================================================================================
+

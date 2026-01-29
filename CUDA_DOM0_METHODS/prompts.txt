@@ -1,0 +1,67 @@
+You are a senior virtualization + GPU systems engineer with deep expertise in:
+- XCP-ng / Xen hypervisor internals
+- NVIDIA CUDA runtime and driver model
+- GPU mediation, passthrough, and host-only CUDA execution
+- dom0 GPU access in Xen-based systems
+
+Context:
+I am running XCP-ng (Xen-based hypervisor). I ABSOLUTELY MUST execute CUDA code on the HOST (dom0) only.
+I do NOT want:
+- GPU passthrough to guests
+- vGPU
+- CUDA inside a VM
+- Any cloud or container workaround
+
+Goal:
+Run basic CUDA operations (e.g., vector addition) using the host CUDA runtime directly on the physical GPU while XCP-ng is installed.
+
+Problem:
+- CUDA device enumeration partially works (GPU info can be queried)
+- Any real CUDA kernel execution fails with errors like:
+  "operation not supported"
+  "command not supported"
+- This failure happens at STEP 1 of the provided project_detail.txt
+- I have already tried:
+  - Changing IOMMU settings (iommu=pt, disabling iommu)
+  - Modifying Xen boot parameters
+  - Patch-based approaches referenced in Xen / CUDA docs
+  - Different NVIDIA driver versions
+None of these worked.
+
+Task:
+1. Search globally (mailing lists, GitHub issues, NVIDIA dev forums, Xen Project docs, XCP-ng discussions).
+2. Identify whether **host-side CUDA execution in dom0 is actually supported** under XCP-ng/Xen.
+3. If unsupported, explain *exactly why* (driver model, BAR access, interrupt handling, memory pinning, etc.).
+4. If supported or partially supported:
+   - Provide the exact working configuration:
+     - Xen version
+     - XCP-ng version
+     - NVIDIA driver version
+     - Kernel version
+     - Required Xen boot params
+     - Required NVIDIA kernel module flags
+5. If kernel execution is blocked by Xen:
+   - Identify the precise technical blocker
+   - State whether it is:
+     - A hard architectural limitation
+     - A missing mediation layer
+     - A known NVIDIA/Xen incompatibility
+6. Propose the ONLY viable host-side CUDA solution paths (if any), such as:
+   - Running CUDA before Xen fully claims the GPU
+   - Using a minimal dom0 without XCP-ng toolstack interference
+   - Using a mediation daemon approach (VM → shared memory → dom0 → CUDA)
+7. Clearly state if my requirement is **fundamentally impossible**, and if so:
+   - Cite authoritative sources
+   - Explain what NVIDIA + Xen would need to change to make it possible
+
+Important constraints:
+- Do NOT suggest VM CUDA, Docker, Kubernetes, or cloud GPUs
+- Do NOT suggest passthrough or vGPU
+- Do NOT give generic CUDA or Xen explanations
+- Focus ONLY on making host CUDA work under XCP-ng, or proving conclusively that it cannot
+
+Deliverables:
+- Clear yes/no feasibility answer
+- Root-cause technical explanation
+- Verified references (forums, issues, docs)
+- Exact configuration or definitive impossibility proof
