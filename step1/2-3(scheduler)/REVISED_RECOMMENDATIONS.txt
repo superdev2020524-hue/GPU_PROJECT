@@ -1,0 +1,404 @@
+================================================================================
+                    REVISED SCHEDULER RECOMMENDATIONS
+                    Phase 2-3: Simple Deterministic Scheduler
+================================================================================
+
+Date: January 2026
+Focus: Minimal implementation for current requirements only
+
+================================================================================
+                            REQUIREMENTS CLARIFICATION
+================================================================================
+
+What We Need (Now):
+------------------
+✅ Simple, deterministic scheduler
+✅ Higher-priority requests serviced first (ALREADY DONE)
+✅ No VM monopolization (TO IMPLEMENT)
+
+What We DON'T Need (Yet):
+-------------------------
+❌ Time limits per request
+❌ Preemption capability
+❌ Advanced policies
+
+================================================================================
+                        CURRENT SYSTEM STATUS
+================================================================================
+
+What's Already Working:
+----------------------
+✅ Priority ordering: High (2) > Medium (1) > Low (0) ✓
+✅ FIFO within same priority ✓
+✅ Two-pool architecture (A & B) ✓
+✅ Round-robin between pools ✓
+
+The Problem:
+------------
+If VM1 keeps sending high-priority requests, it will monopolize the GPU.
+Other VMs with high-priority requests may never get serviced.
+
+Example:
+--------
+- VM1 sends: High, High, High, High, ...
+- VM200 sends: High
+- Result: VM1 processes all its requests first, VM200 waits indefinitely
+
+================================================================================
+                    RECOMMENDATION: VM ROUND-ROBIN WITHIN PRIORITY
+                    ⭐ SIMPLEST SOLUTION
+================================================================================
+
+Algorithm: Round-Robin Between VMs at Same Priority Level
+-----------------------------------------------------------
+
+Concept:
+--------
+- Process one request from each VM at the same priority level
+- Then move to next priority level
+- Ensures no single VM monopolizes
+- Still respects priority ordering
+
+Example:
+--------
+Queue state:
+- VM1: High, High, High
+- VM200: High, High
+- VM50: Medium
+
+Processing order:
+1. VM1 (High) - first high-priority VM
+2. VM200 (High) - second high-priority VM
+3. VM1 (High) - back to first
+4. VM200 (High) - back to second
+5. VM1 (High) - last from VM1
+6. VM50 (Medium) - all high done, now medium
+
+Result: Both VM1 and VM200 get fair access, priority maintained.
+
+================================================================================
+                        IMPLEMENTATION APPROACH
+================================================================================
+
+Option 1: Per-Priority VM Tracking (RECOMMENDED)
+-----------------------------------------------
+
+Add to MediatorState:
+---------------------
+typedef struct {
+    // ... existing fields ...
+    uint32_t last_vm_per_priority[3];  // Track last processed VM per priority
+    int vm_count_per_priority[3];      // Count of VMs with requests per priority
+} MediatorState;
+
+Modify pop_request():
+--------------------
+Instead of always popping head, select next VM in round-robin:
+
+1. Find highest priority level with requests
+2. Find next VM in round-robin for that priority
+3. Pop request from that VM
+4. Update last_vm_per_priority
+
+Advantages:
+----------
+✅ Very simple (minimal code changes)
+✅ Deterministic
+✅ Prevents monopolization
+✅ Maintains priority ordering
+✅ Easy to verify
+
+Disadvantages:
+--------------
+❌ Slightly more complex than current pop_request()
+❌ Need to scan queue to find next VM
+
+Code Changes:
+-------------
+- Add 2 arrays to MediatorState (6 integers total)
+- Modify pop_request() to select by VM round-robin
+- Add helper function: find_next_vm_in_priority()
+
+Estimated Effort: 1 day
+Verification: Easy (test with multiple VMs at same priority)
+
+================================================================================
+                        ALTERNATIVE: REQUEST LIMIT PER VM
+================================================================================
+
+Option 2: Limit Queue Depth Per VM
+-----------------------------------
+
+Concept:
+--------
+- Allow maximum N requests per VM in queue (e.g., N=3)
+- If VM already has N requests, reject new ones
+- Forces round-robin naturally
+
+Implementation:
+--------------
+- Check queue depth for VM before inserting
+- If limit reached, reject request (or queue separately)
+
+Advantages:
+----------
+✅ Very simple
+✅ Prevents queue buildup
+✅ Natural round-robin effect
+
+Disadvantages:
+--------------
+❌ Rejects requests (may not be desired)
+❌ Doesn't guarantee fairness (VM can still send faster)
+
+Estimated Effort: 0.5 days
+Verification: Easy
+
+================================================================================
+                        RECOMMENDED IMPLEMENTATION
+================================================================================
+
+PRIMARY: VM Round-Robin Within Priority
+----------------------------------------
+
+Why This Approach:
+------------------
+1. **Minimal Changes**: Only modify pop_request() logic
+2. **Deterministic**: Predictable round-robin order
+3. **Prevents Monopolization**: Each VM gets turn
+4. **Maintains Priority**: High still processed before medium
+5. **Easy to Verify**: Can test with 2-3 VMs
+
+Implementation Steps:
+--------------------
+
+Step 1: Add Tracking (5 minutes)
+---------------------------------
+Add to MediatorState structure:
+```c
+uint32_t last_vm_per_priority[3];  // [low, medium, high]
+```
+
+Step 2: Modify pop_request() (2-3 hours)
+-----------------------------------------
+Instead of:
+```c
+Request *req = queue->head;  // Always pop head
+```
+
+Do:
+```c
+// Find highest priority with requests
+int highest_prio = find_highest_priority(queue);
+// Find next VM in round-robin for that priority
+uint32_t next_vm = find_next_vm_round_robin(queue, highest_prio, 
+                                            state->last_vm_per_priority[highest_prio]);
+// Pop request from that VM
+Request *req = pop_request_from_vm(queue, next_vm);
+// Update tracking
+state->last_vm_per_priority[highest_prio] = next_vm;
+```
+
+Step 3: Add Helper Functions (1-2 hours)
+----------------------------------------
+- find_highest_priority(): Find highest priority level with requests
+- find_next_vm_round_robin(): Find next VM in round-robin order
+- pop_request_from_vm(): Pop specific request from specific VM
+
+Step 4: Testing (2-3 hours)
+---------------------------
+- Test with 2 VMs, same priority
+- Test with 3 VMs, same priority
+- Test with mixed priorities
+- Verify round-robin order
+
+Total Effort: 1 day
+
+================================================================================
+                        CODE STRUCTURE CHANGES
+================================================================================
+
+Current pop_request():
+---------------------
+```c
+Request* pop_request(PoolQueue *queue) {
+    pthread_mutex_lock(&queue->lock);
+    if (queue->head == NULL) {
+        pthread_mutex_unlock(&queue->lock);
+        return NULL;
+    }
+    Request *req = queue->head;  // Always head
+    queue->head = req->next;
+    queue->count--;
+    pthread_mutex_unlock(&queue->lock);
+    return req;
+}
+```
+
+New pop_request():
+-----------------
+```c
+Request* pop_request(PoolQueue *queue, MediatorState *state) {
+    pthread_mutex_lock(&queue->lock);
+    if (queue->head == NULL) {
+        pthread_mutex_unlock(&queue->lock);
+        return NULL;
+    }
+    
+    // Find highest priority with requests
+    int highest_prio = find_highest_priority_in_queue(queue);
+    
+    // Find next VM in round-robin for this priority
+    uint32_t next_vm = find_next_vm_round_robin(
+        queue, highest_prio, 
+        state->last_vm_per_priority[highest_prio]
+    );
+    
+    // Pop request from that VM
+    Request *req = pop_request_from_vm(queue, next_vm, highest_prio);
+    
+    // Update tracking
+    if (req) {
+        state->last_vm_per_priority[highest_prio] = next_vm;
+        queue->count--;
+    }
+    
+    pthread_mutex_unlock(&queue->lock);
+    return req;
+}
+```
+
+Helper Functions Needed:
+------------------------
+1. find_highest_priority_in_queue() - Scan queue for highest priority
+2. find_next_vm_round_robin() - Find next VM after last_vm
+3. pop_request_from_vm() - Remove specific request from queue
+
+================================================================================
+                        VERIFICATION STRATEGY
+================================================================================
+
+Test Case 1: Two VMs, Same Priority
+------------------------------------
+Setup:
+- VM1 sends: High, High, High
+- VM200 sends: High, High
+
+Expected:
+- VM1 processes first
+- VM200 processes second
+- VM1 processes third
+- VM200 processes fourth
+- VM1 processes fifth
+
+Verification: ✅ Round-robin order maintained
+
+Test Case 2: Three VMs, Same Priority
+--------------------------------------
+Setup:
+- VM1 sends: High, High
+- VM200 sends: High, High
+- VM50 sends: High
+
+Expected:
+- VM1, VM200, VM50, VM1, VM200 (round-robin)
+
+Verification: ✅ All VMs get fair access
+
+Test Case 3: Mixed Priorities
+------------------------------
+Setup:
+- VM1 sends: High, High
+- VM200 sends: Medium, Medium
+- VM50 sends: High
+
+Expected:
+- All high-priority first (VM1, VM50, VM1)
+- Then medium-priority (VM200, VM200)
+
+Verification: ✅ Priority ordering maintained
+
+Test Case 4: Single VM
+----------------------
+Setup:
+- VM1 sends: High, High, High
+
+Expected:
+- All processed in order (no change from current)
+
+Verification: ✅ Backward compatible
+
+================================================================================
+                        COMPARISON WITH ALTERNATIVES
+================================================================================
+
+Approach              | Complexity | Monopolization | Priority | Effort
+---------------------|------------|----------------|----------|--------
+Current (FIFO)       | Very Low   | ❌ Yes         | ✅ Yes   | 0 days
+VM Round-Robin       | Low        | ✅ No          | ✅ Yes   | 1 day
+Request Limit        | Very Low   | ⚠️ Partial     | ✅ Yes   | 0.5 days
+Priority Aging       | Medium     | ✅ No          | ✅ Yes   | 2-3 days
+
+Recommendation: VM Round-Robin (best balance)
+
+================================================================================
+                        IMPLEMENTATION CHECKLIST
+================================================================================
+
+Phase 1: Core Implementation (Day 1)
+-------------------------------------
+[ ] Add last_vm_per_priority[3] to MediatorState
+[ ] Implement find_highest_priority_in_queue()
+[ ] Implement find_next_vm_round_robin()
+[ ] Implement pop_request_from_vm()
+[ ] Modify pop_request() to use round-robin
+[ ] Update process_pool() to pass state to pop_request()
+
+Phase 2: Testing (Day 1)
+------------------------
+[ ] Test with 2 VMs, same priority
+[ ] Test with 3 VMs, same priority
+[ ] Test with mixed priorities
+[ ] Test with single VM (backward compatibility)
+[ ] Verify deterministic behavior
+
+Phase 3: Documentation (Day 1)
+-------------------------------
+[ ] Document round-robin logic
+[ ] Update code comments
+[ ] Add test cases to documentation
+
+================================================================================
+                        RISK ASSESSMENT
+================================================================================
+
+Low Risk:
+---------
+✅ Round-robin logic is straightforward
+✅ Minimal code changes
+✅ Backward compatible (single VM case)
+
+Medium Risk:
+------------
+⚠️ Queue scanning overhead (minimal, queue is small)
+⚠️ Need to handle edge cases (empty queue, single VM)
+
+Mitigation:
+-----------
+- Queue is typically small (< 100 requests)
+- Scanning overhead is O(n) where n is queue size
+- Edge cases are simple to handle
+
+================================================================================
+                        NEXT STEPS
+================================================================================
+
+1. Review and approve recommendation
+2. Implement VM round-robin logic
+3. Test with multiple VMs
+4. Verify no monopolization
+5. Document implementation
+
+================================================================================
+End of Revised Recommendations
+================================================================================

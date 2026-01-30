@@ -1,0 +1,291 @@
+================================================================================
+                    SCHEDULER RESEARCH STRATEGY
+                    Phase 2-3: Initial Scheduler Implementation
+================================================================================
+
+OBJECTIVES:
+-----------
+1. Simple, deterministic scheduler
+2. Higher-priority requests serviced first
+3. No VM monopolization
+4. Extensible design (time limits, preemption, advanced policies)
+
+================================================================================
+                            SEARCH STRATEGY
+================================================================================
+
+KEY SEARCH TERMS:
+-----------------
+
+Primary Terms:
+--------------
+1. "GPU virtualization scheduling"
+2. "GPU resource sharing multiple VMs"
+3. "Priority-based GPU scheduling"
+4. "Deterministic GPU scheduler"
+5. "GPU time-slicing scheduler"
+6. "Multi-tenant GPU scheduling"
+7. "GPU fair scheduling"
+8. "GPU preemption scheduling"
+
+Specific Context Terms:
+-----------------------
+9. "Xen GPU scheduling"
+10. "Hypervisor GPU mediation"
+11. "PCIe GPU virtualization"
+12. "NVIDIA GPU sharing"
+13. "CUDA context switching"
+14. "GPU queue management"
+15. "GPU request arbitration"
+
+Hardware-Specific:
+-----------------
+16. "H100 GPU scheduling"
+17. "NVIDIA H100 multi-tenant"
+18. "PCIe GPU time-sharing"
+
+Combination Searches:
+--------------------
+19. "priority queue GPU scheduler hypervisor"
+20. "deterministic fair GPU scheduling"
+21. "GPU preemption time-slice"
+22. "multi-VM GPU resource allocation"
+
+================================================================================
+                        PAPER EVALUATION CRITERIA
+================================================================================
+
+RELEVANCE CHECKLIST:
+--------------------
+
+1. System Architecture Match:
+   [ ] Hypervisor-based (Xen/KVM) ✓
+   [ ] Multiple VMs sharing GPU ✓
+   [ ] File-based or shared memory communication ✓
+   [ ] Priority-based scheduling ✓
+
+2. Hardware Compatibility:
+   [ ] NVIDIA GPU (CUDA) ✓
+   [ ] PCIe GPU (not integrated) ✓
+   [ ] Modern GPU architecture (H100 compatible) ✓
+
+3. Scheduling Features:
+   [ ] Priority queues ✓
+   [ ] Fairness guarantees ✓
+   [ ] Deterministic behavior ✓
+   [ ] Preemption capability (future) ✓
+   [ ] Time-slicing (future) ✓
+
+4. Implementation Complexity:
+   [ ] Minimal modifications needed ✓
+   [ ] Clear algorithm description ✓
+   [ ] Code examples or pseudocode available ✓
+   [ ] Open source or detailed implementation ✓
+
+5. Research Quality:
+   [ ] Recent (2020-2026 preferred)
+   [ ] Published in reputable venue
+   [ ] Experimental validation
+   [ ] Performance metrics provided
+
+================================================================================
+                        RESEARCH PAPER ANALYSIS TEMPLATE
+================================================================================
+
+For each paper, document:
+
+PAPER METADATA:
+--------------
+- Title:
+- Authors:
+- Venue/Conference:
+- Year:
+- URL/DOI:
+
+SYNOPSIS:
+--------
+- Brief summary (2-3 sentences)
+- Main contribution
+- Key algorithms/techniques
+
+ARCHITECTURE COMPARISON:
+-----------------------
+- System architecture (similarities/differences)
+- Communication mechanism
+- Scheduling approach
+- Hardware platform
+
+RELEVANT ALGORITHMS:
+-------------------
+- Algorithm name/type
+- Pseudocode or description
+- Complexity analysis
+- Fairness guarantees
+
+ADAPTATION FEASIBILITY:
+-----------------------
+- How easily can this be adapted?
+- Required modifications:
+  [ ] Minor (parameter tuning)
+  [ ] Moderate (algorithm adaptation)
+  [ ] Major (architecture changes)
+- Compatibility with current system:
+  [ ] Direct fit
+  [ ] Needs wrapper/adapter
+  [ ] Requires refactoring
+
+KEY INSIGHTS:
+------------
+- What can we learn from this paper?
+- Useful concepts/techniques
+- Potential pitfalls to avoid
+- Performance considerations
+
+IMPLEMENTATION NOTES:
+--------------------
+- Code snippets or pseudocode to adapt
+- Integration points in current system
+- Testing considerations
+
+================================================================================
+                        SPECIFIC RESEARCH AREAS
+================================================================================
+
+1. GPU TIME-SLICING SCHEDULERS:
+-------------------------------
+Focus: How to fairly time-slice GPU access
+Papers to look for:
+- GPU context switching overhead
+- Time-quantum selection
+- Preemption mechanisms
+- State save/restore
+
+2. PRIORITY-BASED GPU SCHEDULERS:
+---------------------------------
+Focus: Priority queues with fairness
+Papers to look for:
+- Priority aging techniques
+- Starvation prevention
+- Weighted fair queuing (WFQ)
+- Priority inheritance
+
+3. DETERMINISTIC SCHEDULING:
+---------------------------
+Focus: Predictable, reproducible behavior
+Papers to look for:
+- Round-robin with priorities
+- EDF (Earliest Deadline First)
+- Rate monotonic scheduling
+- Deterministic guarantees
+
+4. MULTI-TENANT GPU SYSTEMS:
+---------------------------
+Focus: Multiple VMs sharing GPU
+Papers to look for:
+- GPUCloud
+- vCUDA
+- GViM
+- rCUDA
+- GPU virtualization frameworks
+
+5. FAIRNESS ALGORITHMS:
+----------------------
+Focus: Preventing monopolization
+Papers to look for:
+- Max-min fairness
+- Proportional fairness
+- Fair queuing variants
+- Lottery scheduling
+
+================================================================================
+                        ADAPTATION STRATEGY
+================================================================================
+
+STEP 1: IDENTIFY CORE ALGORITHM
+--------------------------------
+- Extract the core scheduling algorithm
+- Understand the data structures
+- Map to our current system:
+  * PoolQueue → Their queue structure
+  * Request → Their job/task structure
+  * Priority → Their priority scheme
+
+STEP 2: MAP TO CURRENT ARCHITECTURE
+-----------------------------------
+Current System:
+- Mediator daemon (mediator.c)
+- Two pools (A & B)
+- Priority: High (2) > Medium (1) > Low (0)
+- FIFO within same priority
+- File-based communication (NFS)
+
+Adaptation Points:
+- insert_request() - Modify insertion logic
+- pop_request() - Modify extraction logic
+- process_pool() - Add time-slicing/preemption
+- New functions for fairness tracking
+
+STEP 3: MINIMAL MODIFICATION APPROACH
+-------------------------------------
+- Keep existing structure
+- Add new scheduling logic as optional layer
+- Make it configurable (simple vs advanced)
+- Preserve backward compatibility
+
+STEP 4: IMPLEMENTATION PLAN
+---------------------------
+1. Document chosen algorithm
+2. Create pseudocode
+3. Map to C implementation
+4. Integrate with existing code
+5. Test with current test mode
+6. Validate fairness properties
+
+================================================================================
+                        DOCUMENTATION STRUCTURE
+================================================================================
+
+Files to Create:
+----------------
+1. RESEARCH_PAPERS.txt - List of papers found
+2. PAPER_ANALYSIS_<name>.txt - Detailed analysis per paper
+3. ALGORITHM_COMPARISON.txt - Side-by-side comparison
+4. SELECTED_ALGORITHM.txt - Chosen approach with rationale
+5. IMPLEMENTATION_PLAN.txt - Step-by-step implementation
+6. ADAPTATION_NOTES.txt - Code modification notes
+
+================================================================================
+                        SEARCH RESOURCES
+================================================================================
+
+Recommended Databases:
+---------------------
+1. Google Scholar (scholar.google.com)
+2. IEEE Xplore (ieeexplore.ieee.org)
+3. ACM Digital Library (dl.acm.org)
+4. arXiv (arxiv.org) - Preprints
+5. ResearchGate (researchgate.net)
+
+Search Tips:
+-----------
+- Use quotes for exact phrases
+- Combine terms with AND/OR
+- Filter by date (2020-2026)
+- Look at citations of relevant papers
+- Check "Related Articles" sections
+
+================================================================================
+                        NEXT STEPS
+================================================================================
+
+1. Begin research search using key terms
+2. Document findings in RESEARCH_PAPERS.txt
+3. Analyze top 3-5 most relevant papers
+4. Compare algorithms in ALGORITHM_COMPARISON.txt
+5. Select best-fit algorithm
+6. Create detailed implementation plan
+7. Begin implementation
+
+================================================================================
+End of Research Strategy Document
+================================================================================

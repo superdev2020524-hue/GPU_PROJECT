@@ -68,6 +68,8 @@ typedef struct {
     uint32_t preferred_vm; // VM ID to prefer in tie-breaking (0 = none)
     int processing_paused;  // Pause processing until test mode questions answered
     int test_mode_pending;  // Test mode detected but questions not answered yet
+    // Round-robin tracking: last VM processed per priority level [low, medium, high]
+    uint32_t last_vm_per_priority[3];  // Index 0=low, 1=medium, 2=high
 } MediatorState;
 
 // Global state pointer for signal handlers
@@ -97,6 +99,10 @@ void init_mediator(MediatorState *state) {
     state->preferred_vm = 0;
     state->processing_paused = 0;
     state->test_mode_pending = 0;
+    // Initialize round-robin tracking (0 means no VM processed yet)
+    state->last_vm_per_priority[0] = 0;  // Low priority
+    state->last_vm_per_priority[1] = 0;  // Medium priority
+    state->last_vm_per_priority[2] = 0;  // High priority
 }
 
 /*
@@ -172,10 +178,214 @@ void insert_request(PoolQueue *queue, Request *new_req, MediatorState *state) {
 }
 
 /*
- * Pop highest priority request from queue
- * Returns NULL if queue is empty
+ * Find the highest priority level that has requests in the queue
+ * Returns: 2=high, 1=medium, 0=low, or -1 if queue is empty
  */
-Request* pop_request(PoolQueue *queue) {
+static int find_highest_priority_in_queue(PoolQueue *queue) {
+    Request *req = queue->head;
+    uint32_t highest_prio = 0;  // Use uint32_t to match priority type
+    int found_any = 0;
+    
+    printf("[DEBUG] find_highest_priority: Starting scan, head=%p\n", (void*)req);
+    fflush(stdout);
+    
+    while (req != NULL) {
+        printf("[DEBUG] find_highest_priority: req=%p, req->priority=%u, req->vm_id=%u\n",
+               (void*)req, req->priority, req->vm_id);
+        fflush(stdout);
+        
+        if (!found_any || req->priority > highest_prio) {
+            highest_prio = req->priority;
+            found_any = 1;
+        }
+        req = req->next;
+    }
+    
+    printf("[DEBUG] find_highest_priority: Returning %u (found_any=%d)\n", highest_prio, found_any);
+    fflush(stdout);
+    
+    if (!found_any) {
+        return -1;  // No requests found
+    }
+    
+    return (int)highest_prio;  // Cast to int for return value
+}
+
+/*
+ * Find the next VM in round-robin order for a given priority level
+ * Returns the VM ID of the next VM to process, or 0 if none found
+ * 
+ * Algorithm:
+ * 1. Find all VMs with requests at this priority level
+ * 2. If last_vm is 0, return first VM found
+ * 3. Otherwise, find VM that comes after last_vm in round-robin
+ * 4. If last_vm was last, wrap around to first VM
+ */
+static uint32_t find_next_vm_round_robin(PoolQueue *queue, int priority, uint32_t last_vm) {
+    Request *req = queue->head;
+    uint32_t first_vm = 0;
+    uint32_t next_vm = 0;
+    int found_last = 0;
+    
+    // First pass: find first VM and check if last_vm exists
+    while (req != NULL) {
+        if (req->priority == priority) {
+            if (first_vm == 0) {
+                first_vm = req->vm_id;  // Remember first VM for wrap-around
+            }
+            if (req->vm_id == last_vm) {
+                found_last = 1;
+            }
+        }
+        req = req->next;
+    }
+    
+    // If no requests at this priority, return 0
+    if (first_vm == 0) {
+        return 0;
+    }
+    
+    // If last_vm is 0 or not found, return first VM
+    if (last_vm == 0 || !found_last) {
+        return first_vm;
+    }
+    
+    // Second pass: find VM that comes after last_vm
+    req = queue->head;
+    while (req != NULL) {
+        if (req->priority == priority && req->vm_id > last_vm) {
+            // Found a VM with higher ID after last_vm
+            if (next_vm == 0 || req->vm_id < next_vm) {
+                next_vm = req->vm_id;
+            }
+        }
+        req = req->next;
+    }
+    
+    // If no VM found after last_vm, wrap around to first VM
+    if (next_vm == 0) {
+        return first_vm;
+    }
+    
+    return next_vm;
+}
+
+/*
+ * Pop a specific request from the queue (by VM ID and priority)
+ * Removes the first matching request and returns it
+ * Returns NULL if not found
+ */
+static Request* pop_request_from_vm(PoolQueue *queue, uint32_t vm_id, int priority) {
+    Request *req = queue->head;
+    Request *prev = NULL;
+    
+    while (req != NULL) {
+        if (req->vm_id == vm_id && req->priority == priority) {
+            // Found the request to pop
+            if (prev == NULL) {
+                // Removing head
+                queue->head = req->next;
+            } else {
+                // Removing from middle or end
+                prev->next = req->next;
+            }
+            req->next = NULL;  // Disconnect from list
+            return req;
+        }
+        prev = req;
+        req = req->next;
+    }
+    
+    return NULL;  // Not found
+}
+
+/*
+ * Pop highest priority request from queue with VM round-robin
+ * Returns NULL if queue is empty
+ * 
+ * Round-robin logic:
+ * - Find highest priority level with requests
+ * - Select next VM in round-robin order for that priority
+ * - Pop request from that VM
+ * - Update tracking for next round-robin cycle
+ */
+Request* pop_request(PoolQueue *queue, MediatorState *state) {
+    pthread_mutex_lock(&queue->lock);
+    
+    printf("[DEBUG] pop_request: Pool %c, head=%p, count=%d\n",
+           queue->pool_id, (void*)queue->head, queue->count);
+    fflush(stdout);
+    
+    if (queue->head == NULL) {
+        printf("[DEBUG] pop_request: Queue head is NULL for Pool %c\n", queue->pool_id);
+        fflush(stdout);
+        pthread_mutex_unlock(&queue->lock);
+        return NULL;
+    }
+    
+    // Find highest priority level with requests
+    int highest_prio = find_highest_priority_in_queue(queue);
+    printf("[DEBUG] pop_request: Highest priority = %d for Pool %c\n", highest_prio, queue->pool_id);
+    fflush(stdout);
+    
+    if (highest_prio < 0) {
+        printf("[DEBUG] pop_request: No requests found in Pool %c\n", queue->pool_id);
+        fflush(stdout);
+        pthread_mutex_unlock(&queue->lock);
+        return NULL;
+    }
+    
+    // Find next VM in round-robin order for this priority
+    uint32_t last_vm = state->last_vm_per_priority[highest_prio];
+    printf("[DEBUG] pop_request: Looking for next VM, priority=%d, last_vm=%u\n",
+           highest_prio, last_vm);
+    fflush(stdout);
+    
+    uint32_t next_vm = find_next_vm_round_robin(queue, highest_prio, last_vm);
+    
+    printf("[DEBUG] pop_request: next_vm = %u for Pool %c\n", next_vm, queue->pool_id);
+    fflush(stdout);
+    
+    if (next_vm == 0) {
+        // Debug: This should not happen - log for troubleshooting
+        printf("[DEBUG] pop_request: next_vm is 0 for priority %d, pool %c\n", 
+               highest_prio, queue->pool_id);
+        fflush(stdout);
+        pthread_mutex_unlock(&queue->lock);
+        return NULL;
+    }
+    
+    // Pop request from that VM
+    Request *req = pop_request_from_vm(queue, next_vm, highest_prio);
+    
+    if (!req) {
+        // Debug: Request not found - log for troubleshooting
+        printf("[DEBUG] pop_request: Request not found for vm=%u, prio=%d, pool=%c\n",
+               next_vm, highest_prio, queue->pool_id);
+        fflush(stdout);
+        pthread_mutex_unlock(&queue->lock);
+        return NULL;
+    }
+    
+    printf("[DEBUG] pop_request: Successfully popped request vm=%u, prio=%d from Pool %c\n",
+           req->vm_id, req->priority, queue->pool_id);
+    fflush(stdout);
+    
+    // Update round-robin tracking for this priority level
+    state->last_vm_per_priority[highest_prio] = next_vm;
+    queue->count--;
+    
+    pthread_mutex_unlock(&queue->lock);
+    
+    return req;
+}
+
+/*
+ * Pop highest priority request from queue (legacy version - for backward compatibility)
+ * This version always pops the head (no round-robin)
+ * Use pop_request(queue, state) for round-robin behavior
+ */
+Request* pop_request_legacy(PoolQueue *queue) {
     pthread_mutex_lock(&queue->lock);
     
     if (queue->head == NULL) {
@@ -711,14 +921,23 @@ void interactive_test_mode(MediatorState *state) {
  * Process one request from pool queue
  */
 void process_pool(PoolQueue *queue, MediatorState *state) {
-    Request *req = pop_request(queue);
-    if (!req) return;  // Queue empty
+    printf("[DEBUG] process_pool: Pool %c, queue->count=%d, queue->head=%p\n",
+           queue->pool_id, queue->count, (void*)queue->head);
+    fflush(stdout);
+    
+    Request *req = pop_request(queue, state);  // Use round-robin version
+    if (!req) {
+        printf("[DEBUG] process_pool: pop_request returned NULL for Pool %c\n", queue->pool_id);
+        fflush(stdout);
+        return;  // Queue empty
+    }
     
     printf("[PROCESS] Pool %c: vm=%u, prio=%u (%s), cmd=%s\n",
            queue->pool_id, req->vm_id, req->priority,
            req->priority == 2 ? "high" : 
            req->priority == 1 ? "medium" : "low",
            req->command);
+    fflush(stdout);
     
     // Execute GPU workload
     char result[512];

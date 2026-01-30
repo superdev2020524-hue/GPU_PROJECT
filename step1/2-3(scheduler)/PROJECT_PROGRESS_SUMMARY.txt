@@ -1,0 +1,247 @@
+================================================================================
+                    PROJECT PROGRESS SUMMARY
+                    Last Updated: January 2026
+================================================================================
+
+OVERVIEW:
+---------
+This project implements GPU virtualization and mediation for XCP-ng with NVIDIA H100.
+The system allows multiple VMs to share GPU resources through a queue-based mediation layer.
+
+================================================================================
+                            PHASE 1: vGPU STUB DEVICE
+                            STATUS: ✅ COMPLETED
+================================================================================
+
+Completion Date: January 22, 2026
+Location: step2(quing)/vgpu-stub_enhance/complete.txt
+
+What Was Accomplished:
+----------------------
+✅ Custom QEMU 4.2.1 build with vgpu-stub.c device
+✅ PCI device visible in guest VMs (lspci shows "Processing accelerators")
+✅ Custom properties implemented:
+   - pool_id: 'A' or 'B' (resource pool assignment)
+   - priority: 0=low, 1=medium, 2=high
+   - vm_id: Unique VM identifier
+✅ 4KB MMIO region accessible from guest
+✅ Properties readable via MMIO registers (verified with test program)
+✅ qemu-wrapper patched to read device-model-args from XenStore
+✅ Complete build guide documented (1009 lines)
+
+Key Files Modified:
+-------------------
+- ~/vgpu-build/rpmbuild/SOURCES/vgpu-stub.c (NEW)
+- ~/vgpu-build/rpmbuild/SPECS/qemu.spec (MODIFIED)
+- /usr/lib64/xen/bin/qemu-wrapper (PATCHED)
+- /usr/lib64/xen/bin/qemu-system-i386 (REPLACED with custom build)
+
+Verification:
+-------------
+✅ Test-2 VM verified successfully
+✅ Device visible via lspci
+✅ MMIO registers accessible
+
+================================================================================
+                        PHASE 2: QUEUE-BASED MEDIATION LAYER
+                        STATUS: ✅ COMPLETED (Core Features)
+================================================================================
+
+Completion Date: January 2026 (ongoing refinements)
+Location: step2(quing)/CODE/
+
+What Was Accomplished:
+----------------------
+✅ NFS Communication Layer:
+   - File-based request/response system via /var/vgpu
+   - Per-VM directories (vm1/, vm200/, etc.)
+   - Request format: "pool_id:priority:vm_id:command"
+   - Response format: "status:message"
+
+✅ Mediation Daemon (mediator.c - 897 lines):
+   - Two independent queues (Pool A and Pool B)
+   - Priority-based ordering: High (2) > Medium (1) > Low (0)
+   - FIFO tie-breaking within same priority
+   - Thread-safe queue operations (pthread mutexes)
+   - Dynamic VM ID scanning (no hardcoded ranges)
+   - Test mode for concurrent request simulation
+   - Preferred VM scheduling in test mode
+   - Graceful shutdown with cleanup
+   - Signal handling (SIGINT, SIGTERM)
+
+✅ VM Client Program (vm_client_fixed.c):
+   - Dynamic PCI device detection (scans /sys/bus/pci/devices)
+   - Reads vGPU properties via MMIO
+   - Sends requests to mediator via NFS
+   - Waits for responses with timeout
+   - Comprehensive error handling and diagnostics
+
+✅ Test Mode Features:
+   - Interactive scheduling when 2+ VMs detected
+   - Simulates concurrent request arrival
+   - User-defined preferred VM for tie-breaking
+   - Queue re-sorting with preferred VM logic
+   - Pool-level priority (preferred VM's pool processed first)
+
+✅ Documentation:
+   - IMPLEMENTATION_GUIDE.txt - Practical guide for Phase 2
+   - NFS_SETUP_GUIDE.txt - NFS configuration instructions
+   - TEST_MODE_GUIDE.txt - Test mode usage
+   - DIAGNOSTIC_GUIDE.txt - Troubleshooting
+   - ERRORS_LOG.txt - Error tracking and solutions
+   - PHASE2_STATUS.txt - Status tracker
+
+Key Features Implemented:
+-------------------------
+1. Priority Queue Management:
+   - insert_request() - Priority-sorted insertion
+   - pop_request() - Highest priority extraction
+   - Thread-safe with mutex locks
+
+2. Pool Processing:
+   - Round-robin between Pool A and Pool B
+   - Preferred VM pool processed first (test mode)
+   - Prevents pool starvation
+
+3. Request Handling:
+   - parse_request() - Parse file format
+   - is_vm_request_queued() - Prevent duplicates
+   - poll_requests() - Dynamic VM directory scanning
+   - process_pool() - Execute GPU workload
+
+4. Test Mode:
+   - ask_test_mode_at_startup() - Enable at launch
+   - interactive_test_mode() - User questions
+   - reset_request_timestamps() - Simulate concurrency
+   - resort_queues() - Re-apply sorting
+   - find_preferred_vm_pool() - Thread-safe pool lookup
+
+5. File Management:
+   - cleanup_files() - Clear on termination
+   - fsync() calls for NFS synchronization
+   - Proper file clearing order (response before request)
+
+Current Status:
+---------------
+✅ Core mediation daemon: COMPLETE
+✅ VM client program: COMPLETE
+✅ Test mode: COMPLETE
+✅ Documentation: COMPLETE
+⏳ CUDA integration: PLACEHOLDER (execute_gpu_workload)
+⏳ Two-VM concurrency testing: READY FOR TESTING
+
+Known Issues Fixed:
+-------------------
+✅ VM200 support (dynamic VM ID scanning)
+✅ VM1 failure (file clearing order, fsync)
+✅ Preferred VM not processed first (pool priority logic)
+✅ Compilation errors (syntax fixes, mutex locking)
+✅ Test mode immediate processing (pause logic)
+
+================================================================================
+                        PHASE 2-3: SCHEDULER ENHANCEMENTS
+                        STATUS: ⏳ READY TO START
+================================================================================
+
+Next Phase Objectives:
+----------------------
+(To be defined based on discussion)
+
+Potential Areas:
+1. Advanced scheduling algorithms
+2. Preemptive execution
+3. Resource allocation policies
+4. Performance monitoring
+5. Multi-GPU support
+6. Load balancing
+7. Fairness guarantees
+
+================================================================================
+                            KEY FILES REFERENCE
+================================================================================
+
+Phase 1:
+--------
+- step2(quing)/vgpu-stub_enhance/complete.txt - Complete build guide
+
+Phase 2:
+--------
+- step2(quing)/CODE/mediator.c - Mediation daemon (897 lines)
+- step2(quing)/CODE/vm_client_fixed.c - VM client program
+- step2(quing)/CODE/setup_vm_directories.sh - Directory setup script
+- step2(quing)/IMPLEMENTATION_GUIDE.txt - Implementation guide
+- step2(quing)/PHASE2_STATUS.txt - Status tracker
+- step2(quing)/ERRORS_LOG.txt - Error log
+- step2(quing)/TEST_MODE_GUIDE.txt - Test mode documentation
+
+Phase 2-3 (Scheduler):
+----------------------
+- step1/2-3(scheduler)/ - This folder (new phase)
+
+================================================================================
+                            TECHNICAL ARCHITECTURE
+================================================================================
+
+Communication Flow:
+-------------------
+VM Client → MMIO Read → NFS Write → Mediator Poll → Queue Insert → 
+Priority Sort → Pool Process → CUDA Execute → NFS Write → VM Read
+
+Queue Structure:
+---------------
+PoolQueue {
+    char pool_id;           // 'A' or 'B'
+    Request *head;          // Priority-sorted linked list
+    int count;              // Queue size
+    pthread_mutex_t lock;   // Thread safety
+}
+
+Request Structure:
+-----------------
+Request {
+    char pool_id;           // 'A' or 'B'
+    uint32_t priority;      // 2=high, 1=medium, 0=low
+    uint32_t vm_id;         // VM identifier
+    char command[256];      // GPU command
+    time_t timestamp;        // FIFO tie-breaking
+    Request *next;          // Linked list
+}
+
+Scheduling Logic:
+----------------
+1. Priority: High (2) > Medium (1) > Low (0)
+2. Tie-breaking: Preferred VM (if set) > FIFO (timestamp)
+3. Pool processing: Preferred pool first (test mode) > Round-robin
+
+================================================================================
+                            COMPILATION & DEPLOYMENT
+================================================================================
+
+Mediator (Dom0):
+----------------
+gcc -o mediator mediator.c -lpthread
+sudo ./mediator
+
+VM Client (Guest):
+------------------
+gcc -o vm_client vm_client_fixed.c
+./vm_client
+
+Dependencies:
+------------
+- pthread library (mediator)
+- Standard C library
+- NFS mount point: /mnt/vgpu (VM) → /var/vgpu (Dom0)
+
+================================================================================
+                            NEXT STEPS
+================================================================================
+
+1. Review Phase 2-3 objectives
+2. Discuss scheduler enhancement direction
+3. Define implementation requirements
+4. Begin implementation
+
+================================================================================
+End of Project Progress Summary
+================================================================================

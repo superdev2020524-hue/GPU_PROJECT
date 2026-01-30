@@ -1,0 +1,43 @@
+================================================================================
+                    STEP-BY-STEP IMPLEMENTATION GUIDE
+                    VM Round-Robin Scheduler
+================================================================================
+
+Date Started: January 2026
+Objective: Prevent VM monopolization while maintaining priority ordering
+
+================================================================================
+                            OVERVIEW
+================================================================================
+
+What We're Doing:
+----------------
+Adding round-robin between VMs at the same priority level to prevent
+one VM from monopolizing the GPU.
+
+Current Behavior:
+-----------------
+- VM1 sends: High, High, High
+- VM200 sends: High
+- Result: VM1 processes all 3, then VM200 (VM1 monopolizes)
+
+New Behavior:
+-------------
+- VM1 sends: High, High, High
+- VM200 sends: High
+- Result: VM1 → VM200 → VM1 → VM1 (fair round-robin)
+
+================================================================================
+                            IMPLEMENTATION STEPS
+================================================================================
+
+STEP 1: Add Tracking Variables to MediatorState
+STEP 2: Create Helper Functions
+STEP 3: Modify pop_request() Function
+STEP 4: Update process_pool() Call
+STEP 5: Initialize Tracking Variables
+STEP 6: Test the Implementation
+
+================================================================================
+End of Step-by-Step Guide
+================================================================================

@@ -1,0 +1,199 @@
+================================================================================
+                    CURRENT SYSTEM CONTEXT
+                    For Research Paper Analysis
+================================================================================
+
+This document describes our current implementation to help evaluate
+research papers for adaptation feasibility.
+
+================================================================================
+                            SYSTEM ARCHITECTURE
+================================================================================
+
+Platform:
+---------
+- Hypervisor: XCP-ng 8.x (Xen 4.17.5)
+- GPU: NVIDIA H100 80GB PCIe
+- Dom0: Mediation daemon runs here
+- Guest VMs: Multiple VMs (VM1, VM200, etc.)
+
+Communication:
+--------------
+- Method: File-based via NFS
+- Shared Directory: /var/vgpu (Dom0) → /mnt/vgpu (VMs)
+- Request Format: "pool_id:priority:vm_id:command"
+- Response Format: "status:message"
+- Per-VM directories: vm1/, vm200/, etc.
+
+Current Scheduling:
+------------------
+- Two independent pools: Pool A, Pool B
+- Priority levels: High (2) > Medium (1) > Low (0)
+- Tie-breaking: FIFO (timestamp) or Preferred VM (test mode)
+- Processing: Round-robin between pools
+- Execution: Non-preemptive (one job at a time per pool)
+
+================================================================================
+                            CODE STRUCTURE
+================================================================================
+
+Main Components:
+---------------
+
+1. mediator.c (897 lines):
+   - MediatorState: Global state with two PoolQueues
+   - insert_request(): Priority-sorted insertion
+   - pop_request(): Extract highest priority
+   - process_pool(): Execute GPU workload
+   - poll_requests(): Scan for new requests
+   - Test mode: Interactive scheduling
+
+2. vm_client_fixed.c:
+   - Reads vGPU properties via MMIO
+   - Sends requests via NFS
+   - Waits for responses
+
+Data Structures:
+---------------
+
+PoolQueue:
+----------
+typedef struct {
+    char pool_id;           // 'A' or 'B'
+    Request *head;          // Priority-sorted linked list
+    int count;              // Queue size
+    pthread_mutex_t lock;   // Thread safety
+} PoolQueue;
+
+Request:
+--------
+typedef struct {
+    char pool_id;           // 'A' or 'B'
+    uint32_t priority;      // 2=high, 1=medium, 0=low
+    uint32_t vm_id;         // VM identifier
+    char command[256];      // GPU command
+    time_t timestamp;       // FIFO tie-breaking
+    struct Request *next;   // Linked list
+} Request;
+
+Current Scheduling Logic:
+------------------------
+1. Priority: Higher priority always processed first
+2. Same Priority: FIFO (earlier timestamp) or Preferred VM
+3. Pool Processing: Round-robin (A, B, A, B, ...)
+4. Preferred Pool: In test mode, preferred VM's pool processed first
+
+================================================================================
+                            REQUIREMENTS FOR SCHEDULER
+================================================================================
+
+Must Have:
+----------
+✅ Higher-priority requests serviced first
+✅ No VM monopolization
+✅ Deterministic behavior
+✅ Simple implementation
+
+Should Have (Future):
+--------------------
+⏳ Time limits per request
+⏳ Preemption capability
+⏳ Fairness metrics
+⏳ Performance monitoring
+
+Constraints:
+------------
+- Must work with file-based communication (NFS)
+- Must maintain two pools (A & B)
+- Must support priority levels (0, 1, 2)
+- Must be thread-safe (pthread mutexes)
+- Must integrate with existing mediator.c structure
+
+================================================================================
+                            INTEGRATION POINTS
+================================================================================
+
+Where to Add Scheduler Logic:
+-----------------------------
+
+1. insert_request() - Lines 107-172
+   Current: Priority-sorted insertion
+   Enhancement: Add fairness tracking, aging, etc.
+
+2. pop_request() - Lines 178-194
+   Current: Extract head (highest priority)
+   Enhancement: Add time-slicing, preemption checks
+
+3. process_pool() - Lines 713-764
+   Current: Execute one request at a time
+   Enhancement: Add time limits, preemption, context switching
+
+4. Main Loop - Lines 810-891
+   Current: Round-robin pool processing
+   Enhancement: Add scheduler ticks, fairness enforcement
+
+New Functions Needed:
+--------------------
+- Time tracking per request
+- Fairness calculation
+- Preemption decision logic
+- Context save/restore (if preemption)
+- Scheduler statistics
+
+================================================================================
+                            HARDWARE CONSTRAINTS
+================================================================================
+
+NVIDIA H100 80GB PCIe:
+----------------------
+- CUDA compute capability: 9.0
+- PCIe Gen 4.0 x16
+- No native GPU virtualization (SR-IOV)
+- CUDA context switching overhead
+- Memory: 80GB HBM3
+
+Implications:
+-------------
+- Preemption requires CUDA context save/restore
+- Context switching has overhead (~ms range)
+- Time-slicing must account for switching cost
+- Memory isolation not hardware-enforced
+
+================================================================================
+                            TESTING ENVIRONMENT
+================================================================================
+
+Current Test Setup:
+-------------------
+- Test Mode: Interactive scheduling simulation
+- VMs: VM1 (Pool A), VM200 (Pool B)
+- Test scenarios: Concurrent requests, priority ordering
+- Verification: Request processing order, response timing
+
+Future Test Needs:
+------------------
+- Fairness metrics (throughput per VM)
+- Starvation detection
+- Preemption correctness
+- Performance overhead measurement
+
+================================================================================
+                            ADAPTATION CHECKLIST
+================================================================================
+
+When evaluating a research paper, check:
+
+[ ] Algorithm fits current data structures
+[ ] Can be implemented with file-based communication
+[ ] Works with two-pool architecture
+[ ] Supports priority levels (0, 1, 2)
+[ ] Thread-safe implementation possible
+[ ] Minimal changes to existing code
+[ ] Clear pseudocode/algorithm description
+[ ] Performance overhead acceptable
+[ ] Fairness guarantees match requirements
+[ ] Extensible for future features
+
+================================================================================
+End of Current System Context
+================================================================================

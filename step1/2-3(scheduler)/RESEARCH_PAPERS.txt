@@ -1,0 +1,42 @@
+================================================================================
+                    RESEARCH PAPERS COLLECTION
+                    Phase 2-3: Scheduler Implementation
+================================================================================
+
+This file tracks research papers found during the literature review.
+
+Format:
+-------
+[STATUS] Title
+Authors, Venue, Year
+URL/DOI
+Relevance: High/Medium/Low
+Notes: Brief reason for relevance
+
+================================================================================
+                            PAPERS FOUND
+================================================================================
+
+[TO BE FILLED DURING RESEARCH]
+
+Example Entry:
+-------------
+[REVIEWING] GPU Time-Slicing: Fair Scheduling for Multi-Tenant Systems
+John Doe, Jane Smith, ACM SIGPLAN, 2023
+https://example.com/paper
+Relevance: High
+Notes: Direct match for priority-based GPU scheduling with fairness guarantees.
+      Implements time-slicing with preemption. Minimal modification needed.
+
+================================================================================
+                            SEARCH LOG
+================================================================================
+
+Date: [Date]
+Search Terms: [Terms used]
+Results: [Number found]
+Selected: [Number selected for review]
+
+================================================================================
+End of Research Papers Collection
+================================================================================

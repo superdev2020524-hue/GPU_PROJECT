@@ -1,0 +1,651 @@
+================================================================================
+                    VGPU-STUB DEVICE DETACHMENT & NEW VM CREATION GUIDE
+                    Based on Comprehensive Project Analysis
+================================================================================
+Date: January 2026
+Purpose: Detach VGPU-STUB devices from existing VMs and create a new VM
+Context: XCP-ng 8.2/8.3 with Xen 4.17.5, Custom QEMU 4.2.1 with vgpu-stub
+
+================================================================================
+                            PROJECT ANALYSIS SUMMARY
+================================================================================
+
+Current System State:
+--------------------
+✅ Phase 1 (vGPU-STUB Device): COMPLETED
+   - Custom QEMU 4.2.1 with vgpu-stub.c device built and installed
+   - Device visible in guest VMs via lspci (Processing Accelerators: Red Hat)
+   - Properties: pool_id, priority, vm_id configurable
+   - Verified on Test-2 VM (UUID: 8c934907-befb-756e-c6fe-91d721291d2b)
+
+✅ Phase 2 (Queue-Based Mediation): COMPLETED (Core Features)
+   - Mediation daemon (mediator.c) running on Dom0
+   - NFS communication layer (/var/vgpu)
+   - Two independent queues (Pool A and Pool B)
+   - Priority-based scheduling (High > Medium > Low)
+   - Round-robin VM scheduling within same priority
+
+Known VM Configurations:
+------------------------
+Test-1 VM:
+  - UUID: 14cf0700-638c-41bd-035b-206c184970dc
+  - Config: pool_id=A, priority=high, vm_id=1
+  - Status: May have vgpu-stub device attached
+
+Test-2 VM:
+  - UUID: 8c934907-befb-756e-c6fe-91d721291d2b
+  - Config: pool_id=B, priority=high, vm_id=200
+  - Status: ✅ VERIFIED WORKING with vgpu-stub device
+
+Device Attachment Method:
+--------------------------
+VGPU-STUB devices are attached via XCP-ng platform parameter:
+  platform:device-model-args="-device vgpu-stub,pool_id=X,priority=Y,vm_id=Z"
+
+The device-model-args are:
+  1. Stored in XAPI database (VM platform field)
+  2. Written to XenStore: /local/domain/<domid>/platform/device-model-args
+  3. Read by qemu-wrapper and passed to QEMU command line
+  4. QEMU instantiates the vgpu-stub PCI device in the guest
+
+================================================================================
+                    PART 1: DETACH VGPU-STUB DEVICES
+================================================================================
+
+IMPORTANT PREREQUISITES:
+------------------------
+1. Identify all VMs with vgpu-stub devices attached
+2. Stop or shutdown VMs before detaching (recommended)
+3. Backup any important VM data if needed
+4. Note current device configurations for reference
+
+STEP 1: Identify VMs with VGPU-STUB Devices
+---------------------------------------------
+On Dom0, run:
+
+# List all VMs and check for device-model-args
+xe vm-list is-control-domain=false params=uuid,name-label,power-state | while read uuid name state; do
+    if [ -n "$uuid" ]; then
+        args=$(xe vm-param-get uuid=$uuid param-name=platform param-key=device-model-args 2>/dev/null)
+        if [ -n "$args" ] && echo "$args" | grep -q "vgpu-stub"; then
+            echo "VM: $name (UUID: $uuid, State: $state)"
+            echo "  Device args: $args"
+            echo ""
+        fi
+    fi
+done
+
+Expected output example:
+  VM: Test-1 (UUID: 14cf0700-638c-41bd-035b-206c184970dc, State: running)
+    Device args: -device vgpu-stub,pool_id=A,priority=high,vm_id=1
+
+  VM: Test-2 (UUID: 8c934907-befb-756e-c6fe-91d721291d2b, State: running)
+    Device args: -device vgpu-stub,pool_id=B,priority=high,vm_id=200
+
+STEP 2: Stop VMs (Recommended)
+--------------------------------
+It's safer to shutdown VMs before detaching devices to avoid guest-side issues.
+
+For each VM with vgpu-stub device:
+
+# Graceful shutdown (preferred)
+xe vm-shutdown uuid=<VM_UUID>
+
+# Wait for shutdown (check every 2 seconds)
+while [ "$(xe vm-param-get uuid=<VM_UUID> param-name=power-state)" != "halted" ]; do
+    echo "Waiting for VM to shutdown..."
+    sleep 2
+done
+echo "VM is halted"
+
+# OR force shutdown if graceful doesn't work
+xe vm-shutdown uuid=<VM_UUID> --force
+
+# OR if VM is already halted, skip this step
+
+Example for Test-1:
+  xe vm-shutdown uuid=14cf0700-638c-41bd-035b-206c184970dc
+  # Wait until power-state is "halted"
+
+Example for Test-2:
+  xe vm-shutdown uuid=8c934907-befb-756e-c6fe-91d721291d2b
+  # Wait until power-state is "halted"
+
+STEP 3: Detach VGPU-STUB Device from Each VM
+---------------------------------------------
+For each VM, remove the device-model-args parameter:
+
+# Detach device
+xe vm-param-remove uuid=<VM_UUID> param-name=platform param-key=device-model-args
+
+# Verify removal
+xe vm-param-get uuid=<VM_UUID> param-name=platform param-key=device-model-args 2>/dev/null || echo "Device detached successfully"
+
+Example for Test-1:
+  xe vm-param-remove uuid=14cf0700-638c-41bd-035b-206c184970dc \
+    param-name=platform param-key=device-model-args
+  
+  # Verify
+  xe vm-param-get uuid=14cf0700-638c-41bd-035b-206c184970dc \
+    param-name=platform param-key=device-model-args 2>/dev/null || echo "✓ Test-1 device detached"
+
+Example for Test-2:
+  xe vm-param-remove uuid=8c934907-befb-756e-c6fe-91d721291d2b \
+    param-name=platform param-key=device-model-args
+  
+  # Verify
+  xe vm-param-get uuid=8c934907-befb-756e-c6fe-91d721291d2b \
+    param-name=platform param-key=device-model-args 2>/dev/null || echo "✓ Test-2 device detached"
+
+STEP 4: Verify Detachment
+--------------------------
+# Check all VMs again - should show no vgpu-stub devices
+xe vm-list is-control-domain=false params=uuid,name-label | while read uuid name; do
+    if [ -n "$uuid" ]; then
+        args=$(xe vm-param-get uuid=$uuid param-name=platform param-key=device-model-args 2>/dev/null)
+        if [ -n "$args" ] && echo "$args" | grep -q "vgpu-stub"; then
+            echo "⚠️  WARNING: VM $name still has vgpu-stub device!"
+        fi
+    fi
+done
+
+Expected output: (no warnings, or empty output)
+
+STEP 5: Clean Up XenStore (Optional but Recommended)
+------------------------------------------------------
+If VMs were running when detached, XenStore may still have stale entries.
+This is cleaned automatically on next VM start, but you can verify:
+
+# For each VM that was running, check if XenStore entry exists
+# (This requires knowing the domain ID, which is -1 when halted)
+# XenStore entries are automatically cleaned when VM is halted
+
+# To verify XenStore is clean, start a VM and check:
+# DOMID=$(xe vm-param-get uuid=<VM_UUID> param-name=dom-id)
+# xenstore-read /local/domain/$DOMID/platform/device-model-args 2>/dev/null || echo "No device-model-args in XenStore"
+
+================================================================================
+                    PART 2: CREATE NEW VM
+================================================================================
+
+Based on project analysis, here are instructions for creating a new VM suitable
+for vgpu-stub device attachment and mediation layer testing.
+
+PREREQUISITES:
+--------------
+1. XCP-ng Dom0 access (root)
+2. ISO Storage Repository (SR) available
+3. Local Storage Repository (SR) available
+4. Network configured (xenbr0 or similar)
+5. Ubuntu Server ISO available (or other Linux ISO)
+
+STEP 1: Identify Required Resources
+-------------------------------------
+# List Storage Repositories
+xe sr-list params=uuid,name-label,type,content-type
+
+# Identify ISO SR (content-type=iso)
+ISO_SR_UUID=$(xe sr-list content-type=iso params=uuid --minimal | head -1)
+echo "ISO SR UUID: $ISO_SR_UUID"
+
+# Identify Local Storage SR (type=lvm, content-type=user)
+LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
+echo "Local SR UUID: $LOCAL_SR_UUID"
+
+# List available ISOs
+xe vdi-list sr-uuid=$ISO_SR_UUID params=uuid,name-label,virtual-size,type
+
+# List available networks
+xe network-list params=uuid,name-label,bridge
+
+# Get template UUID for "Other install media"
+TEMPLATE_UUID=$(xe template-list name-label="Other install media" params=uuid --minimal)
+echo "Template UUID: $TEMPLATE_UUID"
+
+STEP 2: Create VM from Template
+---------------------------------
+# Set variables (adjust as needed)
+VM_NAME="Test-New-VM"
+TEMPLATE_UUID=$(xe template-list name-label="Other install media" params=uuid --minimal)
+ISO_SR_UUID=$(xe sr-list content-type=iso params=uuid --minimal | head -1)
+LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
+NET_UUID=$(xe network-list bridge=xenbr0 params=uuid --minimal | head -1)
+
+# Create VM
+VM_UUID=$(xe vm-install template-uuid=$TEMPLATE_UUID new-name-label="$VM_NAME")
+echo "Created VM UUID: $VM_UUID"
+
+# Set affinity to current host
+xe vm-param-set uuid=$VM_UUID affinity=$(xe host-list --minimal)
+
+# Configure memory (4GB recommended for Ubuntu installer)
+xe vm-memory-limits-set uuid=$VM_UUID \
+  static-min=4GiB static-max=4GiB \
+  dynamic-min=4GiB dynamic-max=4GiB
+
+# Configure CPUs (4 vCPUs recommended)
+xe vm-param-set uuid=$VM_UUID VCPUs-max=4
+xe vm-param-set uuid=$VM_UUID VCPUs-at-startup=4
+
+STEP 3: Add Disk to VM
+-----------------------
+# Create 40GB disk on local storage
+DISK_VDI=$(xe vdi-create sr-uuid=$LOCAL_SR_UUID \
+  name-label="${VM_NAME}-disk0" \
+  virtual-size=40GiB \
+  type=user)
+echo "Disk VDI UUID: $DISK_VDI"
+
+# Attach disk as device slot 0 (becomes xvda when running)
+DISK_VBD=$(xe vbd-create vm-uuid=$VM_UUID vdi-uuid=$DISK_VDI device=0 mode=RW type=Disk)
+echo "Disk VBD UUID: $DISK_VBD"
+
+# Verify disk slot
+xe vbd-param-get uuid=$DISK_VBD param-name=userdevice
+# Should output: 0
+
+STEP 4: Add Network Interface
+------------------------------
+# Create VIF on device 0
+VIF_UUID=$(xe vif-create vm-uuid=$VM_UUID network-uuid=$NET_UUID device=0)
+echo "VIF UUID: $VIF_UUID"
+
+STEP 5: Add CD Drive and Insert ISO
+------------------------------------
+# Select Ubuntu ISO (adjust name-label as needed)
+ISO_VDI_UUID=$(xe vdi-list sr-uuid=$ISO_SR_UUID \
+  name-label="ubuntu-22.04-server-amd64.iso" \
+  params=uuid --minimal | head -1)
+
+# If ISO name is different, list and choose:
+# xe vdi-list sr-uuid=$ISO_SR_UUID params=uuid,name-label
+
+# Create CD VBD on slot 3 (MUST be numeric, NOT "xvdd")
+CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+echo "CD VBD UUID: $CD_VBD"
+
+# Insert ISO
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+
+# Verify CD slot
+xe vbd-param-get uuid=$CD_VBD param-name=userdevice
+# Should output: 3
+
+STEP 6: Configure Boot Order
+------------------------------
+# Boot from CD first, then disk
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+
+STEP 7: Start VM
+----------------
+# Start the VM
+xe vm-start uuid=$VM_UUID
+
+# Wait a few seconds for initialization
+sleep 5
+
+# Get domain ID
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+echo "VM Domain ID: $DOMID"
+
+# Verify VM is running
+xe vm-list uuid=$VM_UUID params=name-label,power-state,dom-id
+
+STEP 8: Connect to VM Console (Optional)
+----------------------------------------
+# Get VNC socket path
+VNC_SOCKET="/var/run/xen/vnc-$DOMID"
+
+# Check if socket exists
+ls -la $VNC_SOCKET
+
+# To access via VNC:
+# 1. On Dom0, bridge socket to TCP:
+#    socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:$VNC_SOCKET &
+#
+# 2. On your workstation, create SSH tunnel:
+#    ssh -N -L 5901:127.0.0.1:5901 root@<DOM0_IP>
+#
+# 3. Connect VNC client to: 127.0.0.1:5901
+
+STEP 9: Install Operating System
+---------------------------------
+Follow the Ubuntu Server installation process via VNC or console.
+After installation completes:
+
+1. Install NFS client (for mediation layer communication):
+   apt-get update
+   apt-get install -y nfs-common
+
+2. Mount NFS share (adjust DOM0_IP):
+   mkdir -p /mnt/vgpu
+   mount -t nfs <DOM0_IP>:/var/vgpu /mnt/vgpu
+
+3. Create VM directory for mediation layer:
+   mkdir -p /mnt/vgpu/vm<ID>
+   # Where <ID> is the VM ID you'll use for vgpu-stub
+
+STEP 10: Attach VGPU-STUB Device (After OS Installation)
+----------------------------------------------------------
+# Shutdown VM first
+xe vm-shutdown uuid=$VM_UUID
+
+# Wait for shutdown
+while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; do
+    sleep 2
+done
+
+# Configure vgpu-stub device
+# Example: pool_id=A, priority=medium, vm_id=300
+xe vm-param-set uuid=$VM_UUID \
+  platform:device-model-args="-device vgpu-stub,pool_id=A,priority=medium,vm_id=300"
+
+# Verify configuration
+xe vm-param-get uuid=$VM_UUID \
+  param-name=platform param-key=device-model-args
+
+# Start VM
+xe vm-start uuid=$VM_UUID
+
+# Wait for startup
+sleep 8
+
+# Verify device in QEMU command line
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+grep "qemu-dm-$DOMID.*vgpu-stub" /var/log/daemon.log | tail -1
+
+# Verify in XenStore
+xenstore-read /local/domain/$DOMID/platform/device-model-args
+
+STEP 11: Verify Device in Guest
+---------------------------------
+# SSH into the new VM
+ssh user@<VM_IP>
+
+# Check for device
+lspci | grep -i 'processing accelerators\|red hat\|1af4:1111'
+
+# Expected output:
+# XX:XX.X Processing accelerators: Red Hat, Inc. Device 1111 (rev 01)
+
+# Get detailed info
+lspci -vvv | grep -A 20 'Processing accelerators'
+
+# Verify MMIO region exists
+DEVICE=$(lspci | grep 1af4:1111 | awk '{print $1}')
+ls -la /sys/bus/pci/devices/0000:$DEVICE/resource0
+
+================================================================================
+                    PART 3: COMPLETE AUTOMATION SCRIPT
+================================================================================
+
+For convenience, here's a complete script that detaches all vgpu-stub devices
+and creates a new VM:
+
+#!/bin/bash
+set -e
+
+echo "=========================================="
+echo "VGPU-STUB Detachment & New VM Creation"
+echo "=========================================="
+echo ""
+
+# PART A: Detach all vgpu-stub devices
+echo "[PART A] Detaching vgpu-stub devices from all VMs..."
+echo ""
+
+xe vm-list is-control-domain=false params=uuid,name-label,power-state | while read uuid name state; do
+    if [ -n "$uuid" ] && [ -n "$name" ]; then
+        args=$(xe vm-param-get uuid=$uuid param-name=platform param-key=device-model-args 2>/dev/null || echo "")
+        if [ -n "$args" ] && echo "$args" | grep -q "vgpu-stub"; then
+            echo "Found vgpu-stub on VM: $name (UUID: $uuid, State: $state)"
+            
+            # Shutdown if running
+            if [ "$state" = "running" ]; then
+                echo "  Shutting down VM..."
+                xe vm-shutdown uuid=$uuid --force
+                while [ "$(xe vm-param-get uuid=$uuid param-name=power-state)" != "halted" ]; do
+                    sleep 2
+                done
+            fi
+            
+            # Detach device
+            echo "  Detaching vgpu-stub device..."
+            xe vm-param-remove uuid=$uuid param-name=platform param-key=device-model-args
+            
+            # Verify
+            if ! xe vm-param-get uuid=$uuid param-name=platform param-key=device-model-args 2>/dev/null | grep -q "vgpu-stub"; then
+                echo "  ✓ Device detached successfully"
+            else
+                echo "  ⚠️  Warning: Device may still be attached"
+            fi
+            echo ""
+        fi
+    fi
+done
+
+echo "[PART A] Detachment complete!"
+echo ""
+
+# PART B: Create new VM
+echo "[PART B] Creating new VM..."
+echo ""
+
+# Configuration (adjust as needed)
+VM_NAME="${1:-Test-New-VM}"
+VM_ID="${2:-300}"
+POOL_ID="${3:-A}"
+PRIORITY="${4:-medium}"
+
+echo "VM Configuration:"
+echo "  Name: $VM_NAME"
+echo "  VM ID: $VM_ID"
+echo "  Pool ID: $POOL_ID"
+echo "  Priority: $PRIORITY"
+echo ""
+
+# Get resources
+TEMPLATE_UUID=$(xe template-list name-label="Other install media" params=uuid --minimal)
+ISO_SR_UUID=$(xe sr-list content-type=iso params=uuid --minimal | head -1)
+LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
+NET_UUID=$(xe network-list bridge=xenbr0 params=uuid --minimal | head -1)
+
+if [ -z "$TEMPLATE_UUID" ] || [ -z "$ISO_SR_UUID" ] || [ -z "$LOCAL_SR_UUID" ] || [ -z "$NET_UUID" ]; then
+    echo "❌ ERROR: Could not find required resources!"
+    echo "  Template UUID: $TEMPLATE_UUID"
+    echo "  ISO SR UUID: $ISO_SR_UUID"
+    echo "  Local SR UUID: $LOCAL_SR_UUID"
+    echo "  Network UUID: $NET_UUID"
+    exit 1
+fi
+
+# Create VM
+echo "Creating VM..."
+VM_UUID=$(xe vm-install template-uuid=$TEMPLATE_UUID new-name-label="$VM_NAME")
+echo "✓ VM created: $VM_UUID"
+
+# Configure VM
+echo "Configuring VM..."
+xe vm-param-set uuid=$VM_UUID affinity=$(xe host-list --minimal)
+xe vm-memory-limits-set uuid=$VM_UUID static-min=4GiB static-max=4GiB dynamic-min=4GiB dynamic-max=4GiB
+xe vm-param-set uuid=$VM_UUID VCPUs-max=4
+xe vm-param-set uuid=$VM_UUID VCPUs-at-startup=4
+echo "✓ VM configured"
+
+# Add disk
+echo "Adding disk..."
+DISK_VDI=$(xe vdi-create sr-uuid=$LOCAL_SR_UUID name-label="${VM_NAME}-disk0" virtual-size=40GiB type=user)
+DISK_VBD=$(xe vbd-create vm-uuid=$VM_UUID vdi-uuid=$DISK_VDI device=0 mode=RW type=Disk)
+echo "✓ Disk added: $DISK_VDI"
+
+# Add network
+echo "Adding network interface..."
+VIF_UUID=$(xe vif-create vm-uuid=$VM_UUID network-uuid=$NET_UUID device=0)
+echo "✓ Network interface added: $VIF_UUID"
+
+# Add CD (you need to specify ISO name-label)
+echo ""
+echo "⚠️  Please specify Ubuntu ISO name-label:"
+read -p "ISO name-label: " ISO_NAME
+
+ISO_VDI_UUID=$(xe vdi-list sr-uuid=$ISO_SR_UUID name-label="$ISO_NAME" params=uuid --minimal | head -1)
+if [ -z "$ISO_VDI_UUID" ]; then
+    echo "❌ ERROR: ISO '$ISO_NAME' not found!"
+    echo "Available ISOs:"
+    xe vdi-list sr-uuid=$ISO_SR_UUID params=name-label
+    exit 1
+fi
+
+CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+echo "✓ CD drive added with ISO: $ISO_NAME"
+
+# Configure boot
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+echo "✓ Boot order configured"
+
+# Attach vgpu-stub device
+echo "Attaching vgpu-stub device..."
+xe vm-param-set uuid=$VM_UUID \
+  platform:device-model-args="-device vgpu-stub,pool_id=$POOL_ID,priority=$PRIORITY,vm_id=$VM_ID"
+echo "✓ vgpu-stub device attached"
+
+# Summary
+echo ""
+echo "=========================================="
+echo "SETUP SUMMARY"
+echo "=========================================="
+echo ""
+echo "VM UUID: $VM_UUID"
+echo "VM Name: $VM_NAME"
+echo ""
+echo "vGPU Configuration:"
+echo "  Pool ID: $POOL_ID"
+echo "  Priority: $PRIORITY"
+echo "  VM ID: $VM_ID"
+echo ""
+echo "Next Steps:"
+echo "1. Start VM: xe vm-start uuid=$VM_UUID"
+echo "2. Connect via VNC to install OS"
+echo "3. After OS install, verify device: lspci | grep 'Processing accelerators'"
+echo "4. Mount NFS: mount -t nfs <DOM0_IP>:/var/vgpu /mnt/vgpu"
+echo "5. Create VM directory: mkdir -p /mnt/vgpu/vm$VM_ID"
+echo ""
+echo "=========================================="
+
+Usage:
+  ./detach_and_create_vm.sh [VM_NAME] [VM_ID] [POOL_ID] [PRIORITY]
+  
+  Example:
+    ./detach_and_create_vm.sh "Test-New-VM" 300 A medium
+
+================================================================================
+                    PART 4: VERIFICATION CHECKLIST
+================================================================================
+
+After completing detachment and VM creation, verify:
+
+✅ Detachment:
+  [ ] All VMs checked for vgpu-stub devices
+  [ ] VMs shutdown before detachment
+  [ ] device-model-args removed from all VMs
+  [ ] No vgpu-stub devices remain attached
+
+✅ New VM Creation:
+  [ ] VM created successfully
+  [ ] Disk attached (40GB)
+  [ ] Network interface added
+  [ ] CD drive with ISO inserted
+  [ ] Boot order configured (CD first)
+  [ ] vgpu-stub device attached with correct properties
+
+✅ VM Startup:
+  [ ] VM starts successfully (power-state: running)
+  [ ] Domain ID assigned (positive number)
+  [ ] QEMU command line contains vgpu-stub device
+  [ ] XenStore contains device-model-args
+
+✅ Guest Verification:
+  [ ] OS installed successfully
+  [ ] NFS client installed
+  [ ] NFS share mounted
+  [ ] VM directory created in /var/vgpu/vm<ID>
+  [ ] Device visible in lspci
+  [ ] MMIO region accessible
+  [ ] Properties readable (pool_id, priority, vm_id)
+
+================================================================================
+                    PART 5: TROUBLESHOOTING
+================================================================================
+
+Problem: Cannot detach device
+------------------------------
+CAUSE: VM may be in invalid state
+SOLUTION:
+  1. Force shutdown: xe vm-shutdown uuid=<UUID> --force
+  2. Wait until halted: Check power-state repeatedly
+  3. Try detachment again
+  4. If still fails, check XAPI logs: tail -50 /var/log/xensource.log
+
+Problem: New VM fails to start
+-------------------------------
+CAUSE: Missing resources or configuration error
+SOLUTION:
+  1. Check disk space: df -h
+  2. Verify SRs exist: xe sr-list
+  3. Check memory available: xe host-param-get uuid=<HOST_UUID> param-name=memory-free
+  4. Review logs: tail -100 /var/log/daemon.log | grep -i error
+
+Problem: vgpu-stub device not in QEMU command line
+---------------------------------------------------
+CAUSE: device-model-args not read from XenStore
+SOLUTION:
+  1. Verify qemu-wrapper patch: grep "device-model-args from xenstore" /usr/lib64/xen/bin/qemu-wrapper
+  2. Check XenStore: xenstore-read /local/domain/<DOMID>/platform/device-model-args
+  3. Restart VM after fixing
+
+Problem: Device not visible in guest
+------------------------------------
+CAUSE: Device not passed to QEMU or guest needs PCI rescan
+SOLUTION:
+  1. Verify QEMU command line has device (Dom0)
+  2. Try PCI rescan in guest: echo 1 > /sys/bus/pci/rescan
+  3. Reboot guest VM if needed
+
+================================================================================
+                    PART 6: INTEGRATION WITH MEDIATION LAYER
+================================================================================
+
+After creating the new VM with vgpu-stub device:
+
+1. Ensure mediator daemon is running on Dom0:
+   cd /home/david/Downloads/gpu/step2\(quing\)/CODE
+   sudo ./mediator
+
+2. Create VM directory in NFS share:
+   mkdir -p /var/vgpu/vm<VM_ID>
+   chmod 777 /var/vgpu/vm<VM_ID>
+
+3. In guest VM, mount NFS share:
+   mount -t nfs <DOM0_IP>:/var/vgpu /mnt/vgpu
+
+4. Test communication:
+   # In guest VM
+   echo "A:2:<VM_ID>:VECTOR_ADD" > /mnt/vgpu/vm<VM_ID>/request.txt
+   
+   # Wait for response
+   cat /mnt/vgpu/vm<VM_ID>/response.txt
+
+5. Verify mediator processes request:
+   # On Dom0, check mediator logs
+   # Should show: [ENQUEUE] Pool A: vm=<VM_ID>, prio=2 (high), cmd=VECTOR_ADD
+
+================================================================================
+                            END OF GUIDE
+================================================================================
+Document created: January 2026
+Based on: Comprehensive project analysis
+Status: Ready for execution
+================================================================================
