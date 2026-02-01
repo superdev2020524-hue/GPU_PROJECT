@@ -1,0 +1,196 @@
+================================================================================
+                    SAFE RECONNECTION AND CONTINUATION GUIDE
+                    After Connection Drop
+================================================================================
+
+Issue: Connection to XCP-ng dropped during VM setup
+Current Status: VM_UUID variable was lost, need to reconnect and continue
+
+================================================================================
+                    STEP 1: RECONNECT TO XCP-NG
+================================================================================
+
+On your local machine, reconnect via SSH:
+
+ssh root@10.25.33.10
+
+If connection fails:
+- Check network connectivity: ping 10.25.33.10
+- Verify SSH service is running on XCP-ng
+- Check if bridge xenbr0 is still accessible
+
+================================================================================
+                    STEP 2: VERIFY SYSTEM STATE
+================================================================================
+
+Once reconnected, verify system is stable:
+
+# Check bridge status (should be UP for network access)
+ip link show xenbr0 | grep "state UP" && echo "Bridge is UP" || echo "Bridge is DOWN"
+
+# Check network connectivity
+ping -c 2 10.25.33.1 && echo "Gateway reachable" || echo "Gateway NOT reachable"
+
+# Check if Dom0 has IP address
+ip addr show xenbr0 | grep "inet " && echo "IP configured" || echo "No IP address"
+
+# Check VM status
+xe vm-list name-label="Test-3" params=uuid,name-label,power-state
+
+================================================================================
+                    STEP 3: RESTORE VARIABLES AND CONTINUE
+================================================================================
+
+Restore the VM UUID and continue setup:
+
+# Get VM UUID
+VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+echo "VM UUID: $VM_UUID"
+
+# Verify VM exists
+if [ -z "$VM_UUID" ]; then
+    echo "ERROR: Test-3 VM not found"
+    echo "List all VMs:"
+    xe vm-list is-control-domain=false params=name-label,uuid
+    exit 1
+fi
+
+# Check VM current state
+xe vm-list uuid=$VM_UUID params=name-label,power-state,dom-id
+
+# Get other needed variables
+NET_UUID="9ad61c24-289c-b654-aa85-6e95df85a2de"  # From earlier
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID userdevice=3 params=uuid --minimal | head -1)
+echo "CD VBD: $CD_VBD"
+
+# Check if ISO is inserted
+if [ -n "$CD_VBD" ]; then
+    ISO_VDI_UUID=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    echo "ISO VDI UUID: $ISO_VDI_UUID"
+fi
+
+================================================================================
+                    STEP 4: ADDRESS STORAGE ISSUE
+================================================================================
+
+The VM failed to start due to ISO storage issue. Choose one option:
+
+OPTION A: Try Scanning SMB SR (If SMB is now accessible)
+----------------------------------------------------------
+ISO_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+echo "Scanning SMB ISO SR..."
+xe sr-scan uuid=$ISO_SR_UUID
+
+# Wait a moment
+sleep 3
+
+# Try starting VM
+xe vm-start uuid=$VM_UUID
+
+OPTION B: Use ISO from Different SR (Recommended)
+--------------------------------------------------
+# Find ISO in first SR (a8a724d0-4cdb-4579-03ec-2c94d46a445d)
+ALT_SR_UUID="a8a724d0-4cdb-4579-03ec-2c94d46a445d"
+ALL_VDIS=$(xe vdi-list sr-uuid=$ALT_SR_UUID params=uuid --minimal)
+
+NEW_ISO_VDI_UUID=""
+for VDI_UUID in $(echo "$ALL_VDIS" | tr ',' ' '); do
+    VDI_UUID=$(echo "$VDI_UUID" | xargs)
+    VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+    if echo "$VDI_NAME" | grep -qi "ubuntu.*22.04"; then
+        echo "Found: $VDI_NAME (UUID: $VDI_UUID)"
+        NEW_ISO_VDI_UUID="$VDI_UUID"
+        break
+    fi
+done
+
+if [ -n "$NEW_ISO_VDI_UUID" ]; then
+    echo "Switching to ISO from different SR..."
+    xe vbd-eject uuid=$CD_VBD
+    xe vbd-insert uuid=$CD_VBD vdi-uuid=$NEW_ISO_VDI_UUID
+    echo "ISO switched. Starting VM..."
+    xe vm-start uuid=$VM_UUID
+fi
+
+OPTION C: Start VM Without ISO (Install OS Later)
+-------------------------------------------------
+# Remove CD drive temporarily
+xe vbd-unplug uuid=$CD_VBD
+
+# Start VM (will boot but no installation media)
+xe vm-start uuid=$VM_UUID
+
+# Note: You'll need to add ISO later for OS installation
+
+================================================================================
+                    STEP 5: VERIFY VM STARTED
+================================================================================
+
+After starting VM:
+
+# Wait for initialization
+sleep 5
+
+# Get domain ID
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+echo "VM Domain ID: $DOMID"
+
+# Check power state
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+echo "VM Power State: $POWER_STATE"
+
+if [ "$POWER_STATE" = "running" ] && [ "$DOMID" != "-1" ]; then
+    echo "VM started successfully"
+    
+    # Verify vgpu-stub device
+    echo "Verifying vgpu-stub device..."
+    grep "qemu-dm-$DOMID.*vgpu-stub" /var/log/daemon.log | tail -1
+    
+    xenstore-read /local/domain/$DOMID/platform/device-model-args
+else
+    echo "VM did not start successfully"
+    echo "Check logs: tail -50 /var/log/daemon.log | grep -i error"
+fi
+
+================================================================================
+                    PREVENTION: AVOID CONNECTION DROPS
+================================================================================
+
+To prevent connection drops in the future:
+
+1. DO NOT modify network bridge configuration unless necessary
+2. DO NOT run commands that could affect Dom0's network interface
+3. Always verify VM_UUID is set before using it
+4. Use screen or tmux for long-running sessions:
+   screen -S vm-setup
+   # Run commands
+   # Detach: Ctrl+A then D
+   # Reattach: screen -r vm-setup
+
+5. Save important variables to a file:
+   echo "VM_UUID=$VM_UUID" > /root/vm_vars.txt
+   source /root/vm_vars.txt
+
+6. Check system stability before making changes:
+   - Verify bridge is UP
+   - Check network connectivity
+   - Ensure SSH is accessible
+
+================================================================================
+                    QUICK RECONNECTION CHECKLIST
+================================================================================
+
+After reconnecting:
+
+[ ] SSH connection established
+[ ] Bridge xenbr0 is UP (or at least has IP)
+[ ] Can ping gateway (10.25.33.1)
+[ ] VM UUID retrieved: VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+[ ] VM state checked: xe vm-list uuid=$VM_UUID
+[ ] Storage issue addressed (scan SR or switch ISO)
+[ ] VM started successfully
+[ ] Domain ID assigned
+
+================================================================================
+                            END OF GUIDE
+================================================================================

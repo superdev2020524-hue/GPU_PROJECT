@@ -1,0 +1,124 @@
+================================================================================
+        FIND OR CREATE NETPLAN CONFIGURATION FILE
+================================================================================
+
+If the file doesn't exist, we need to find it or create it.
+
+STEP 1: Find All netplan Files
+--------------------------------
+# List all netplan configuration files
+ls -la /etc/netplan/
+
+# Check what files exist
+sudo find /etc/netplan -name "*.yaml" -o -name "*.yml"
+
+# Show contents of any existing files
+sudo cat /etc/netplan/*.yaml 2>/dev/null
+sudo cat /etc/netplan/*.yml 2>/dev/null
+
+
+STEP 2: Check Network Manager Status
+-------------------------------------
+# Check if NetworkManager is managing the network
+sudo systemctl status NetworkManager
+
+# If NetworkManager is active, the GUI settings are stored there
+# You might need to use NetworkManager commands instead
+
+
+STEP 3: Create netplan Configuration (If File Doesn't Exist)
+-------------------------------------------------------------
+# Create the configuration file
+sudo nano /etc/netplan/01-netcfg.yaml
+
+# Or if that doesn't work:
+sudo nano /etc/netplan/50-cloud-init.yaml
+
+# Add this configuration:
+network:
+  version: 2
+  renderer: networkd  # or networkd if using systemd-networkd
+  ethernets:
+    eth0:
+      addresses:
+        - 10.25.33.11/24
+      routes:
+        - to: default
+          via: 10.25.33.254
+      nameservers:
+        addresses:
+          - 8.8.8.8
+
+# Save and apply
+sudo netplan apply
+
+
+STEP 4: Alternative - Use NetworkManager (If GUI Was Used)
+-----------------------------------------------------------
+If you configured network via GUI (Settings app), NetworkManager might be managing it.
+
+# Check NetworkManager connections
+nmcli connection show
+
+# Modify the connection
+nmcli connection modify "Wired connection 1" ipv4.gateway 10.25.33.254
+nmcli connection modify "Wired connection 1" ipv4.method manual
+nmcli connection modify "Wired connection 1" ipv4.addresses 10.25.33.11/24
+nmcli connection modify "Wired connection 1" ipv4.dns 8.8.8.8
+
+# Apply changes
+nmcli connection up "Wired connection 1"
+
+# Or restart NetworkManager
+sudo systemctl restart NetworkManager
+
+
+STEP 5: Quick Fix - Just Update Route (Temporary But Works)
+------------------------------------------------------------
+If you can't find the config file, just update the route manually:
+
+# Remove wrong route
+sudo ip route del default via 10.25.33.1 dev eth0
+
+# Add correct route
+sudo ip route add default via 10.25.33.254 dev eth0
+
+# Make it survive reboot by adding to /etc/rc.local or creating a systemd service
+# Or just update the GUI settings again with correct gateway
+
+
+STEP 6: Update GUI Settings (Easiest If GUI Was Used)
+-------------------------------------------------------
+If you configured via GUI, just update the GUI settings:
+
+1. Open Settings → Network → Wired
+2. Click the gear icon
+3. Go to IPv4 tab
+4. Change Gateway from 10.25.33.1 to 10.25.33.254
+5. Click Apply
+
+This will update the NetworkManager configuration automatically.
+
+
+================================================================================
+QUICK DIAGNOSTIC COMMANDS
+================================================================================
+
+Run these to understand your network setup:
+
+# Check what's managing network
+sudo systemctl status NetworkManager
+sudo systemctl status systemd-networkd
+
+# List netplan files
+ls -la /etc/netplan/
+
+# Check current network config
+ip addr show
+ip route show
+
+# Check NetworkManager connections
+nmcli connection show
+nmcli connection show "Wired connection 1" 2>/dev/null || nmcli connection show | head -5
+
+================================================================================

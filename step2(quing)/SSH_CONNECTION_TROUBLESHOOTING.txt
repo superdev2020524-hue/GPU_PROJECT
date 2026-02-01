@@ -1,0 +1,243 @@
+================================================================================
+        TROUBLESHOOTING: Cannot SSH to VM (ssh root@10.25.33.11)
+================================================================================
+
+PROBLEM IDENTIFIED:
+-------------------
+Looking at your network configuration dialog, there are several issues:
+
+1. ❌ **IPv4 Method is set to "Automatic (DHCP)"** - This is the MAIN problem!
+   - The VM is trying to use DHCP instead of your static IP configuration
+   - Your static IP settings (Routes section) are being ignored
+
+2. ❌ **Address field shows "10.25.33.10.13"** - Wrong format
+   - Should be "10.25.33.13" (remove the extra ".10")
+
+3. ❌ **DNS Automatic toggle is ON** - Should be OFF
+4. ❌ **Routes Automatic toggle is ON** - Should be OFF
+
+5. ⚠️  **You're trying to SSH to 10.25.33.11**
+   - According to your info.txt, 10.25.33.11 is for "Linux VM"
+   - Your current VM (Test-3) should use 10.25.33.13 or higher
+   - Check what IP the VM actually has
+
+
+================================================================================
+SOLUTION: Fix Network Configuration
+================================================================================
+
+STEP 1: Change IPv4 Method to "Manual"
+----------------------------------------
+This is the MOST IMPORTANT step!
+
+1. In the "Wired" network dialog, go to "IPv4" tab
+2. Find the "IPv4 Method" section at the top
+3. Select "Manual" (click the radio button)
+   - Currently "Automatic (DHCP)" is selected (orange circle)
+   - Change it to "Manual"
+
+This tells Ubuntu to use your static IP configuration instead of DHCP.
+
+
+STEP 2: Fix the Address Field
+-------------------------------
+1. In the Routes section, click the Address field
+2. Currently shows: "10.25.33.10.13"
+3. Delete the extra ".10" part
+4. Should be: "10.25.33.13"
+
+
+STEP 3: Turn OFF Automatic Toggles
+-----------------------------------
+1. DNS section: Turn OFF "Automatic" toggle (move to left, turn gray)
+2. Routes section: Turn OFF "Automatic" toggle (move to left, turn gray)
+
+
+STEP 4: Verify Configuration
+----------------------------
+Your configuration should be:
+- IPv4 Method: Manual ✓
+- DNS Automatic: OFF ✓
+- DNS: 8.8.8.8 ✓
+- Routes Automatic: OFF ✓
+- Address: 10.25.33.13 ✓
+- Netmask: 255.255.255.0 ✓
+- Gateway: 10.25.33.1 ✓
+- Metric: (empty or 100) ✓
+
+
+STEP 5: Apply and Test
+-----------------------
+1. Click "Apply" button
+2. Wait a few seconds for network to reconfigure
+3. Test connectivity from VM:
+   - Open terminal in VM
+   - Run: ping -c 3 10.25.33.1 (test gateway)
+   - Run: ping -c 3 8.8.8.8 (test internet)
+   - Run: ip addr show (verify IP is 10.25.33.13)
+
+
+STEP 6: Try SSH Again
+---------------------
+From your desktop/laptop:
+
+# Try the correct IP (10.25.33.13, not 10.25.33.11):
+ssh root@10.25.33.13
+
+# Or if you created a user "david" during installation:
+ssh david@10.25.33.13
+
+# If root SSH is disabled (default on Ubuntu), use your user:
+ssh david@10.25.33.13
+
+
+================================================================================
+VERIFY: What IP Does the VM Actually Have?
+================================================================================
+
+From Dom0, check what IP the VM actually has:
+
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+
+# Get VM MAC address
+VIF_UUID=$(xe vif-list vm-uuid=$VM_UUID params=uuid --minimal | head -1)
+MAC=$(xe vif-param-get uuid=$VIF_UUID param-name=MAC)
+echo "VM MAC: $MAC"
+
+# Check ARP table for this MAC
+arp -a | grep -i "$MAC"
+
+# Check DHCP leases (if DHCP was used)
+grep -i "$MAC" /var/lib/dhcpd/dhcpd.leases | tail -5
+
+# Ping test to find VM
+for i in {11..20}; do
+    ping -c 1 -W 1 10.25.33.$i >/dev/null 2>&1 && echo "10.25.33.$i is responding"
+done
+
+
+================================================================================
+ADDITIONAL TROUBLESHOOTING
+================================================================================
+
+If SSH still doesn't work after fixing network:
+
+1. **Check if SSH service is running on VM:**
+   # Via VNC console, run:
+   sudo systemctl status ssh
+   # or
+   sudo systemctl status sshd
+   
+   # If not running, start it:
+   sudo systemctl start ssh
+   sudo systemctl enable ssh
+
+2. **Check if SSH is installed:**
+   # Via VNC console:
+   which sshd
+   # If not found, install:
+   sudo apt update
+   sudo apt install openssh-server
+
+3. **Check firewall (if enabled):**
+   # Via VNC console:
+   sudo ufw status
+   # If active, allow SSH:
+   sudo ufw allow ssh
+   sudo ufw allow 22/tcp
+
+4. **Check if root login is allowed:**
+   # Ubuntu disables root SSH by default
+   # Check: sudo nano /etc/ssh/sshd_config
+   # Look for: PermitRootLogin
+   # If it says "no" or "prohibit-password", root SSH is disabled
+   # Use your regular user instead: ssh david@10.25.33.13
+
+5. **Test network connectivity:**
+   # From VM console:
+   ping -c 3 10.25.33.1    # Test gateway
+   ping -c 3 10.25.33.10   # Test Dom0
+   ping -c 3 8.8.8.8        # Test internet
+   
+   # From your desktop:
+   ping -c 3 10.25.33.13   # Test VM (if configured correctly)
+
+6. **Check netplan configuration:**
+   # Via VNC console:
+   cat /etc/netplan/*.yaml
+   
+   # Should show static IP configuration
+   # If not, see alternative configuration method below
+
+
+================================================================================
+ALTERNATIVE: Configure Network via Command Line (If GUI Fails)
+================================================================================
+
+If the GUI configuration doesn't work, use command line:
+
+# Via VNC console, open terminal and run:
+sudo nano /etc/netplan/00-installer-config.yaml
+
+# Replace contents with:
+network:
+  version: 2
+  ethernets:
+    enp0s3:  # Replace with your actual interface name
+      addresses:
+        - 10.25.33.13/24
+      routes:
+        - to: default
+          via: 10.25.33.1
+      nameservers:
+        addresses:
+          - 8.8.8.8
+
+# Find your interface name:
+ip addr show
+# Look for interface with MAC address matching your VM's MAC
+
+# Apply configuration:
+sudo netplan apply
+
+# Verify:
+ip addr show
+ip route show
+
+
+================================================================================
+QUICK CHECKLIST
+================================================================================
+
+Before trying SSH, verify:
+
+[ ] IPv4 Method is set to "Manual" (not "Automatic (DHCP)")
+[ ] DNS Automatic toggle is OFF
+[ ] Routes Automatic toggle is OFF
+[ ] Address is "10.25.33.13" (not "10.25.33.10.13")
+[ ] Netmask is "255.255.255.0"
+[ ] Gateway is "10.25.33.1"
+[ ] DNS is "8.8.8.8"
+[ ] Clicked "Apply" button
+[ ] Verified IP with: ip addr show (in VM)
+[ ] Tested connectivity: ping 10.25.33.1 (from VM)
+[ ] SSH service is running: sudo systemctl status ssh
+[ ] Using correct IP: ssh david@10.25.33.13 (not 10.25.33.11)
+[ ] Using correct username (Ubuntu disables root SSH by default)
+
+
+================================================================================
+SUMMARY
+================================================================================
+
+The main issue is that IPv4 Method is set to "Automatic (DHCP)" instead of "Manual".
+This causes Ubuntu to ignore your static IP configuration and try to get an IP from DHCP.
+
+Fix:
+1. Set IPv4 Method to "Manual"
+2. Fix Address to "10.25.33.13" (remove extra ".10")
+3. Turn OFF both Automatic toggles
+4. Click Apply
+5. Use correct IP for SSH: ssh david@10.25.33.13
+
+================================================================================

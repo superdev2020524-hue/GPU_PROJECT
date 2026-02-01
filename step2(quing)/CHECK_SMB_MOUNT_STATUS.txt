@@ -1,0 +1,146 @@
+================================================================================
+                    CHECK SMB MOUNT STATUS - Correct Commands
+================================================================================
+
+TERMINAL OUTPUT ANALYSIS (Lines 1-40)
+-------------------------------------
+
+Line 2-10: Ping test SUCCESS ✓
+  - SMB server 10.25.33.33 is reachable
+  - Network connectivity is working
+  - 0% packet loss, good response time
+
+Line 12: nc command not found
+  - netcat not installed (not critical)
+  - Can install with: yum install -y nc
+
+Line 17-22: Unplug/replug PBD
+  - Commands executed successfully
+  - No errors from xe commands
+
+Line 27, 35: Bash syntax errors
+  - Caused by exclamation mark (!) in echo statement
+  - Bash interprets ! as history expansion
+  - Need to use single quotes or escape it
+
+Line 31: "Still not accessible - check logs"
+  - Mount point still doesn't exist after unplug/replug
+  - Need to check logs for mount errors
+
+
+CORRECT COMMANDS (No Syntax Errors)
+------------------------------------
+
+# Check mount point status (without exclamation marks)
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "SUCCESS: SR mount point exists"
+    ls -la /var/run/sr-mount/$SMB_SR_UUID | head -10
+else
+    echo "Mount point does NOT exist - checking logs"
+    tail -50 /var/log/xensource.log | grep -i "cifs\|mount.*error\|097e2b8c" | tail -20
+fi
+
+
+COMPLETE STATUS CHECK
+---------------------
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+PBD_UUID="b492084d-5db6-df96-58a8-173a0699ebce"
+
+echo "=== SMB SR Status Check ==="
+echo ""
+
+# 1. Network connectivity (already tested - SUCCESS)
+echo "1. Network: Server 10.25.33.33 is reachable"
+
+# 2. PBD status
+echo ""
+echo "2. PBD Status:"
+PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+echo "   PBD Attached: $PBD_ATTACHED"
+
+# 3. Mount point
+echo ""
+echo "3. Mount Point:"
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "   Mount point EXISTS"
+    echo "   Contents:"
+    ls -la /var/run/sr-mount/$SMB_SR_UUID | head -5
+    echo ""
+    echo "   Mount status:"
+    mount | grep "$SMB_SR_UUID" || echo "   (Not in mount table)"
+else
+    echo "   Mount point does NOT exist"
+fi
+
+# 4. Check logs for mount errors
+echo ""
+echo "4. Recent Mount Errors:"
+tail -100 /var/log/xensource.log | grep -i "sr.*$SMB_SR_UUID\|mount.*cifs\|cifs.*error" | tail -10 || echo "   No recent errors found"
+
+# 5. Check CIFS tools
+echo ""
+echo "5. CIFS Tools:"
+if command -v mount.cifs >/dev/null 2>&1; then
+    echo "   mount.cifs is available"
+else
+    echo "   mount.cifs NOT found"
+    echo "   Install: yum install -y cifs-utils"
+fi
+
+
+CHECK MOUNT ERRORS IN DETAIL
+----------------------------
+# Check for specific CIFS mount errors
+echo "=== Checking for CIFS Mount Errors ==="
+
+# Check xensource log
+echo "Xensource log:"
+grep -i "cifs\|mount.*097e2b8c\|smb.*error" /var/log/xensource.log | tail -20
+
+# Check daemon log
+echo ""
+echo "Daemon log:"
+grep -i "cifs\|mount.*097e2b8c" /var/log/daemon.log 2>/dev/null | tail -20 || echo "No daemon log entries"
+
+# Check system messages
+echo ""
+echo "System messages:"
+grep -i "cifs\|mount.*097e2b8c" /var/log/messages 2>/dev/null | tail -20 || echo "No system messages"
+
+
+COMMON MOUNT ERRORS AND FIXES
+-----------------------------
+
+Error: "mount error(13): Permission denied"
+  Cause: Wrong username/password or insufficient permissions
+  Fix: Verify password for user 'momi' on SMB server
+       Check user has access to /test share
+
+Error: "mount error(112): Host is down"
+  Cause: SMB server is down or unreachable
+  Fix: Check SMB server status (but ping works, so unlikely)
+
+Error: "mount error(2): No such file or directory"
+  Cause: Share path doesn't exist on SMB server
+  Fix: Verify /test share exists on 10.25.33.33
+
+Error: "mount error(22): Invalid argument"
+  Cause: SMB version mismatch or CIFS options issue
+  Fix: Try different SMB version or check CIFS mount options
+
+Error: "Operation not permitted"
+  Cause: Missing cifs-utils or insufficient permissions
+  Fix: Install cifs-utils: yum install -y cifs-utils
+
+
+NEXT STEPS
+----------
+1. Run the complete status check above
+2. Check mount errors in logs
+3. If password issue: Update password in XCP-ng
+4. If permissions issue: Check SMB server share permissions
+5. If CIFS tools missing: Install cifs-utils
+
+================================================================================

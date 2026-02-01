@@ -1,0 +1,97 @@
+================================================================================
+        IMMEDIATE DIAGNOSTIC STEPS - Route Exists But Gateway Unreachable
+================================================================================
+
+Your VM has the route configured correctly, but can't reach the gateway.
+This is a network connectivity issue on Dom0 side.
+
+RUN THESE COMMANDS ON DOM0 (not in the VM):
+============================================
+
+STEP 1: Check IP Forwarding (Most Common Issue)
+------------------------------------------------
+cat /proc/sys/net/ipv4/ip_forward
+
+# If output is NOT "1", enable it:
+echo 1 > /proc/sys/net/ipv4/ip_forward
+sysctl -w net.ipv4.ip_forward=1
+
+# Make permanent:
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+
+STEP 2: Check Bridge Status
+-----------------------------
+ip link show xenbr0
+
+# Should show: state UP
+# If DOWN, bring it up:
+ip link set xenbr0 up
+
+
+STEP 3: Test Gateway from Dom0
+--------------------------------
+ping -c 3 10.25.33.1
+
+# If this fails, the gateway itself might be unreachable
+# Check ARP:
+arp -a | grep 10.25.33.1
+
+
+STEP 4: Check VM's VIF Connection
+----------------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+
+# Get VIF info
+VIF_UUID=$(xe vif-list vm-uuid=$VM_UUID params=uuid --minimal | head -1)
+VIF_MAC=$(xe vif-param-get uuid=$VIF_UUID param-name=MAC)
+
+echo "VIF UUID: $VIF_UUID"
+echo "VIF MAC: $VIF_MAC"
+
+# Check VIF status
+xe vif-param-get uuid=$VIF_UUID param-name=status
+# Should be: connected
+
+# Check if VIF is on bridge
+brctl show xenbr0 | grep -i "$VIF_MAC"
+# Or:
+ip link show xenbr0 | grep -i "$VIF_MAC"
+
+
+STEP 5: Test Connectivity Dom0 -> VM
+--------------------------------------
+ping -c 3 10.25.33.11
+
+# Check ARP for VM
+arp -a | grep 10.25.33.11
+
+
+STEP 6: Check Firewall (if enabled)
+------------------------------------
+iptables -L -n -v | head -20
+
+# If firewall is blocking, allow forwarding:
+iptables -I FORWARD -i xenbr0 -o xenbr0 -j ACCEPT
+iptables -I FORWARD -s 10.25.33.0/24 -j ACCEPT
+iptables -I FORWARD -d 10.25.33.0/24 -j ACCEPT
+
+
+MOST LIKELY FIX:
+----------------
+Run these on Dom0:
+
+# Enable IP forwarding
+echo 1 > /proc/sys/net/ipv4/ip_forward
+sysctl -w net.ipv4.ip_forward=1
+
+# Ensure bridge is up
+ip link set xenbr0 up
+
+# Test
+ping -c 3 10.25.33.11
+
+Then try from VM again:
+ping -c 3 10.25.33.1
+
+================================================================================

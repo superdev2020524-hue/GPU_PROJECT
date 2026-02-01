@@ -1,0 +1,219 @@
+================================================================================
+                    INSERT ISO AND START TEST-3 - SMB SR IS NOW ACCESSIBLE!
+================================================================================
+
+GREAT NEWS:
+----------
+✓ SMB SR mount point EXISTS
+✓ PBD is attached (true)
+✓ Network connectivity working
+✓ SR contains ISO files
+
+You can now insert the Ubuntu ISO into Test-3 and start the VM!
+
+
+STEP 1: Find Ubuntu 22.04 ISO in SMB SR
+----------------------------------------
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+
+echo "=== Searching for Ubuntu 22.04 ISO ==="
+for VDI_UUID in $(xe vdi-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | tr ',' ' '); do
+    VDI_UUID=$(echo "$VDI_UUID" | xargs)
+    VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+    
+    if [ -n "$VDI_NAME" ]; then
+        if echo "$VDI_NAME" | grep -qi "ubuntu.*22.04"; then
+            echo "Found: $VDI_NAME"
+            echo "UUID: $VDI_UUID"
+            ISO_VDI_UUID="$VDI_UUID"
+            ISO_NAME="$VDI_NAME"
+        fi
+    fi
+done
+
+# If found, use it; otherwise use the known UUID from earlier
+if [ -z "$ISO_VDI_UUID" ]; then
+    echo "Using known UUID from earlier attempts:"
+    ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+    ISO_NAME=$(xe vdi-param-get uuid=$ISO_VDI_UUID param-name=name-label 2>/dev/null)
+    echo "ISO: $ISO_NAME"
+    echo "UUID: $ISO_VDI_UUID"
+fi
+
+
+STEP 2: Ensure Test-3 VM is Halted
+-----------------------------------
+VM_UUID="a30bbe3a-467c-695d-e0ab-ac92146a2269"
+
+echo ""
+echo "=== Checking VM Power State ==="
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+echo "Current power state: $POWER_STATE"
+
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "VM is running - shutting down..."
+    xe vm-shutdown uuid=$VM_UUID
+    
+    # Wait for shutdown
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; do
+        sleep 2
+        echo "Waiting for shutdown..."
+    done
+    echo "VM is now halted"
+else
+    echo "VM is already halted"
+fi
+
+
+STEP 3: Insert ISO into CD Drive
+----------------------------------
+echo ""
+echo "=== Inserting ISO into CD Drive ==="
+
+# Get CD VBD UUID
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+echo "CD VBD: $CD_VBD"
+
+# Check if CD drive already has ISO
+CURRENT_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+if [ -n "$CURRENT_ISO" ]; then
+    echo "CD drive has ISO - ejecting first..."
+    xe vbd-eject uuid=$CD_VBD
+    sleep 1
+fi
+
+# Insert Ubuntu 22.04 ISO
+echo "Inserting ISO: $ISO_NAME"
+echo "ISO UUID: $ISO_VDI_UUID"
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+
+if [ $? -eq 0 ]; then
+    echo "ISO inserted successfully"
+    
+    # Verify
+    INSERTED_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    if [ "$INSERTED_ISO" = "$ISO_VDI_UUID" ]; then
+        echo "Verified: ISO is in CD drive"
+    fi
+else
+    echo "ERROR: Failed to insert ISO"
+    echo "Check if VDI UUID is correct and SR is accessible"
+    exit 1
+fi
+
+
+STEP 4: Verify Boot Order
+--------------------------
+echo ""
+echo "=== Verifying Boot Order ==="
+BOOT_ORDER=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null | grep -o "order=[^;]*" | cut -d= -f2)
+echo "Current boot order: $BOOT_ORDER"
+
+if [ "$BOOT_ORDER" != "dc" ]; then
+    echo "Setting boot order to CD first (dc)..."
+    xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+    xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+    echo "Boot order set to: dc (CD first, then Disk)"
+else
+    echo "Boot order is already correct (dc)"
+fi
+
+
+STEP 5: Start VM
+----------------
+echo ""
+echo "=== Starting Test-3 VM ==="
+xe vm-start uuid=$VM_UUID
+
+# Wait for VM to start
+sleep 5
+
+# Get domain ID
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "VM started successfully"
+    echo "Domain ID: $DOMID"
+    echo ""
+    echo "VM is now booting from Ubuntu 22.04 ISO"
+    echo ""
+    echo "Next steps:"
+    echo "1. Connect via VNC to see Ubuntu installer"
+    echo "2. Install Ubuntu with static IP: 10.25.33.13/24"
+    echo "3. Gateway: 10.25.33.1, DNS: 8.8.8.8"
+    echo ""
+    echo "See VNC CONNECTION GUIDE in DELETE_AND_RECREATE_TEST3_TEST4.txt"
+else
+    echo "ERROR: VM failed to start"
+    echo "Check logs:"
+    tail -50 /var/log/xensource.log | grep -i error | tail -10
+    echo ""
+    echo "If you see 'qemu-dm timeout', check QEMU logs:"
+    echo "  tail -200 /var/log/xen/qemu-dm-*.log | tail -50"
+fi
+
+
+COMPLETE SCRIPT (All Steps Combined)
+-------------------------------------
+VM_UUID="a30bbe3a-467c-695d-e0ab-ac92146a2269"
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+
+# Step 1: Verify SR is accessible
+if [ ! -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "ERROR: SMB SR is not accessible"
+    exit 1
+fi
+echo "SMB SR is accessible"
+
+# Step 2: Ensure VM is halted
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; do
+        sleep 2
+    done
+fi
+
+# Step 3: Insert ISO
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+CURRENT_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+if [ -n "$CURRENT_ISO" ]; then
+    xe vbd-eject uuid=$CD_VBD
+fi
+
+echo "Inserting ISO..."
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+echo "ISO inserted"
+
+# Step 4: Verify boot order
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+
+# Step 5: Start VM
+echo "Starting VM..."
+xe vm-start uuid=$VM_UUID
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "VM started - Domain ID: $DOMID"
+    xl list | grep Test-3
+else
+    echo "VM failed to start - check logs"
+fi
+
+
+VERIFY VM IS RUNNING
+--------------------
+# Check VM status
+xl list | grep Test-3
+
+# Check VNC socket exists
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    ls -la /var/run/xen/vnc-$DOMID
+    echo "VNC socket: /var/run/xen/vnc-$DOMID"
+fi
+
+
+================================================================================

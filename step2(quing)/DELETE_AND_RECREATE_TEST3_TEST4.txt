@@ -1,0 +1,1332 @@
+================================================================================
+                    DELETE AND RECREATE TEST-3 AND TEST-4 VMs
+================================================================================
+
+PART 1: DELETE EXISTING VMs
+----------------------------
+
+STEP 1: Get VM UUIDs
+--------------------
+# Get UUIDs for Test-3 and Test-4
+TEST3_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+TEST4_UUID=$(xe vm-list name-label="Test-4" params=uuid --minimal)
+
+# Verify UUIDs
+echo "Test-3 UUID: $TEST3_UUID"
+echo "Test-4 UUID: $TEST4_UUID"
+
+# Verify VMs exist and are halted
+xe vm-list uuid=$TEST3_UUID params=name-label,power-state
+xe vm-list uuid=$TEST4_UUID params=name-label,power-state
+
+
+STEP 2: Shutdown VMs (if running)
+----------------------------------
+# Force shutdown if still running (should be halted already)
+xe vm-shutdown uuid=$TEST3_UUID force=true
+xe vm-shutdown uuid=$TEST4_UUID force=true
+
+# Wait a few seconds
+sleep 3
+
+# Verify they are halted
+xe vm-list uuid=$TEST3_UUID params=power-state
+xe vm-list uuid=$TEST4_UUID params=power-state
+
+
+STEP 3: Delete Test-3 VM
+-------------------------
+# Destroy VM and all its disks
+xe vm-destroy uuid=$TEST3_UUID
+
+# Verify deletion
+xe vm-list uuid=$TEST3_UUID 2>&1
+# Should show: "uuid: <UUID>" not found or similar error
+
+
+STEP 4: Delete Test-4 VM
+-------------------------
+# Destroy VM and all its disks
+xe vm-destroy uuid=$TEST4_UUID
+
+# Verify deletion
+xe vm-list uuid=$TEST4_UUID 2>&1
+# Should show: "uuid: <UUID>" not found or similar error
+
+
+STEP 5: Verify Deletion
+------------------------
+# List all VMs to confirm Test-3 and Test-4 are gone
+xe vm-list is-control-domain=false params=uuid,name-label,power-state
+
+# Should only show Test-1 and Test-2
+
+
+================================================================================
+                    PART 2: RECREATE TEST-3 VM
+================================================================================
+
+STEP 6: Identify Required Resources
+------------------------------------
+# Find ISO Storage Repository
+ISO_SR_UUIDS=$(xe sr-list content-type=iso params=uuid --minimal)
+echo "ISO SR UUIDs: $ISO_SR_UUIDS"
+
+# Find Local Storage Repository
+LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
+echo "Local SR UUID: $LOCAL_SR_UUID"
+
+# Find Template
+TEMPLATE_UUID=$(xe template-list name-label="Other install media" params=uuid --minimal)
+echo "Template UUID: $TEMPLATE_UUID"
+
+# Find Network UUID
+NET_UUID=$(xe network-list bridge=xenbr0 params=uuid --minimal | head -1)
+echo "Network UUID: $NET_UUID"
+
+
+STEP 7: Create Test-3 VM
+-------------------------
+VM_NAME="Test-3"
+
+# Create VM from template
+VM_UUID=$(xe vm-install template-uuid=$TEMPLATE_UUID new-name-label="$VM_NAME")
+echo "Created Test-3 VM UUID: $VM_UUID"
+
+# Set basic configuration
+xe vm-param-set uuid=$VM_UUID affinity=$(xe host-list --minimal)
+xe vm-memory-limits-set uuid=$VM_UUID static-min=4GiB static-max=4GiB dynamic-min=4GiB dynamic-max=4GiB
+xe vm-param-set uuid=$VM_UUID VCPUs-max=4
+xe vm-param-set uuid=$VM_UUID VCPUs-at-startup=4
+
+
+STEP 8: Add Disk to Test-3
+---------------------------
+# Create 40GB disk
+DISK_VDI=$(xe vdi-create sr-uuid=$LOCAL_SR_UUID \
+  name-label="${VM_NAME}-disk0" \
+  virtual-size=40GiB \
+  type=user)
+echo "Test-3 Disk VDI: $DISK_VDI"
+
+# Attach disk to VM
+DISK_VBD=$(xe vbd-create vm-uuid=$VM_UUID vdi-uuid=$DISK_VDI device=0 mode=RW type=Disk)
+echo "Test-3 Disk VBD: $DISK_VBD"
+
+
+STEP 9: Add Network Interface to Test-3
+----------------------------------------
+VIF_UUID=$(xe vif-create vm-uuid=$VM_UUID network-uuid=$NET_UUID device=0)
+echo "Test-3 Network VIF: $VIF_UUID"
+
+
+STEP 10: Add CD Drive and Insert Ubuntu ISO to Test-3
+------------------------------------------------------
+# Check if user wants to skip ISO
+if [ "$SKIP_ISO" = "true" ]; then
+    echo "SKIP_ISO=true - Skipping ISO search and CD drive creation"
+    echo "You can add ISO later when SR is accessible"
+else
+    # Search for Ubuntu 22.04 ISO in all ISO SRs
+    ISO_VDI_UUID=""
+    ISO_NAME=""
+    ISO_SR_UUID=""
+    
+    echo "Step 1: Attempting to access ISO SRs..."
+    ACCESSIBLE_SR_COUNT=0
+
+# First, try to plug (mount) any unplugged SRs
+for SR_UUID in $(echo "$ISO_SR_UUIDS" | tr ',' ' '); do
+    SR_UUID=$(echo "$SR_UUID" | xargs)
+    if [ -z "$SR_UUID" ]; then
+        continue
+    fi
+    
+    if [ ! -d "/var/run/sr-mount/$SR_UUID" ]; then
+        echo "Attempting to plug SR: $SR_UUID"
+        # Find PBD for this SR and plug it
+        PBD_UUID=$(xe pbd-list sr-uuid=$SR_UUID params=uuid --minimal 2>/dev/null | head -1)
+        if [ -n "$PBD_UUID" ]; then
+            xe pbd-plug uuid=$PBD_UUID 2>/dev/null
+            sleep 2
+        else
+            echo "  No PBD found for SR - may need to scan or wait for connection"
+        fi
+    fi
+    
+    if [ -d "/var/run/sr-mount/$SR_UUID" ]; then
+        ACCESSIBLE_SR_COUNT=$((ACCESSIBLE_SR_COUNT + 1))
+        echo "SR accessible: $SR_UUID"
+    fi
+done
+
+echo "Found $ACCESSIBLE_SR_COUNT accessible ISO SR(s)"
+
+# Search accessible SRs first
+for SR_UUID in $(echo "$ISO_SR_UUIDS" | tr ',' ' '); do
+    SR_UUID=$(echo "$SR_UUID" | xargs)
+    if [ -z "$SR_UUID" ]; then
+        continue
+    fi
+    
+    # Check if SR is accessible
+    if [ ! -d "/var/run/sr-mount/$SR_UUID" ]; then
+        echo "Skipping inaccessible SR: $SR_UUID"
+        continue
+    fi
+    
+    echo "Checking SR: $SR_UUID"
+    
+    ALL_VDIS=$(xe vdi-list sr-uuid=$SR_UUID params=uuid --minimal 2>/dev/null)
+    
+    if [ -z "$ALL_VDIS" ]; then
+        echo "  No VDIs found in this SR"
+        continue
+    fi
+    
+    for VDI_UUID in $(echo "$ALL_VDIS" | tr ',' ' '); do
+        VDI_UUID=$(echo "$VDI_UUID" | xargs)
+        if [ -z "$VDI_UUID" ]; then
+            continue
+        fi
+        
+        VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+        
+        if [ -n "$VDI_NAME" ] && echo "$VDI_NAME" | grep -qi "ubuntu.*22.04"; then
+            echo "Found: $VDI_NAME"
+            ISO_VDI_UUID="$VDI_UUID"
+            ISO_NAME="$VDI_NAME"
+            ISO_SR_UUID="$SR_UUID"
+            break 2
+        fi
+    done
+done
+
+# If not found in accessible SRs, try listing from all SRs (even if not mounted)
+# This allows finding ISO UUIDs that can be used once SR is accessible
+if [ -z "$ISO_VDI_UUID" ] && [ "$SKIP_ISO" != "true" ]; then
+    echo ""
+    echo "Ubuntu 22.04 ISO not found in accessible SRs"
+    echo "Listing all ISOs from all SRs (may work even if SR not mounted):"
+    echo ""
+    
+    for SR_UUID in $(echo "$ISO_SR_UUIDS" | tr ',' ' '); do
+        SR_UUID=$(echo "$SR_UUID" | xargs)
+        if [ -z "$SR_UUID" ]; then
+            continue
+        fi
+        
+        SR_NAME=$(xe sr-param-get uuid=$SR_UUID param-name=name-label 2>/dev/null)
+        SR_TYPE=$(xe sr-param-get uuid=$SR_UUID param-name=type 2>/dev/null)
+        SR_SHARED=$(xe sr-param-get uuid=$SR_UUID param-name=shared 2>/dev/null)
+        
+        echo "SR: $SR_NAME (UUID: $SR_UUID)"
+        echo "  Type: $SR_TYPE, Shared: $SR_SHARED"
+        
+        # Check mount status
+        if [ -d "/var/run/sr-mount/$SR_UUID" ]; then
+            echo "  Status: Mounted"
+        else
+            echo "  Status: Not mounted"
+        fi
+        
+        # Try to list VDIs even if SR not mounted
+        echo "  Attempting to list VDIs..."
+        ALL_VDIS=$(xe vdi-list sr-uuid=$SR_UUID params=uuid --minimal 2>&1)
+        VDI_LIST_EXIT_CODE=$?
+        
+        if [ $VDI_LIST_EXIT_CODE -ne 0 ]; then
+            echo "  Error listing VDIs: $ALL_VDIS"
+            echo "  (SR may be unavailable or requires mounting)"
+        elif [ -z "$ALL_VDIS" ]; then
+            echo "  No VDIs found in this SR (SR may be empty)"
+        else
+            VDI_COUNT=$(echo "$ALL_VDIS" | tr ',' '\n' | grep -v '^$' | wc -l)
+            echo "  Found $VDI_COUNT VDI(s)"
+            
+            for VDI_UUID in $(echo "$ALL_VDIS" | tr ',' ' '); do
+                VDI_UUID=$(echo "$VDI_UUID" | xargs)
+                if [ -z "$VDI_UUID" ]; then
+                    continue
+                fi
+                
+                VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+                if [ -n "$VDI_NAME" ]; then
+                    echo "  - $VDI_NAME (UUID: $VDI_UUID)"
+                    
+                    # Check if it matches Ubuntu 22.04
+                    if echo "$VDI_NAME" | grep -qi "ubuntu.*22.04"; then
+                        echo "    *** MATCHES Ubuntu 22.04 ***"
+                        if [ -z "$ISO_VDI_UUID" ]; then
+                            ISO_VDI_UUID="$VDI_UUID"
+                            ISO_NAME="$VDI_NAME"
+                            ISO_SR_UUID="$SR_UUID"
+                        fi
+                    fi
+                else
+                    echo "  - (VDI UUID: $VDI_UUID - name not available)"
+                fi
+            done
+        fi
+        echo ""
+    done
+    
+    if [ -z "$ISO_VDI_UUID" ]; then
+        echo ""
+        echo "ERROR: Ubuntu 22.04 ISO not found in any SR"
+        echo ""
+        echo "OPTIONS:"
+        echo "1. Wait for network storage to be restored, then try again"
+        echo "2. Upload Ubuntu 22.04 ISO to local storage SR"
+        echo "3. Use a different ISO that is available"
+        echo "4. Continue without ISO (can add later):"
+        echo "   - Skip CD drive creation for now"
+        echo "   - Create CD drive and insert ISO later when SR is accessible"
+        echo ""
+        echo "To continue without ISO, set:"
+        echo "  SKIP_ISO=true"
+        echo "  # Then continue with Step 11 (boot order and vgpu-stub)"
+        echo ""
+        echo "To manually specify an ISO UUID (if you found one above), set:"
+        echo "  ISO_VDI_UUID=\"<uuid-from-above>\""
+        echo "  ISO_NAME=\"<name-from-above>\""
+        echo "  ISO_SR_UUID=\"<sr-uuid-from-above>\""
+        echo ""
+        echo "To continue without ISO, set SKIP_ISO=true and re-run from Step 10"
+        echo ""
+        if [ -t 0 ]; then
+            # Interactive shell - ask user
+            read -p "Do you want to continue without ISO? (y/n): " CONTINUE_WITHOUT_ISO
+            if [ "$CONTINUE_WITHOUT_ISO" != "y" ] && [ "$CONTINUE_WITHOUT_ISO" != "Y" ]; then
+                exit 1
+            fi
+            SKIP_ISO=true
+        else
+            # Non-interactive shell - exit and require manual setting
+            echo "Non-interactive shell detected."
+            echo "Please set SKIP_ISO=true and re-run, or set ISO_VDI_UUID manually"
+            exit 1
+        fi
+    fi
+fi
+
+# Only create CD drive and insert ISO if we have one
+if [ -n "$ISO_VDI_UUID" ] && [ "$SKIP_ISO" != "true" ]; then
+    echo ""
+    echo "Using ISO: $ISO_NAME (UUID: $ISO_VDI_UUID)"
+    
+    # Check if CD drive already exists
+    CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID userdevice=3 params=uuid --minimal 2>/dev/null | head -1)
+    
+    if [ -z "$CD_VBD" ]; then
+        CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+        echo "CD VBD created: $CD_VBD"
+    else
+        echo "CD drive already exists: $CD_VBD"
+    fi
+    
+    # Insert ISO
+    echo "Inserting ISO into CD drive..."
+    if xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID 2>/dev/null; then
+        echo "ISO inserted into Test-3"
+    else
+        echo "WARNING: Failed to insert ISO - SR may not be accessible"
+        echo "You can insert ISO later when SR is accessible:"
+        echo "  xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID"
+    fi
+elif [ "$SKIP_ISO" = "true" ]; then
+    echo ""
+    echo "Skipping CD drive creation - will add ISO later"
+    echo "To add ISO later:"
+    echo "  1. Create CD drive: CD_VBD=\$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)"
+    echo "  2. Insert ISO: xe vbd-insert uuid=\$CD_VBD vdi-uuid=<ISO_VDI_UUID>"
+else
+    echo ""
+    echo "ERROR: ISO_VDI_UUID is not set"
+    exit 1
+fi
+
+echo "Using ISO: $ISO_NAME (UUID: $ISO_VDI_UUID)"
+
+# Check if CD drive already exists
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID userdevice=3 params=uuid --minimal 2>/dev/null | head -1)
+
+if [ -z "$CD_VBD" ]; then
+    CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+    echo "CD VBD created: $CD_VBD"
+else
+    echo "CD drive already exists: $CD_VBD"
+fi
+
+# Insert ISO
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+echo "ISO inserted into Test-3"
+
+
+STEP 11: Configure Boot Order and Attach VGPU-STUB to Test-3
+-------------------------------------------------------------
+# Configure boot order: CD first, then Disk
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+
+# Attach vgpu-stub device
+xe vm-param-set uuid=$VM_UUID \
+  platform:device-model-args="-device vgpu-stub,pool_id=A,priority=medium,vm_id=300"
+
+# Verify
+xe vm-param-get uuid=$VM_UUID param-name=platform param-key=device-model-args
+
+
+================================================================================
+                    PART 3: RECREATE TEST-4 VM
+================================================================================
+
+STEP 12: Create Test-4 VM
+--------------------------
+VM_NAME="Test-4"
+
+# Create VM from template
+VM4_UUID=$(xe vm-install template-uuid=$TEMPLATE_UUID new-name-label="$VM_NAME")
+echo "Created Test-4 VM UUID: $VM4_UUID"
+
+# Set basic configuration
+xe vm-param-set uuid=$VM4_UUID affinity=$(xe host-list --minimal)
+xe vm-memory-limits-set uuid=$VM4_UUID static-min=4GiB static-max=4GiB dynamic-min=4GiB dynamic-max=4GiB
+xe vm-param-set uuid=$VM4_UUID VCPUs-max=4
+xe vm-param-set uuid=$VM4_UUID VCPUs-at-startup=4
+
+
+STEP 13: Add Disk to Test-4
+----------------------------
+DISK_VDI=$(xe vdi-create sr-uuid=$LOCAL_SR_UUID \
+  name-label="${VM_NAME}-disk0" \
+  virtual-size=40GiB \
+  type=user)
+echo "Test-4 Disk VDI: $DISK_VDI"
+
+DISK_VBD=$(xe vbd-create vm-uuid=$VM4_UUID vdi-uuid=$DISK_VDI device=0 mode=RW type=Disk)
+echo "Test-4 Disk VBD: $DISK_VBD"
+
+
+STEP 14: Add Network Interface to Test-4
+-----------------------------------------
+VIF_UUID=$(xe vif-create vm-uuid=$VM4_UUID network-uuid=$NET_UUID device=0)
+echo "Test-4 Network VIF: $VIF_UUID"
+
+
+STEP 15: Add CD Drive and Insert Ubuntu ISO to Test-4
+------------------------------------------------------
+# Use the same ISO found for Test-3 (if available)
+if [ -n "$ISO_VDI_UUID" ] && [ "$SKIP_ISO" != "true" ]; then
+    echo "Using ISO: $ISO_NAME (UUID: $ISO_VDI_UUID)"
+    
+    # Check if CD drive already exists
+    CD_VBD=$(xe vbd-list vm-uuid=$VM4_UUID userdevice=3 params=uuid --minimal 2>/dev/null | head -1)
+    
+    if [ -z "$CD_VBD" ]; then
+        CD_VBD=$(xe vbd-create vm-uuid=$VM4_UUID device=3 type=CD mode=RO)
+        echo "CD VBD created: $CD_VBD"
+    else
+        echo "CD drive already exists: $CD_VBD"
+    fi
+    
+    # Insert ISO
+    echo "Inserting ISO into CD drive..."
+    if xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID 2>/dev/null; then
+        echo "ISO inserted into Test-4"
+    else
+        echo "WARNING: Failed to insert ISO - SR may not be accessible"
+        echo "You can insert ISO later when SR is accessible:"
+        echo "  xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID"
+    fi
+elif [ "$SKIP_ISO" = "true" ]; then
+    echo "Skipping CD drive creation for Test-4 - will add ISO later"
+    echo "To add ISO later:"
+    echo "  1. Create CD drive: CD_VBD=\$(xe vbd-create vm-uuid=$VM4_UUID device=3 type=CD mode=RO)"
+    echo "  2. Insert ISO: xe vbd-insert uuid=\$CD_VBD vdi-uuid=<ISO_VDI_UUID>"
+else
+    echo "ERROR: No ISO available for Test-4"
+    echo "Please complete Step 10 for Test-3 first, or manually set ISO_VDI_UUID"
+    exit 1
+fi
+
+
+STEP 16: Configure Boot Order and Attach VGPU-STUB to Test-4
+-------------------------------------------------------------
+# Configure boot order
+xe vm-param-set uuid=$VM4_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM4_UUID HVM-boot-params:order=dc
+
+# Attach vgpu-stub device (different vm_id)
+xe vm-param-set uuid=$VM4_UUID \
+  platform:device-model-args="-device vgpu-stub,pool_id=A,priority=medium,vm_id=400"
+
+# Verify
+xe vm-param-get uuid=$VM4_UUID param-name=platform param-key=device-model-args
+
+
+================================================================================
+                    PART 4: VERIFY BOTH VMs
+================================================================================
+
+STEP 17: Verify Both VMs Are Created
+-------------------------------------
+# List all VMs
+xe vm-list is-control-domain=false params=uuid,name-label,power-state
+
+# Should show Test-1, Test-2, Test-3, and Test-4 (all halted)
+
+# Verify Test-3 configuration
+echo ""
+echo "Test-3 Configuration:"
+xe vm-list uuid=$VM_UUID params=name-label,power-state
+xe vm-param-get uuid=$VM_UUID param-name=platform param-key=device-model-args
+
+# Verify Test-4 configuration
+echo ""
+echo "Test-4 Configuration:"
+xe vm-list uuid=$VM4_UUID params=name-label,power-state
+xe vm-param-get uuid=$VM4_UUID param-name=platform param-key=device-model-args
+
+
+STEP 18: Start VMs (Optional)
+------------------------------
+# Before starting, verify ISO SR is accessible (if ISO was used)
+if [ -n "$ISO_SR_UUID" ]; then
+    echo "Checking ISO SR accessibility..."
+    if [ ! -d "/var/run/sr-mount/$ISO_SR_UUID" ]; then
+        echo "WARNING: ISO SR is not mounted: $ISO_SR_UUID"
+        echo "Attempting to plug SR..."
+        # Find PBD for this SR and plug it
+        PBD_UUID=$(xe pbd-list sr-uuid=$ISO_SR_UUID params=uuid --minimal 2>/dev/null | head -1)
+        if [ -n "$PBD_UUID" ]; then
+            if xe pbd-plug uuid=$PBD_UUID 2>/dev/null; then
+                sleep 2
+                if [ -d "/var/run/sr-mount/$ISO_SR_UUID" ]; then
+                    echo "✓ SR successfully mounted"
+                else
+                    echo "⚠️  SR plug attempted but still not mounted"
+                    echo "VM start may fail with 'VDI could not be found on storage substrate'"
+                    echo "Options:"
+                    echo "  1. Wait for network storage to restore"
+                    echo "  2. Eject ISO and start VM without it:"
+                    echo "     CD_VBD=\$(xe vbd-list vm-uuid=\$VM_UUID type=CD params=uuid --minimal | head -1)"
+                    echo "     xe vbd-eject uuid=\$CD_VBD"
+                    echo "  3. Use ISO from different (accessible) SR"
+                fi
+            else
+                echo "❌ Failed to plug PBD - check SMB/NFS server connectivity"
+            fi
+        else
+            echo "❌ No PBD found for SR - SR may need to be scanned or connection restored"
+        fi
+    else
+        echo "✓ ISO SR is mounted and accessible"
+    fi
+fi
+
+# Start Test-3
+echo "Starting Test-3 VM..."
+xe vm-start uuid=$VM_UUID
+VM_START_RESULT=$?
+
+if [ $VM_START_RESULT -ne 0 ]; then
+    echo ""
+    echo "ERROR: Test-3 VM failed to start"
+    echo ""
+    echo "Common causes:"
+    echo "1. ISO VDI not accessible (SMB/NFS SR not mounted)"
+    echo "2. Storage repository unavailable"
+    echo "3. Network storage connection lost"
+    echo ""
+    echo "Troubleshooting:"
+    echo "1. Check if ISO SR is mounted:"
+    echo "   ls -la /var/run/sr-mount/$ISO_SR_UUID"
+    echo ""
+    echo "2. Try plugging the SR (via PBD):"
+    echo "   PBD_UUID=\$(xe pbd-list sr-uuid=$ISO_SR_UUID params=uuid --minimal | head -1)"
+    echo "   xe pbd-plug uuid=\$PBD_UUID"
+    echo ""
+    echo "3. Or eject ISO and start without it:"
+    echo "   CD_VBD=\$(xe vbd-list vm-uuid=\$VM_UUID type=CD params=uuid --minimal | head -1)"
+    echo "   xe vbd-eject uuid=\$CD_VBD"
+    echo "   xe vm-start uuid=\$VM_UUID"
+    exit 1
+fi
+
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -z "$DOMID" ] || [ "$DOMID" = "-1" ]; then
+    echo "ERROR: Failed to get Test-3 Domain ID"
+    echo "VM may not have started correctly"
+    exit 1
+fi
+echo "Test-3 Domain ID: $DOMID"
+
+# Start Test-4
+echo "Starting Test-4 VM..."
+xe vm-start uuid=$VM4_UUID
+VM4_START_RESULT=$?
+
+if [ $VM4_START_RESULT -ne 0 ]; then
+    echo ""
+    echo "ERROR: Test-4 VM failed to start"
+    echo "See troubleshooting steps above for Test-3"
+    exit 1
+fi
+
+sleep 5
+DOMID4=$(xe vm-param-get uuid=$VM4_UUID param-name=dom-id)
+if [ -z "$DOMID4" ] || [ "$DOMID4" = "-1" ]; then
+    echo "ERROR: Failed to get Test-4 Domain ID"
+    echo "VM may not have started correctly"
+    exit 1
+fi
+echo "Test-4 Domain ID: $DOMID4"
+
+# Verify both are running
+echo ""
+echo "Verifying VMs are running..."
+xl list
+
+
+================================================================================
+                            NOTES
+================================================================================
+
+- Test-3 has vm_id=300, Test-4 has vm_id=400 (different IDs for mediation layer)
+- Both use pool_id=A and priority=medium (adjust if needed)
+- Both have 4GB RAM and 4 vCPUs (adjust if needed)
+- Both have 40GB disks (adjust if needed)
+- Both configured to boot from CD first, then disk
+- Ubuntu 22.04 ISO will be used (if found in accessible SRs)
+
+To start installation:
+1. Connect to VM via VNC: xe vm-list uuid=$VM_UUID params=name-label
+2. During Ubuntu installation, configure static IP if no DHCP:
+   - Subnet: 10.25.33.0/24
+   - Gateway: 10.25.33.1
+   - DNS: 8.8.8.8
+   - Choose unused IP (e.g., 10.25.33.13 for Test-3, 10.25.33.14 for Test-4)
+
+
+================================================================================
+                    TROUBLESHOOTING: ISO SR Not Accessible
+================================================================================
+
+ISSUE: All ISO Storage Repositories Are Inaccessible
+----------------------------------------------------
+
+Symptom (from terminal output):
+  Lines 98-100: All three ISO SRs are skipped:
+    - Skipping inaccessible SR: a8a724d0-4cdb-4579-03ec-2c94d46a445d (DVD drives)
+    - Skipping inaccessible SR: 097e2b8c-af1a-d945-1432-8c0e7d0163fa (SMB ISO library)
+    - Skipping inaccessible SR: 1a00261c-d91e-e771-6d36-1998d079f6c8 (XCP-ng Tools)
+  
+  Line 113: ERROR: Ubuntu 22.04 ISO not found in accessible SRs
+
+Explanation:
+  - All ISO Storage Repositories are not mounted/accessible
+  - Mount points /var/run/sr-mount/<SR_UUID> do not exist
+  - Network-based SRs (SMB/NFS) may have lost connection
+  - Local SRs (DVD drives) may need to be plugged
+
+What Happened:
+  1. Test-3 and Test-4 were successfully deleted (lines 18-21)
+  2. Test-3 VM was successfully created (line 48: UUID b68ac36a-38f7-a873-26b9-eef9d7208a61)
+  3. Disk and network were successfully added (lines 53-61)
+  4. ISO search failed because all SRs are inaccessible (lines 98-100)
+  5. Script exited with error (line 113)
+  6. Connection closed (line 116)
+
+Solutions:
+
+Option 1: Try to Plug (Mount) the SRs
+--------------------------------------
+# Try plugging each ISO SR via PBD
+for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' ' '); do
+    SR_UUID=$(echo "$SR_UUID" | xargs)
+    echo "Attempting to plug SR: $SR_UUID"
+    # Find PBD for this SR
+    PBD_UUID=$(xe pbd-list sr-uuid=$SR_UUID params=uuid --minimal 2>/dev/null | head -1)
+    if [ -n "$PBD_UUID" ]; then
+        echo "  Found PBD: $PBD_UUID"
+        xe pbd-plug uuid=$PBD_UUID
+        sleep 2
+        if [ -d "/var/run/sr-mount/$SR_UUID" ]; then
+            echo "  ✓ Successfully mounted: $SR_UUID"
+        else
+            echo "  ✗ Failed to mount: $SR_UUID"
+        fi
+    else
+        echo "  ✗ No PBD found for SR: $SR_UUID"
+    fi
+done
+
+# Then re-run Step 10
+
+
+Option 2: List ISOs from All SRs (Even If Not Mounted)
+--------------------------------------------------------
+# Sometimes you can list VDIs even if SR is not mounted
+# This helps identify ISO UUIDs for later use
+
+for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' ' '); do
+    SR_UUID=$(echo "$SR_UUID" | xargs)
+    SR_NAME=$(xe sr-param-get uuid=$SR_UUID param-name=name-label 2>/dev/null)
+    echo "SR: $SR_NAME (UUID: $SR_UUID)"
+    xe vdi-list sr-uuid=$SR_UUID params=name-label,uuid
+done
+
+# If you find an ISO UUID, you can use it manually:
+# ISO_VDI_UUID="<uuid-from-above>"
+# Then continue with CD drive creation
+
+
+Option 3: Continue Without ISO (Add Later)
+-------------------------------------------
+# Complete VM creation without ISO
+# You can add ISO later when SR is accessible
+
+# Skip Step 10 (ISO insertion) and continue with:
+# - Step 11: Configure boot order and vgpu-stub
+# - Step 12-16: Create Test-4
+# - Step 17-18: Verify
+
+# Later, when SR is accessible:
+# 1. Create CD drive: CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+# 2. Insert ISO: xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+
+
+Option 4: Upload ISO to Local Storage
+--------------------------------------
+# If you have Ubuntu 22.04 ISO file locally:
+# 1. Copy ISO to Dom0
+# 2. Create VDI from ISO file:
+#    xe vdi-create sr-uuid=$LOCAL_SR_UUID \
+#      name-label="ubuntu-22.04-server-amd64.iso" \
+#      type=iso \
+#      virtual-size=<size-in-bytes>
+# 3. Import ISO data into VDI
+# 4. Use this VDI UUID for ISO_VDI_UUID
+
+
+Option 5: Wait for Network Storage to Restore
+-----------------------------------------------
+# If using network-based SRs (SMB/NFS):
+# 1. Check network connectivity to storage server
+# 2. Verify storage server is running
+# 3. Wait for connection to restore
+# 4. Re-run Step 10
+
+
+IMPORTANT: Correct Command for Mounting SRs
+---------------------------------------------
+ERROR ENCOUNTERED (Line 420):
+  $ xe sr-plug uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+  Unknown command: sr-plug
+
+EXPLANATION:
+  - `xe sr-plug` is NOT a valid command in XCP-ng
+  - Storage repositories are mounted via PBDs (Physical Block Devices)
+  - The correct approach is to find the PBD and plug it
+
+CORRECT COMMAND:
+  # Find PBD for the SR
+  PBD_UUID=$(xe pbd-list sr-uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid --minimal | head -1)
+  
+  # Plug the PBD (this mounts the SR)
+  xe pbd-plug uuid=$PBD_UUID
+  
+  # Verify SR is mounted
+  ls -la /var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+NOTE: All references to `xe sr-plug` in this guide have been updated to use `xe pbd-plug`
+
+
+TERMINAL OUTPUT ANALYSIS (Complete Session - Lines 1-419)
+----------------------------------------------------------
+
+PHASE 1: VM Creation (Lines 1-32) - SUCCESS ✓
+---------------------------------------------
+Lines 1-12: Identified all required resources
+  - ISO SR UUIDs: 3 SRs found
+  - Local SR, Template, Network UUIDs obtained
+
+Lines 13-32: Successfully created Test-3 VM
+  - VM UUID: a30bbe3a-467c-695d-e0ab-ac92146a2269
+  - Memory: 4GB configured
+  - vCPUs: 4 configured
+  - Disk: 40GB created and attached (VDI: a0689847-83fc-4b47-a091-7e64dc822dd7)
+  - Network: VIF created (f9f54305-9a52-a0c2-ba98-c4fa97435b9b)
+
+Status: Test-3 VM fully configured with disk and network ✓
+
+
+PHASE 2: ISO Search (Lines 33-127) - Multiple Attempts
+-------------------------------------------------------
+Lines 33-80: User attempted to run ISO search code multiple times
+  - Had to cancel (^C) and retry due to copy-paste issues
+  - Eventually ran the code successfully
+
+Lines 106-127: Attempted to plug (mount) ISO SRs
+  - Tried to plug all 3 SRs
+  - Result: 0 accessible SRs (all failed to mount)
+  - SRs remain unmounted but VDI listing still works (see Phase 3)
+
+
+PHASE 3: ISO Discovery (Lines 128-309) - SUCCESS ✓
+---------------------------------------------------
+Lines 128-168: Searched accessible SRs
+  - All SRs skipped (not mounted)
+  - No ISOs found in mounted SRs
+
+Lines 169-273: Fallback listing - THIS WORKED!
+  - Listed ISOs from all SRs even though not mounted
+  - Successfully found ISOs in XAPI database
+
+Lines 275-309: Detailed ISO listing results:
+  SR 1: DVD drives (a8a724d0-4cdb-4579-03ec-2c94d46a445d)
+    - Type: udev, Status: Not mounted
+    - No VDIs found (empty)
+
+  SR 2: SMB ISO library (097e2b8c-af1a-d945-1432-8c0e7d0163fa) ⭐
+    - Type: iso, Status: Not mounted
+    - Found 12 VDIs including:
+      * ubuntu-22.04.5-desktop-amd64.iso (UUID: 049254cd-4a70-484f-a543-cd4c29bba023)
+        *** MATCHES Ubuntu 22.04 *** ✓
+
+  SR 3: XCP-ng Tools (1a00261c-d91e-e771-6d36-1998d079f6c8)
+    - Type: iso, Status: Not mounted
+    - Found 1 VDI (guest-tools.iso)
+
+Key Finding: Ubuntu 22.04 ISO found!
+  - ISO_VDI_UUID: 049254cd-4a70-484f-a543-cd4c29bba023
+  - ISO_NAME: ubuntu-22.04.5-desktop-amd64.iso
+  - ISO_SR_UUID: 097e2b8c-af1a-d945-1432-8c0e7d0163fa (SMB ISO library)
+
+
+PHASE 4: CD Drive Creation and ISO Insertion (Lines 310-362) - SUCCESS ✓
+-------------------------------------------------------------------------
+Lines 310-348: Successfully created CD drive and inserted ISO
+  - CD VBD created: a6c8627a-6e4e-8a25-a822-a66f90345fe7
+  - ISO inserted: ubuntu-22.04.5-desktop-amd64.iso
+  - Status: ISO successfully inserted into CD drive ✓
+
+Lines 349-362: Redundant attempt (user tried to insert again)
+  - CD drive already exists (correctly detected)
+  - Attempted to insert ISO again
+  - Error: "Operation could not be performed because the drive is not empty"
+  - This is expected - ISO was already inserted in line 348
+
+Status: CD drive with ISO ready ✓
+
+
+PHASE 5: Boot Order and VGPU-STUB Configuration (Lines 363-367) - SUCCESS ✓
+---------------------------------------------------------------------------
+Lines 363-364: Configured boot order
+  - HVM-boot-policy: "BIOS order"
+  - HVM-boot-params:order=dc (CD first, then Disk)
+
+Line 365: Attached vgpu-stub device
+  - Configuration: -device vgpu-stub,pool_id=A,priority=low,vm_id=3
+  - Note: User used priority=low and vm_id=3 (not the guide's medium/300)
+
+Line 367: Verified configuration
+  - Device args confirmed: -device vgpu-stub,pool_id=A,priority=low,vm_id=3
+
+Status: Boot order and vgpu-stub configured ✓
+
+
+PHASE 6: VM Start Attempt (Lines 368-390) - FAILURE ✗
+------------------------------------------------------
+Lines 368-382: Verified VM configuration
+  - Test-3 VM exists and is halted
+  - All VMs listed: Test-1, Test-2, Test-3 (all halted)
+
+Lines 384-390: Attempted to start VM
+  - Command: xe vm-start uuid=$VM_UUID
+  - ERROR: "This operation cannot be performed because the specified VDI could not be found on the storage substrate"
+  - SR: 097e2b8c-af1a-d945-1432-8c0e7d0163fa (SMB ISO library)
+  - VDI: 049254cd-4a70-484f-a543-cd4c29bba023 (ubuntu-22.04.5-desktop-amd64.iso)
+
+Root Cause:
+  - ISO VDI exists in XAPI database (can be listed)
+  - ISO was successfully inserted into CD drive
+  - BUT: SMB SR is not accessible/mounted when VM tries to start
+  - Xen/QEMU cannot read the ISO file from unmounted network storage
+
+This is a critical issue: The ISO is "inserted" in XAPI, but the actual file
+cannot be accessed because the SMB share is not mounted.
+
+
+PHASE 7: PBD Plug Attempt (Lines 441-448) - STILL FAILED ✗
+-----------------------------------------------------------
+Lines 441-443: Attempted to plug PBD
+  - Found PBD UUID (no output shown, command succeeded)
+  - Ran: xe pbd-plug uuid=$PBD_UUID
+  - No error message (command appeared to succeed)
+
+Line 444: Attempted to start VM again
+  - Command: xe vm-start uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269
+
+Lines 445-447: Same error occurred
+  - ERROR: "This operation cannot be performed because the specified VDI could not be found on the storage substrate"
+  - SR: 097e2b8c-af1a-d945-1432-8c0e7d0163fa (SMB ISO library)
+  - VDI: 049254cd-4a70-484f-a543-cd4c29bba023 (ubuntu-22.04.5-desktop-amd64.iso)
+
+Analysis:
+  - PBD plug command succeeded (no error)
+  - BUT: SR is still not accessible
+  - This means:
+    1. PBD plug succeeded but SR mount failed silently, OR
+    2. SMB server is unreachable/connection lost, OR
+    3. ISO file doesn't actually exist on the SMB share, OR
+    4. SMB credentials/permissions issue
+
+Key Issue: Even after plugging PBD, the SR is still not accessible.
+This indicates a deeper problem with the SMB connection or the ISO file itself.
+
+
+SUMMARY
+-------
+✓ SUCCESS:
+  - Test-3 VM created and fully configured
+  - Ubuntu 22.04 ISO found and inserted into CD drive
+  - Boot order configured (CD first)
+  - vgpu-stub device attached
+
+✗ FAILURE:
+  - VM cannot start because SMB ISO library SR is not accessible
+  - ISO file cannot be read from unmounted network storage
+  - Error: "VDI could not be found on the storage substrate"
+
+
+SOLUTIONS
+---------
+
+Solution 1: Diagnose and Fix SMB Connection (RECOMMENDED)
+----------------------------------------------------------
+# Step 1: Check PBD status
+echo "Checking PBD status..."
+PBD_UUID=$(xe pbd-list sr-uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid --minimal | head -1)
+
+if [ -z "$PBD_UUID" ]; then
+    echo "ERROR: No PBD found for SR"
+    echo "SR may need to be re-introduced or connection restored"
+    exit 1
+fi
+
+echo "PBD UUID: $PBD_UUID"
+xe pbd-list uuid=$PBD_UUID params=uuid,currently-attached,device-config
+
+# Step 2: Check if PBD is attached
+PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+echo "PBD Currently Attached: $PBD_ATTACHED"
+
+# Step 3: Check SR mount status
+if [ -d "/var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa" ]; then
+    echo "✓ SR mount point exists"
+    ls -la /var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa
+else
+    echo "✗ SR mount point does NOT exist"
+fi
+
+# Step 4: Check SMB server connectivity
+echo ""
+echo "Checking SMB server connectivity..."
+SMB_CONFIG=$(xe sr-param-get uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa param-name=device-config 2>/dev/null)
+echo "SR Device Config: $SMB_CONFIG"
+
+# Extract SMB server from config (if available)
+# SMB server info is in device-config, check if server is reachable
+
+# Step 5: Try to plug PBD again (if not attached)
+if [ "$PBD_ATTACHED" != "true" ]; then
+    echo "PBD not attached, attempting to plug..."
+    xe pbd-plug uuid=$PBD_UUID
+    sleep 3
+    
+    # Check again
+    PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+    echo "PBD Attached after plug: $PBD_ATTACHED"
+    
+    # Check mount point
+    if [ -d "/var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa" ]; then
+        echo "✓ SR is now mounted"
+    else
+        echo "✗ SR still not mounted - SMB connection issue"
+        echo ""
+        echo "Troubleshooting steps:"
+        echo "1. Verify SMB server is running and accessible"
+        echo "2. Check network connectivity to SMB server"
+        echo "3. Verify SMB credentials in SR device-config"
+        echo "4. Check SMB share path is correct"
+        echo "5. Try scanning the SR: xe sr-scan uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+        exit 1
+    fi
+fi
+
+# Step 6: Verify ISO file exists on mounted SR
+if [ -d "/var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa" ]; then
+    echo ""
+    echo "Checking if ISO file exists on SR..."
+    ISO_FILE=$(find /var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa -name "*ubuntu*22.04*" -type f 2>/dev/null | head -1)
+    if [ -n "$ISO_FILE" ]; then
+        echo "✓ Found ISO file: $ISO_FILE"
+    else
+        echo "✗ ISO file not found on SR mount point"
+        echo "The ISO may have been moved or deleted from the SMB share"
+    fi
+fi
+
+# Step 7: If everything checks out, try starting VM
+if [ "$PBD_ATTACHED" = "true" ] && [ -d "/var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa" ]; then
+    echo ""
+    echo "Attempting to start VM..."
+    xe vm-start uuid=$VM_UUID
+else
+    echo ""
+    echo "Cannot start VM - SR is not properly mounted"
+    echo "See troubleshooting steps above"
+fi
+
+
+Solution 2: Eject ISO and Start VM Without It (IMMEDIATE WORKAROUND)
+--------------------------------------------------------------------
+# If SMB SR cannot be mounted and you need to start the VM now:
+# This allows VM to start (will boot from empty disk, can add ISO later)
+
+# Step 1: Find CD VBD UUID
+CD_VBD=$(xe vbd-list vm-uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269 type=CD params=uuid --minimal | head -1)
+echo "CD VBD UUID: $CD_VBD"
+
+# Step 2: Eject ISO from CD drive
+echo "Ejecting ISO from CD drive..."
+xe vbd-eject uuid=$CD_VBD
+
+# Step 3: Start VM (will boot from disk, which is empty)
+echo "Starting VM without ISO..."
+xe vm-start uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269
+
+# Step 4: Later, when SMB SR is accessible, re-insert ISO:
+# xe vbd-insert uuid=$CD_VBD vdi-uuid=049254cd-4a70-484f-a543-cd4c29bba023
+
+NOTE: VM will boot from empty disk. You can:
+- Use PXE boot if configured
+- Add ISO later when SR is accessible
+- Use VNC to access VM console
+
+
+Solution 3: Use a Different ISO from Accessible SR
+--------------------------------------------------
+# If SMB SR cannot be mounted, use an ISO from a different SR
+# For example, if you have Ubuntu ISO in local storage:
+# 1. Upload Ubuntu ISO to local storage SR
+# 2. Create VDI from ISO file
+# 3. Eject current ISO from CD drive:
+CD_VBD=$(xe vbd-list vm-uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269 type=CD params=uuid --minimal | head -1)
+xe vbd-eject uuid=$CD_VBD
+
+# 4. Insert new ISO (from accessible SR):
+xe vbd-insert uuid=$CD_VBD vdi-uuid=<NEW_ISO_VDI_UUID>
+
+# 5. Start VM:
+xe vm-start uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269
+
+
+Solution 4: Wait for SMB Connection to Restore
+----------------------------------------------
+# If SMB server is temporarily unavailable:
+# 1. Wait for network/storage server to come back online
+# 2. Verify SMB server is accessible (ping, smbclient, etc.)
+# 3. Plug the SR (via PBD):
+#    PBD_UUID=$(xe pbd-list sr-uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid --minimal | head -1)
+#    xe pbd-plug uuid=$PBD_UUID
+# 4. Verify SR is mounted:
+#    ls -la /var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa
+# 5. Start VM: xe vm-start uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269
+
+
+IMMEDIATE NEXT STEPS (After PBD Plug Failed)
+---------------------------------------------
+SITUATION: PBD plug succeeded but VM still cannot start - SR not accessible
+
+OPTION A: Quick Workaround - Start VM Without ISO (RECOMMENDED)
+---------------------------------------------------------------
+# Eject ISO and start VM (can add ISO later when SR is accessible)
+CD_VBD=$(xe vbd-list vm-uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269 type=CD params=uuid --minimal | head -1)
+xe vbd-eject uuid=$CD_VBD
+xe vm-start uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269
+
+# VM will start but boot from empty disk
+# Later, when SMB SR is accessible, re-insert ISO:
+# xe vbd-insert uuid=$CD_VBD vdi-uuid=049254cd-4a70-484f-a543-cd4c29bba023
+
+
+OPTION B: Diagnose SMB Connection Issue
+----------------------------------------
+# Check PBD status
+PBD_UUID=$(xe pbd-list sr-uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid --minimal | head -1)
+xe pbd-list uuid=$PBD_UUID params=uuid,currently-attached,device-config
+
+# Check if SR mount point exists
+ls -la /var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+# Check SMB server connectivity
+# (You'll need SMB server IP from device-config)
+xe sr-param-get uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa param-name=device-config
+
+# Try scanning SR
+xe sr-scan uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+# If scan succeeds, try starting VM again
+xe vm-start uuid=a30bbe3a-467c-695d-e0ab-ac92146a2269
+
+
+OPTION C: Use Different ISO from Accessible SR
+-----------------------------------------------
+# If you have Ubuntu ISO in a different (accessible) SR:
+# 1. Find ISO in accessible SR
+# 2. Eject current ISO
+# 3. Insert new ISO
+# 4. Start VM
+
+# See Solution 3 above for details
+
+
+RECOMMENDATION:
+---------------
+Use OPTION A to get the VM running immediately, then fix SMB connection
+and re-insert ISO later. This allows you to continue with Test-4 creation
+while troubleshooting the SMB issue separately.
+
+
+================================================================================
+                    TROUBLESHOOTING: QEMU-dm Timeout (vgpu-stub related)
+================================================================================
+
+ISSUE: "qemu-dm Timeout reached while starting daemon"
+-------------------------------------------------------
+
+Symptom:
+  $ xe vm-start uuid=$VM_UUID
+  Error: "qemu-dm Timeout reached while starting daemon"
+
+Explanation:
+  - Xen tried to start QEMU device-model (qemu-dm) but it never came up
+  - This is NOT a VM creation issue - it's a QEMU startup failure
+  - Common when using custom `-device vgpu-stub` if QEMU doesn't support it
+  - Also occurs if QEMU binary was replaced incorrectly
+
+Reference: See CUDA_DOM0_METHODS/vm_create.txt for detailed troubleshooting
+
+Step 1: Capture QEMU Error Logs
+--------------------------------
+# Immediately after failed vm-start, check logs:
+tail -n 200 /var/log/xensource.log
+tail -n 200 /var/log/messages 2>/dev/null || true
+
+# Check systemd journal:
+journalctl -b -u xapi --no-pager | tail -n 200
+journalctl -b -u xenopsd --no-pager | tail -n 200
+
+# Find newest qemu-dm log:
+LATEST=$(ls -t /var/log/xen/qemu-dm-*.log 2>/dev/null | head -1)
+echo "LATEST=$LATEST"
+test -n "$LATEST" && tail -n 200 "$LATEST"
+
+# Check qemu-wrapper logs:
+tail -n 200 /var/log/xen/qemu-wrapper*.log 2>/dev/null | tail -n 200
+
+
+Step 2: Isolate vgpu-stub Device Issue
+--------------------------------------
+# Temporarily remove vgpu-stub device and test:
+xe vm-param-remove uuid=$VM_UUID param-name=platform param-key=device-model-args
+xe vm-start uuid=$VM_UUID
+
+# If VM starts WITHOUT vgpu-stub:
+#   - vgpu-stub device is not registered in QEMU binary
+#   - Or QEMU exits when it encounters the vgpu-stub option
+#   - Solution: Rebuild QEMU with vgpu-stub support
+
+# If VM still fails:
+#   - QEMU binary itself may be broken
+#   - See Step 3 below
+
+
+Step 3: Validate QEMU Binary
+-----------------------------
+# Check which QEMU XCP-ng is using:
+ls -lh /usr/lib64/xen/bin/qemu-wrapper /usr/lib64/xen/bin/qemu-system-i386
+/usr/lib64/xen/bin/qemu-system-i386 -version
+
+# Check if QEMU knows about vgpu-stub:
+/usr/lib64/xen/bin/qemu-system-i386 -device help 2>/dev/null | grep -i "vgpu-stub" || echo "vgpu-stub NOT listed"
+
+# Check for missing shared libraries (common after replacing QEMU):
+ldd /usr/lib64/xen/bin/qemu-system-i386 | grep -i "not found" || echo "ldd: no missing libs detected"
+
+# Check Xen support:
+/usr/lib64/xen/bin/qemu-system-i386 -accel help 2>/dev/null | head -50
+
+
+Step 4: Revert to Stock QEMU (If Needed)
+-----------------------------------------
+# If you replaced qemu-system-i386, revert using backup:
+ls -lt /usr/lib64/xen/bin/qemu-system-i386.backup-* 2>/dev/null | head -5
+
+# Example (use your actual backup file):
+# cp -a /usr/lib64/xen/bin/qemu-system-i386.backup-YYYYMMDD-HHMM /usr/lib64/xen/bin/qemu-system-i386
+# chmod 0755 /usr/lib64/xen/bin/qemu-system-i386
+
+# Restart toolstack:
+# systemctl restart xapi xenopsd
+
+
+Important Notes:
+----------------
+- DO NOT build generic upstream QEMU with --disable-xen
+- XCP-ng expects a Xen-capable QEMU build
+- Best approach: Rebuild XCP-ng QEMU 4.2.1 SRPM with vgpu-stub patch
+- Install resulting RPM to match host expectations
+
+See: CUDA_DOM0_METHODS/vm_create.txt for complete troubleshooting guide
+
+
+================================================================================
+                    VNC CONNECTION GUIDE (For Ubuntu Installation)
+================================================================================
+
+IMPORTANT: CD Device Must Be Numeric
+------------------------------------
+- CD userdevice MUST be a NUMBER (e.g. 3), NOT "xvdd"
+- This guide uses device=3 (correct)
+- Using "xvdd" will break VM configuration
+
+Reference: CUDA_DOM0_METHODS/vm_create_guid.txt Section F
+
+IMPORTANT: dom-id Changes on Every Start/Reboot
+------------------------------------------------
+- dom-id is NOT permanent - it changes every time VM starts/reboots
+- VNC socket path: /var/run/xen/vnc-<DOMID>
+- You MUST update VNC proxy when dom-id changes
+- If dom-id changes rapidly (e.g., 18→20→28→30), VM may be crashing
+  - Common cause: too little RAM/CPU
+  - Fix: Increase RAM to 2-4GiB+, vCPUs to 2+
+
+Reference: CUDA_DOM0_METHODS/vm_create_guid.txt Section J
+
+
+Connecting to VM Console via VNC
+----------------------------------
+Part 1: On Dom0 - Expose VNC Socket
+------------------------------------
+# Install socat (if not already installed):
+yum install -y socat
+
+# Get current dom-id:
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+echo "DOMID=$DOMID"
+
+# Verify VNC socket exists:
+ls -la /var/run/xen/vnc-$DOMID
+
+# Start socat to expose VNC on TCP port 5901:
+pkill socat || true
+nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+ss -ltnp | grep :5901 || true
+
+
+Part 2: On Your Desktop/Laptop - SSH Tunnel
+---------------------------------------------
+# Create SSH tunnel (leave running):
+ssh -N -L 5901:127.0.0.1:5901 root@<DOM0_IP>
+
+# Connect TigerVNC Viewer to:
+127.0.0.1:5901
+
+
+Part 3: After VM Reboot - Update VNC Socket
+---------------------------------------------
+# dom-id changes after reboot, so update socat:
+
+# Get new dom-id:
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+echo "New DOMID=$DOMID"
+
+# Restart socat with new socket:
+pkill socat || true
+nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+
+
+Auto-Repoint Helper Script (Optional)
+--------------------------------------
+# Run this on Dom0 to automatically update VNC socket when dom-id changes:
+VM_UUID="<PUT_VM_UUID_HERE>"
+PORT=5901
+while true; do
+  DOMID="$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)"
+  SOCK="/var/run/xen/vnc-$DOMID"
+  if [ -S "$SOCK" ]; then
+    if ! ps auxww | grep -E "[s]ocat.*TCP-LISTEN:$PORT" | grep -q "$SOCK"; then
+      pkill socat || true
+      nohup socat TCP-LISTEN:$PORT,fork,reuseaddr UNIX-CONNECT:$SOCK >/root/socat-vnc.log 2>&1 &
+      echo "Repointed socat: TCP $PORT -> $SOCK"
+    fi
+  fi
+  sleep 2
+done
+
+
+Ubuntu Installer Network Configuration
+----------------------------------------
+When installing Ubuntu via VNC:
+
+1. Network configuration:
+   - Choose the NIC (shows MAC address)
+   - IPv4: Manual
+   - Address: 10.25.33.13/24 (for Test-3) or 10.25.33.14/24 (for Test-4)
+   - Gateway: 10.25.33.1
+   - DNS: 8.8.8.8
+
+2. SSH setup:
+   - Enable "Install OpenSSH server"
+
+3. Create user:
+   - Username: david (or your preferred username)
+   - Password: (your preferred password)
+
+4. Finish install and reboot
+
+Reference: CUDA_DOM0_METHODS/vm_create_guid.txt Section I
+
+
+After Installation - SSH Access
+-------------------------------
+# From your desktop/laptop:
+ssh david@10.25.33.13  # For Test-3
+ssh david@10.25.33.14  # For Test-4
+
+Note: SSH as root is usually disabled on Ubuntu by default.
+
+Reference: CUDA_DOM0_METHODS/vm_create_guid.txt Section K
+
+
+================================================================================
+                    REFERENCE DOCUMENTS
+================================================================================
+
+This guide references:
+- CUDA_DOM0_METHODS/vm_create.txt - QEMU timeout troubleshooting
+- CUDA_DOM0_METHODS/vm_create_guid.txt - Complete VM creation and VNC guide
+
+Key points from those documents:
+1. CD device must be numeric (device=3), not "xvdd" ✓ (already in this guide)
+2. dom-id changes on every start/reboot - VNC socket must be updated
+3. QEMU timeout usually means vgpu-stub not supported or QEMU broken
+4. Network configuration during Ubuntu install requires static IP if no DHCP
+5. Minimum RAM: 2-4GiB+ recommended to prevent installer crashes
+
+================================================================================

@@ -145,7 +145,7 @@ xe vm-list is-control-domain=false params=uuid,name-label | while read uuid name
     if [ -n "$uuid" ] && [ -n "$name" ]; then
         args=$(xe vm-param-get uuid=$uuid param-name=platform param-key=device-model-args 2>/dev/null)
         if [ -n "$args" ] && echo "$args" | grep -q "vgpu-stub"; then
-            echo "⚠️  WARNING: VM $name still has vgpu-stub device!"
+            echo "WARNING: VM $name still has vgpu-stub device!"
         fi
     fi
 done
@@ -164,23 +164,116 @@ Why this step: Double-check that the detachment worked correctly
                     PART 2: CREATE NEW VM (Steps 7-12)
 ================================================================================
 
-STEP 7: Identify Required Resources
+STEP 7: Verify Network Configuration (READ-ONLY - SAFE FOR SSH)
+----------------------------------------------------------------
+Purpose: Verify network configuration WITHOUT making any changes
+
+⚠️  CRITICAL: This step is READ-ONLY to prevent SSH connection drops!
+           It only CHECKS status - does NOT modify network configuration.
+
+On Dom0, run:
+
+# Check bridge status (READ-ONLY - no modifications)
+echo "Checking bridge status (read-only check)..."
+BRIDGE_STATE=$(ip link show xenbr0 2>/dev/null | grep -o "state [A-Z]*" | awk '{print $2}')
+if [ "$BRIDGE_STATE" = "UP" ]; then
+    echo "Bridge xenbr0 is UP"
+else
+    echo "Bridge xenbr0 is $BRIDGE_STATE"
+    echo "NOTE: Bridge state does not affect VM creation"
+    echo "DO NOT modify bridge during SSH session - it may disconnect you"
+fi
+
+# Check bridge IP (READ-ONLY)
+BRIDGE_IP=$(ip addr show xenbr0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+if [ -n "$BRIDGE_IP" ]; then
+    echo "Bridge IP: $BRIDGE_IP"
+    if [ "$BRIDGE_IP" = "10.25.33.10" ]; then
+        echo "IP address is correct (10.25.33.10)"
+    else
+        echo "IP address is $BRIDGE_IP (expected 10.25.33.10)"
+        echo "NOTE: Different IP is OK if network is working"
+    fi
+else
+    echo "Bridge has no IP address configured"
+    echo "NOTE: This is OK - IP may be on a different interface"
+    echo "DO NOT add IP address during SSH session - it may disconnect you"
+fi
+
+# Check gateway connectivity (READ-ONLY test)
+echo "Testing gateway connectivity (read-only)..."
+if ping -c 2 -W 2 10.25.33.1 >/dev/null 2>&1; then
+    echo "Gateway reachable"
+else
+    echo "Gateway NOT reachable"
+    echo "NOTE: This does not prevent VM creation"
+    echo "VM networking is handled by Xen, not Dom0 bridge state"
+fi
+
+# Check DNS (READ-ONLY test)
+echo "Testing DNS (read-only)..."
+if nslookup google.com 8.8.8.8 >/dev/null 2>&1; then
+    echo "DNS working"
+else
+    echo "DNS NOT working"
+    echo "NOTE: You'll configure static IP during Ubuntu installation anyway"
+fi
+
+# Check for DHCP server
+if systemctl is-active --quiet dhcpd 2>/dev/null || systemctl is-active --quiet dnsmasq 2>/dev/null; then
+    echo "✓ DHCP server found - Ubuntu installer can use DHCP"
+else
+    echo "⚠️  NO DHCP server - You MUST configure static IP during Ubuntu installation"
+    echo "   Prepare: Subnet 10.25.33.0/24, Gateway 10.25.33.1, DNS 8.8.8.8"
+    echo "   Choose unused IP: 10.25.33.13 or higher (check existing VMs)"
+fi
+
+# Find Network UUID (needed for VM creation)
+NET_UUID=$(xe network-list bridge=xenbr0 params=uuid --minimal | head -1)
+if [ -n "$NET_UUID" ]; then
+    echo "✓ Network UUID: $NET_UUID"
+    echo "  Save this for VM creation: NET_UUID=$NET_UUID"
+else
+    echo "❌ Network UUID not found!"
+    echo "   Cannot proceed with VM creation without Network UUID"
+    exit 1
+fi
+
+What this does:
+- Verifies network bridge status (READ-ONLY - no modifications)
+- Checks if DHCP is available (if not, you'll need static IP)
+- Identifies the network UUID needed for VM creation
+- Does NOT modify any network configuration (safe for SSH sessions)
+
+Why this step: Prevents the network configuration issue you encountered before.
+               If no DHCP server, you'll know to configure static IP during installation.
+               READ-ONLY checks prevent connection drops.
+
+IMPORTANT: This step does NOT modify network configuration to avoid disrupting
+           SSH connections. Only verification is performed.
+
+See also: step2(quing)/NETWORK_CONFIGURATION_GUIDE.txt for detailed network troubleshooting
+          step2(quing)/SAFE_RECONNECT_AND_CONTINUE.txt if connection drops
+
+
+STEP 8: Identify Required Resources
 -------------------------------------
-Purpose: Find the UUIDs of storage repositories, networks, and templates needed
+Purpose: Find the UUIDs of storage repositories and templates needed
 
 On Dom0, run:
 
 # Find ISO Storage Repository (where ISOs are stored)
-ISO_SR_UUID=$(xe sr-list content-type=iso params=uuid --minimal | head -1)
-echo "ISO SR UUID: $ISO_SR_UUID"
+# Note: May return multiple UUIDs (comma-separated)
+ISO_SR_UUIDS=$(xe sr-list content-type=iso params=uuid --minimal)
+echo "ISO SR UUIDs: $ISO_SR_UUIDS"
+
+# Get first SR UUID for initial search (or search all if needed)
+ISO_SR_UUID=$(echo "$ISO_SR_UUIDS" | cut -d',' -f1 | xargs)
+echo "Using first ISO SR UUID: $ISO_SR_UUID"
 
 # Find Local Storage Repository (where VM disks are stored)
 LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
 echo "Local SR UUID: $LOCAL_SR_UUID"
-
-# Find Network (usually xenbr0)
-NET_UUID=$(xe network-list bridge=xenbr0 params=uuid --minimal | head -1)
-echo "Network UUID: $NET_UUID"
 
 # Find Template for "Other install media"
 TEMPLATE_UUID=$(xe template-list name-label="Other install media" params=uuid --minimal)
@@ -194,14 +287,13 @@ xe vdi-list sr-uuid=$ISO_SR_UUID params=name-label
 What this does:
 - Finds the storage repository where ISOs are stored
 - Finds the storage repository where VM disks will be created
-- Finds the network bridge (xenbr0) for VM networking
 - Finds the template used to create new VMs
 - Lists available ISO files
 
 Why this step: You need these UUIDs to create the VM and attach resources
 
 
-STEP 8: Create the New VM
+STEP 9: Create the New VM
 --------------------------
 Purpose: Create a new VM object from the template
 
@@ -231,7 +323,7 @@ What this does:
 Why this step: Creates the VM object that will become your new VM
 
 
-STEP 9: Add Disk to the New VM
+STEP 10: Add Disk to the New VM
 -------------------------------
 Purpose: Create and attach a disk for the VM's operating system
 
@@ -260,7 +352,7 @@ What this does:
 Why this step: The VM needs storage to install an operating system
 
 
-STEP 10: Add Network Interface
+STEP 11: Add Network Interface
 -------------------------------
 Purpose: Give the VM network connectivity
 
@@ -278,42 +370,132 @@ What this does:
 Why this step: The VM needs network access for installation and operation
 
 
-STEP 11: Add CD Drive and Insert Ubuntu ISO
+STEP 12: Add CD Drive and Insert Ubuntu ISO
 ---------------------------------------------
 Purpose: Attach Ubuntu ISO so the VM can boot and install the OS
 
 On Dom0, run:
 
-# First, identify the Ubuntu ISO name-label (from Step 7 output)
-# Example: "ubuntu-22.04-server-amd64.iso"
-# Replace with your actual ISO name:
-ISO_NAME="ubuntu-22.04-server-amd64.iso"
+# Method: Search all ISO SRs by checking each VDI's name-label
+# This method works reliably in XCP-ng environment
 
-# Find the ISO VDI UUID
-ISO_VDI_UUID=$(xe vdi-list sr-uuid=$ISO_SR_UUID name-label="$ISO_NAME" params=uuid --minimal | head -1)
-echo "ISO VDI UUID: $ISO_VDI_UUID"
+ISO_VDI_UUID=""
+ISO_NAME=""
+ISO_SR_UUIDS=$(xe sr-list content-type=iso params=uuid --minimal)
+
+echo "Searching for Ubuntu 22.04 ISO in all ISO SRs..."
+
+# Search all ISO SRs
+for SR_UUID in $(echo "$ISO_SR_UUIDS" | tr ',' ' '); do
+    SR_UUID=$(echo "$SR_UUID" | xargs)
+    if [ -z "$SR_UUID" ]; then
+        continue
+    fi
+    
+    echo "Checking SR: $SR_UUID"
+    
+    # Get all VDI UUIDs in this SR
+    ALL_VDIS=$(xe vdi-list sr-uuid=$SR_UUID params=uuid --minimal)
+    
+    # Check each VDI's name-label
+    for VDI_UUID in $(echo "$ALL_VDIS" | tr ',' ' '); do
+        VDI_UUID=$(echo "$VDI_UUID" | xargs)
+        if [ -z "$VDI_UUID" ]; then
+            continue
+        fi
+        
+        # Get the name-label for this VDI
+        VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+        
+        if [ -n "$VDI_NAME" ]; then
+            # Check if it matches Ubuntu 22.04 (server or desktop)
+            if echo "$VDI_NAME" | grep -qi "ubuntu.*22.04"; then
+                echo "  ✓ Found: $VDI_NAME"
+                echo "    UUID: $VDI_UUID"
+                ISO_VDI_UUID="$VDI_UUID"
+                ISO_NAME="$VDI_NAME"
+                ISO_SR_UUID="$SR_UUID"
+                break 2
+            fi
+        fi
+    done
+done
+
+# If not found, list all ISOs for manual selection
+if [ -z "$ISO_VDI_UUID" ]; then
+    echo ""
+    echo "❌ Ubuntu 22.04 ISO not found automatically!"
+    echo ""
+    echo "Listing all ISOs in all SRs:"
+    for SR_UUID in $(echo "$ISO_SR_UUIDS" | tr ',' ' '); do
+        SR_UUID=$(echo "$SR_UUID" | xargs)
+        if [ -z "$SR_UUID" ]; then
+            continue
+        fi
+        echo ""
+        echo "SR UUID: $SR_UUID"
+        xe vdi-list sr-uuid=$SR_UUID params=name-label,uuid
+    done
+    echo ""
+    echo "Please manually find the ISO UUID from above and set:"
+    echo "  ISO_VDI_UUID=<uuid-from-above>"
+    echo "  ISO_NAME=\"<name-from-above>\""
+    echo ""
+    echo "Then continue with CD drive creation below."
+    exit 1
+fi
+
+echo ""
+echo "ISO Found!"
+echo "  Name: $ISO_NAME"
+echo "  UUID: $ISO_VDI_UUID"
+echo "  SR: $ISO_SR_UUID"
+echo ""
 
 # Create CD drive on slot 3 (MUST be numeric, NOT "xvdd")
-CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
-echo "CD VBD UUID: $CD_VBD"
+# Check if CD drive already exists on device 3
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID userdevice=3 params=uuid --minimal 2>/dev/null | head -1)
+
+if [ -z "$CD_VBD" ]; then
+    # CD drive doesn't exist, create it
+    CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+    echo "CD VBD created: $CD_VBD"
+else
+    echo "CD drive already exists on device 3: $CD_VBD"
+    echo "Using existing CD drive"
+fi
 
 # Insert ISO into CD drive
+echo "Inserting ISO into CD drive..."
 xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
 
+if [ $? -eq 0 ]; then
+    echo "ISO inserted successfully"
+else
+    echo "ERROR: Failed to insert ISO - check ISO_VDI_UUID is correct"
+    exit 1
+fi
+
 # Verify CD slot
-xe vbd-param-get uuid=$CD_VBD param-name=userdevice
-# Should output: 3
+CD_SLOT=$(xe vbd-param-get uuid=$CD_VBD param-name=userdevice)
+echo "CD device slot: $CD_SLOT (should be 3)"
 
 What this does:
-- Finds the Ubuntu ISO file
+- Searches all ISO storage repositories
+- Checks each VDI's name-label to find Ubuntu 22.04 ISO
+- Uses actual UUID (not name) for reliable insertion
 - Creates a CD-ROM drive on device slot 3
 - Inserts the ISO into the CD drive
 - The VM can now boot from this ISO
 
 Why this step: The VM needs installation media to install Ubuntu
 
+Important: This method iterates through all VDIs and checks their name-labels
+            using xe vdi-param-get, which is more reliable than parsing
+            vdi-list output in XCP-ng environment.
 
-STEP 12: Configure Boot Order and Attach VGPU-STUB Device
+
+STEP 13: Configure Boot Order and Attach VGPU-STUB Device
 ----------------------------------------------------------
 Purpose: Set VM to boot from CD first, then attach vgpu-stub device
 
@@ -355,14 +537,83 @@ Why this step:
                     PART 3: START VM AND VERIFY (Steps 13-15)
 ================================================================================
 
-STEP 13: Start the New VM
+STEP 14: Start the New VM
 ---------------------------
 Purpose: Boot the VM so you can install the operating system
 
 On Dom0, run:
 
+# Before starting, verify ISO is accessible
+echo "Verifying ISO accessibility..."
+ISO_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+if [ -n "$ISO_VBD" ]; then
+    ISO_VDI_UUID=$(xe vbd-param-get uuid=$ISO_VBD param-name=vdi-uuid)
+    ISO_SR_UUID=$(xe vdi-param-get uuid=$ISO_VDI_UUID param-name=sr-uuid 2>/dev/null)
+    
+    if [ -z "$ISO_SR_UUID" ]; then
+        echo "ERROR: Cannot access ISO VDI - storage may be unavailable"
+        echo "Checking SR status..."
+        xe sr-list params=uuid,name-label,type,content-type | grep -i iso
+        echo ""
+        echo "Troubleshooting:"
+        echo "1. Check if ISO SR is accessible: xe sr-list uuid=$ISO_SR_UUID"
+        echo "2. Try removing and re-inserting ISO:"
+        echo "   xe vbd-eject uuid=$ISO_VBD"
+        echo "   xe vbd-insert uuid=$ISO_VBD vdi-uuid=$ISO_VDI_UUID"
+        echo "3. Or use a different ISO from a different SR"
+        exit 1
+    else
+        echo "ISO SR accessible: $ISO_SR_UUID"
+    fi
+fi
+
 # Start the VM
+echo "Starting VM..."
+
+# Ensure VM_UUID is set before starting
+if [ -z "$VM_UUID" ]; then
+    echo "ERROR: VM_UUID is not set"
+    echo "Please set VM_UUID first:"
+    echo "  VM_UUID=\$(xe vm-list name-label=\"Test-3\" params=uuid --minimal)"
+    exit 1
+fi
+
+# Capture exit code immediately after command
 xe vm-start uuid=$VM_UUID
+VM_START_RESULT=$?
+
+# Check for errors
+if [ $VM_START_RESULT -ne 0 ]; then
+    echo ""
+    echo "ERROR: VM failed to start"
+    echo ""
+    echo "Common causes:"
+    echo "1. ISO VDI not accessible on storage substrate"
+    echo "2. Storage repository (SR) not mounted or unavailable"
+    echo "3. Network storage (SMB/NFS) connection lost"
+    echo ""
+    echo "Troubleshooting steps:"
+    echo "1. Check SR status:"
+    echo "   xe sr-list params=uuid,name-label,type"
+    echo ""
+    echo "2. Verify ISO VDI exists:"
+    echo "   xe vdi-list uuid=$ISO_VDI_UUID params=name-label,sr-uuid"
+    echo ""
+    echo "3. Check SR is accessible:"
+    echo "   xe sr-list uuid=$ISO_SR_UUID params=name-label,type"
+    echo ""
+    echo "4. If using SMB/NFS SR, check network connectivity"
+    echo ""
+    echo "5. Try removing and re-inserting ISO:"
+    echo "   ISO_VBD=\$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)"
+    echo "   xe vbd-eject uuid=\$ISO_VBD"
+    echo "   xe vbd-insert uuid=\$ISO_VBD vdi-uuid=$ISO_VDI_UUID"
+    echo ""
+    echo "6. Or use a different ISO from local storage SR"
+    echo ""
+    echo "See: step2(quing)/FIX_ISO_STORAGE_ISSUE.txt for detailed troubleshooting"
+    exit 1
+fi
 
 # Wait a few seconds for initialization
 sleep 5
@@ -374,15 +625,29 @@ echo "VM Domain ID: $DOMID"
 # Verify VM is running
 xe vm-list uuid=$VM_UUID params=name-label,power-state,dom-id
 
+# Check if VM actually started
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+if [ "$POWER_STATE" != "running" ]; then
+    echo ""
+    echo "WARNING: VM power state is: $POWER_STATE (expected: running)"
+    echo "Check logs: tail -50 /var/log/daemon.log | grep -i error"
+fi
+
 What this does:
+- Verifies ISO is accessible before starting
 - Starts the VM
 - Waits for Xen to assign a domain ID
 - Verifies the VM is in "running" state
+- Provides troubleshooting if start fails
 
 Why this step: The VM needs to be running to install the OS
 
+Common Issues:
+- "VDI could not be found on storage substrate": ISO SR may be unavailable
+- Solution: Check SR status, try re-inserting ISO, or use different ISO
 
-STEP 14: Verify VGPU-STUB Device in QEMU
+
+STEP 15: Verify VGPU-STUB Device in QEMU
 -----------------------------------------
 Purpose: Confirm the device is actually being passed to QEMU
 
@@ -406,9 +671,11 @@ What this does:
 Why this step: Confirms the device attachment worked correctly
 
 
-STEP 15: Connect to VM and Install OS
---------------------------------------
-Purpose: Install Ubuntu Server on the new VM
+STEP 16: Connect to VM and Install OS (WITH NETWORK CONFIG!)
+-------------------------------------------------------------
+Purpose: Install Ubuntu Server on the new VM with proper network configuration
+
+⚠️  CRITICAL: Pay attention to network configuration to avoid the previous issue!
 
 Option A: Via VNC (Recommended)
 --------------------------------
@@ -427,25 +694,60 @@ Option B: Via Console
 # On Dom0, connect to console
 xl console $DOMID
 
-What to do in the VM:
-1. Follow Ubuntu Server installation wizard
-2. When installation completes, install NFS client:
+NETWORK CONFIGURATION DURING INSTALLATION (IMPORTANT!):
+-------------------------------------------------------
+When you reach the "Configure at least one interface" screen:
+
+1. You'll see: Interface enX0 (or enp0s3, eth0, etc.)
+2. Status will likely show: "Autoconfiguration: failed"
+   ⚠️  This is NORMAL if there's no DHCP server!
+
+3. Click "Edit IPv4 configuration"
+4. Select "Manual" (NOT DHCP)
+5. Enter these values:
+   
+   Subnet:        10.25.33.0/24
+   Address:       10.25.33.XX  (Choose unused IP: 13, 14, 15, etc.)
+                  Check existing VMs: Test-1 uses .11, Test-2 uses .12
+   Gateway:       10.25.33.1
+   Name servers:  8.8.8.8
+   Search domains: (leave blank)
+
+6. Click "Save"
+7. Verify interface shows: "enX0  eth  static  10.25.33.XX/24"
+8. Click "Done"
+
+Why this is important:
+- Prevents the network issue you encountered before
+- Ensures VM can download packages during installation
+- Ensures network works after reboot
+
+What to do after network configuration:
+1. Continue Ubuntu Server installation wizard
+2. When installation completes and VM reboots, verify network:
+   - SSH into VM: ssh user@10.25.33.XX
+   - Check IP: ip addr show
+   - Test connectivity: ping -c 3 10.25.33.1
+
+3. Install NFS client:
    apt-get update
    apt-get install -y nfs-common
 
-3. Mount NFS share (replace <DOM0_IP> with actual IP, e.g., 10.25.33.10):
+4. Mount NFS share (replace <DOM0_IP> with actual IP, e.g., 10.25.33.10):
    mkdir -p /mnt/vgpu
    mount -t nfs <DOM0_IP>:/var/vgpu /mnt/vgpu
 
-4. Create VM directory for mediation layer:
+5. Create VM directory for mediation layer:
    mkdir -p /mnt/vgpu/vm$VM_ID
    # Where $VM_ID is the value you set (e.g., 300)
 
-5. Verify vgpu-stub device:
+6. Verify vgpu-stub device:
    lspci | grep -i 'processing accelerators\|red hat\|1af4:1111'
 
    Expected output:
    XX:XX.X Processing accelerators: Red Hat, Inc. Device 1111 (rev 01)
+
+See also: step2(quing)/NETWORK_CONFIGURATION_GUIDE.txt for detailed network troubleshooting
 
 
 ================================================================================
@@ -532,6 +834,344 @@ sleep 5
 DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
 grep "qemu-dm-$DOMID.*vgpu-stub" /var/log/daemon.log | tail -1
 xenstore-read /local/domain/$DOMID/platform/device-model-args
+
+================================================================================
+                    TROUBLESHOOTING: Common Issues
+================================================================================
+
+ISSUE 1: Duplicate VM Names (Multiple VMs with Same Name)
+----------------------------------------------------------
+Symptom:
+  $ VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+  $ echo "VM UUID: $VM_UUID"
+  VM UUID: c2c6a98e-a76b-ebe6-f8ab-939457f73f38,422194fe-fc45-9df0-61ab-77c0b9077d38
+
+Explanation:
+  - The command returned TWO UUIDs (comma-separated)
+  - This means there are TWO VMs both named "Test-3"
+  - XCP-ng allows duplicate VM names, but this causes problems when querying by name
+
+Why this happens:
+  - VM was created multiple times with the same name
+  - VM was cloned/duplicated without renaming
+  - Previous VM creation failed but VM object was not cleaned up
+
+Solution:
+  1. List all VMs to see duplicates:
+     xe vm-list is-control-domain=false params=uuid,name-label,power-state
+
+  2. Identify which Test-3 VM you want to use:
+     - Check power-state (running vs halted)
+     - Check creation date: xe vm-param-get uuid=<UUID> param-name=name-description
+     - Check if it has vgpu-stub: xe vm-param-get uuid=<UUID> param-name=platform param-key=device-model-args
+
+  3. Use the specific UUID instead of name-label:
+     # Instead of: VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+     # Use: VM_UUID="c2c6a98e-a76b-ebe6-f8ab-939457f73f38"  # Pick the correct one
+
+  4. (Optional) Rename or delete the duplicate:
+     # Rename one: xe vm-param-set uuid=<UUID> name-label="Test-3-old"
+     # Delete unused: xe vm-destroy uuid=<UUID>  # WARNING: Only if VM is not needed!
+
+  5. For future VM creation, use unique names:
+     VM_NAME="Test-3-$(date +%Y%m%d-%H%M%S)"  # Adds timestamp to make unique
+
+
+ISSUE 2: Storage Repository Not Available (SR_BACKEND_FAILURE_47)
+------------------------------------------------------------------
+Symptom:
+  $ xe sr-scan uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+  Error code: SR_BACKEND_FAILURE_47
+  Error parameters: , The SR is not available [opterr=no such directory /var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa]
+
+Explanation:
+  - The Storage Repository (SR) is not mounted or accessible
+  - The mount point /var/run/sr-mount/<SR_UUID> does not exist
+  - This typically happens with network-based SRs (NFS, SMB) that lost connection
+
+Why this happens:
+  - Network storage (NFS/SMB) connection lost
+  - Storage server is down or unreachable
+  - SR was unmounted due to timeout or error
+  - Network configuration changed
+
+Solution:
+  1. Check SR status:
+     xe sr-list params=uuid,name-label,type,content-type,shared
+
+  2. Check if SR is mounted:
+     ls -la /var/run/sr-mount/ | grep 097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+  3. If SR is network-based (NFS/SMB), check network connectivity:
+     # For NFS: ping <NFS_SERVER_IP>
+     # For SMB: ping <SMB_SERVER_IP>
+
+  4. Try to plug (mount) the SR:
+     xe sr-plug uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+  5. If plug fails, check SR configuration:
+     xe sr-param-get uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa param-name=device-config
+     xe sr-param-get uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa param-name=type
+
+  6. Alternative: Use a different SR (local storage):
+     # Find local ISO SR:
+     LOCAL_ISO_SR=$(xe sr-list type=iso content-type=iso params=uuid --minimal | head -1)
+     echo "Local ISO SR: $LOCAL_ISO_SR"
+     
+     # Or find any accessible ISO SR:
+     for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' ' '); do
+         SR_UUID=$(echo "$SR_UUID" | xargs)
+         if [ -d "/var/run/sr-mount/$SR_UUID" ]; then
+             echo "Accessible ISO SR: $SR_UUID"
+             # Use this SR instead
+         fi
+     done
+
+  7. If you need to continue with VM creation:
+     - Use an ISO from a different (accessible) SR
+     - Or upload ISO to local storage SR
+     - Or wait for network storage to be restored
+
+
+ISSUE 3: VM UUID Variable Contains Multiple Values
+---------------------------------------------------
+Symptom:
+  $ VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+  $ xe vm-list uuid=$VM_UUID params=name-label,power-state
+  [No output or error]
+
+Explanation:
+  - When $VM_UUID contains multiple comma-separated UUIDs, the xe command fails
+  - xe vm-list uuid= expects a single UUID, not multiple
+
+Solution:
+  # Always check if VM_UUID contains multiple values:
+  VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+  
+  # Count commas to detect multiple UUIDs:
+  COMMA_COUNT=$(echo "$VM_UUID" | tr -cd ',' | wc -c)
+  
+  if [ "$COMMA_COUNT" -gt 0 ]; then
+      echo "ERROR: Multiple VMs found with name 'Test-3'"
+      echo "UUIDs: $VM_UUID"
+      echo ""
+      echo "List all Test-3 VMs:"
+      for UUID in $(echo "$VM_UUID" | tr ',' ' '); do
+          UUID=$(echo "$UUID" | xargs)
+          echo "  UUID: $UUID"
+          xe vm-list uuid=$UUID params=name-label,power-state
+      done
+      echo ""
+      echo "Please select one UUID and set:"
+      echo "  VM_UUID=\"<selected-uuid>\""
+      exit 1
+  fi
+  
+  # Now VM_UUID contains only one UUID, safe to use
+  echo "Using VM UUID: $VM_UUID"
+
+
+ISSUE 4: Empty or Invalid VM UUID After Failed Command
+-------------------------------------------------------
+Symptom:
+  $ xe vm-list uuid=$VM_UUID params=name-label,power-state
+  The uuid you supplied was invalid. type: VM uuid: 
+
+Explanation:
+  - $VM_UUID is empty or contains invalid value
+  - Previous command that set VM_UUID failed
+  - Variable was not properly initialized
+
+Solution:
+  # Always validate VM_UUID before using:
+  if [ -z "$VM_UUID" ]; then
+      echo "ERROR: VM_UUID is empty!"
+      echo "Please set VM_UUID manually or check previous command"
+      exit 1
+  fi
+  
+  # Validate UUID format (basic check):
+  if ! echo "$VM_UUID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+      echo "ERROR: VM_UUID format is invalid: $VM_UUID"
+      exit 1
+  fi
+  
+  # Verify VM exists:
+  if ! xe vm-list uuid=$VM_UUID >/dev/null 2>&1; then
+      echo "ERROR: VM with UUID $VM_UUID does not exist"
+      exit 1
+  fi
+
+
+TERMINAL OUTPUT EXPLANATION (Complete Troubleshooting Session)
+----------------------------------------------------------------
+
+PHASE 1: Initial Problem Discovery (Lines 1-12)
+------------------------------------------------
+Line 1-3: xl list
+  - Lists running Xen domains (VMs)
+  - Shows only Domain-0 (the host) is running
+  - All VMs (Test-1, Test-2, Test-3) are halted/stopped
+
+Line 4: VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+  - Attempts to get UUID of VM named "Test-3"
+  - Command succeeds but returns TWO UUIDs (duplicate names detected)
+
+Line 5-6: echo "VM UUID: $VM_UUID"
+  - Displays: c2c6a98e-a76b-ebe6-f8ab-939457f73f38,422194fe-fc45-9df0-61ab-77c0b9077d38
+  - Two comma-separated UUIDs = duplicate VM names exist
+  - This is the root cause of subsequent failures
+
+Line 7: xe vm-list uuid=$VM_UUID params=name-label,power-state
+  - Command FAILS silently (no output)
+  - Reason: $VM_UUID contains two UUIDs, but xe expects a single UUID
+  - xe cannot process comma-separated UUIDs in this context
+
+Line 8: xe sr-scan uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+  - Attempts to scan/refresh an ISO Storage Repository
+  - Trying to fix the "VDI not found on storage substrate" error from earlier
+
+Line 9-10: Error SR_BACKEND_FAILURE_47
+  - Error: "The SR is not available [opterr=no such directory /var/run/sr-mount/...]"
+  - SR is not mounted/accessible
+  - Network storage (SMB) connection likely lost or server unreachable
+
+Line 11: ^C
+  - User cancels/interrupts the session
+
+
+PHASE 2: Copy-Paste Errors (Lines 12-15)
+-----------------------------------------
+Line 12-13: $ VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+  -bash: $: command not found
+
+Line 14-15: $ echo "VM UUID: $VM_UUID"
+  -bash: $: command not found
+
+Explanation:
+  - User copied commands including the `$` prompt character
+  - Bash interprets `$` as a command name, causing "command not found"
+  - Solution: Copy commands WITHOUT the `$` prompt (just the command itself)
+
+
+PHASE 3: Identifying All VMs (Lines 16-35)
+--------------------------------------------
+Line 16: xe vm-list is-control-domain=false params=uuid,name-label,power-state
+
+Output shows 4 VMs (all halted):
+  1. Test-3: UUID c2c6a98e-a76b-ebe6-f8ab-939457f73f38 (halted)
+  2. Test-2: UUID 8c934907-befb-756e-c6fe-91d721291d2b (halted)
+  3. Test-3: UUID 422194fe-fc45-9df0-61ab-77c0b9077d38 (halted) ← DUPLICATE!
+  4. Test-1: UUID 14cf0700-638c-41bd-035b-206c184970dc (halted)
+
+Key Observations:
+  - Two VMs both named "Test-3" (duplicate confirmed)
+  - All VMs are halted (not running)
+  - This explains why line 4 returned two UUIDs
+
+
+PHASE 4: Fixing Duplicate VM Names (Lines 38-58)
+--------------------------------------------------
+Line 38: xe vm-param-set uuid=422194fe-fc45-9df0-61ab-77c0b9077d38 name-label="Test-4"
+  - Renames the second Test-3 VM to "Test-4"
+  - This resolves the duplicate name conflict
+  - Good solution: preserves both VMs, just changes the name
+
+Line 39-58: xe vm-list is-control-domain=false params=uuid,name-label,power-state
+  - Verifies the rename was successful
+  - Now shows:
+    1. Test-3: UUID c2c6a98e-a76b-ebe6-f8ab-939457f73f38 (halted)
+    2. Test-2: UUID 8c934907-befb-756e-c6fe-91d721291d2b (halted)
+    3. Test-4: UUID 422194fe-fc45-9df0-61ab-77c0b9077d38 (halted) ← RENAMED!
+    4. Test-1: UUID 14cf0700-638c-41bd-035b-206c184970dc (halted)
+
+Result: Duplicate name issue RESOLVED ✓
+  - Now only one VM named "Test-3" exists
+  - Commands using name-label="Test-3" will work correctly
+
+
+PHASE 5: Investigating Storage Repository Issues (Lines 60-100)
+-----------------------------------------------------------------
+Line 60-61: Another copy-paste error with `$` prompt
+  - Same issue as lines 12-15
+  - User copied command with prompt character
+
+Line 62-96: xe sr-list params=uuid,name-label,type,content-type,shared
+  - Lists all Storage Repositories in the system
+
+Storage Repositories Found:
+  1. DVD drives (UUID: a8a724d0-4cdb-4579-03ec-2c94d46a445d)
+     - Type: udev, Content: iso, Shared: false (local)
+     - Physical DVD/CD drives
+
+  2. Removable storage (UUID: 22940a6e-2ad1-cf3b-4fd0-7f42bb510f2c)
+     - Type: udev, Content: disk, Shared: false (local)
+     - USB/external drives
+
+  3. SMB ISO library (UUID: 097e2b8c-af1a-d945-1432-8c0e7d0163fa) ← PROBLEMATIC!
+     - Type: iso, Content: iso, Shared: true
+     - Network-based SMB/CIFS storage (Windows share)
+     - This is the SR that failed earlier
+
+  4. XCP-ng Tools (UUID: 1a00261c-d91e-e771-6d36-1998d079f6c8)
+     - Type: iso, Content: iso, Shared: true
+     - Another network-based ISO repository
+
+  5. Local storage (UUID: a38d2218-0ae3-cfa9-3ab1-bd16def94b3c)
+     - Type: lvm, Content: user, Shared: false (local)
+     - Where VM virtual disks are stored
+
+Key Finding:
+  - SMB ISO library is network-based (shared: true)
+  - Network storage is more prone to connection issues
+  - Local storage (DVD drives) is more reliable but may not have ISOs
+
+Line 98-100: ls -la /var/run/sr-mount/ | grep 097e2b8c-af1a-d945-1432-8c0e7d0163fa
+  - Checks if the SMB SR mount point exists
+  - Output: "Host is down"
+  - Error: "cannot access /var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa: Host is down"
+  - Directory exists but shows "d?????????" (corrupted/unreadable permissions)
+  - Confirms SMB server is unreachable or connection lost
+
+Root Cause Identified:
+  - SMB ISO library SR is not accessible
+  - SMB server (Windows share) is down or network connection lost
+  - Cannot use ISOs from this SR until connection is restored
+
+
+SUMMARY OF ISSUES AND RESOLUTIONS
+----------------------------------
+✓ RESOLVED: Duplicate VM names
+  - Problem: Two VMs both named "Test-3"
+  - Solution: Renamed one to "Test-4"
+  - Status: Fixed - can now use name-label="Test-3" safely
+
+✗ UNRESOLVED: SMB ISO library unavailable
+  - Problem: SMB SR (097e2b8c-af1a-d945-1432-8c0e7d0163fa) is not accessible
+  - Error: "Host is down" - SMB server unreachable
+  - Impact: Cannot use ISOs from this SR for VM creation
+  - Workaround: Use ISOs from other SRs (DVD drives, XCP-ng Tools, or upload to local storage)
+
+NEXT STEPS FOR VM CREATION
+--------------------------
+1. Use Test-3 UUID directly (now that duplicate is resolved):
+   VM_UUID="c2c6a98e-a76b-ebe6-f8ab-939457f73f38"
+
+2. For ISO selection, use an accessible SR:
+   - Option A: Check "DVD drives" SR for local ISOs
+   - Option B: Check "XCP-ng Tools" SR (if accessible)
+   - Option C: Upload Ubuntu ISO to local storage SR
+   - Option D: Wait for SMB connection to be restored
+
+3. Verify SR accessibility before use:
+   ls -la /var/run/sr-mount/<SR_UUID>
+   # Should show readable directory, not "Host is down"
+
+4. Continue with VM creation using accessible ISO SR
+
+See also:
+  - step2(quing)/FIX_ISO_STORAGE_ISSUE.txt for detailed SR troubleshooting
+  - step2(quing)/SAFE_RECONNECT_AND_CONTINUE.txt for network issues
 
 ================================================================================
                             END OF STEP-BY-STEP GUIDE

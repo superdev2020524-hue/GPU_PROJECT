@@ -1,0 +1,102 @@
+================================================================================
+        UPDATE NETPLAN WITH NETWORKMANAGER RENDERER
+================================================================================
+
+You found: /etc/netplan/01-network-manager-all.yaml
+This means NetworkManager is managing your network.
+
+STEP 1: Check Current Configuration
+------------------------------------
+# View the current file
+sudo cat /etc/netplan/01-network-manager-all.yaml
+
+# It probably looks like:
+# network:
+#   version: 2
+#   renderer: NetworkManager
+
+
+STEP 2: Update the File
+------------------------
+# Edit the file
+sudo nano /etc/netplan/01-network-manager-all.yaml
+
+# Change it to this (NetworkManager will handle the details):
+network:
+  version: 2
+  renderer: NetworkManager
+
+# OR if you want netplan to manage it directly, change to:
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      addresses:
+        - 10.25.33.11/24
+      routes:
+        - to: default
+          via: 10.25.33.254
+      nameservers:
+        addresses:
+          - 8.8.8.8
+
+# Save and apply
+sudo netplan apply
+
+
+STEP 3: Alternative - Use NetworkManager Commands (Easier)
+-----------------------------------------------------------
+Since NetworkManager is managing the network, you can update it directly:
+
+# List connections
+nmcli connection show
+
+# Find your connection name (usually "Wired connection 1" or similar)
+# Update the gateway
+nmcli connection modify "Wired connection 1" ipv4.gateway 10.25.33.254
+
+# Ensure it's set to manual (not DHCP)
+nmcli connection modify "Wired connection 1" ipv4.method manual
+
+# Set IP address
+nmcli connection modify "Wired connection 1" ipv4.addresses 10.25.33.11/24
+
+# Set DNS
+nmcli connection modify "Wired connection 1" ipv4.dns 8.8.8.8
+
+# Apply changes
+nmcli connection up "Wired connection 1"
+
+# Or restart NetworkManager
+sudo systemctl restart NetworkManager
+
+
+STEP 4: Verify
+--------------
+# Check route
+ip route show
+# Should show: default via 10.25.33.254 dev eth0
+
+# Test
+ping -c 3 10.25.33.254
+ping -c 3 8.8.8.8
+
+
+RECOMMENDED APPROACH:
+---------------------
+Since you configured via GUI (Settings app), the easiest way is:
+
+1. **Update via GUI** (easiest):
+   - Settings → Network → Wired
+   - Click gear icon → IPv4 tab
+   - Change Gateway from 10.25.33.1 to 10.25.33.254
+   - Click Apply
+
+2. **OR use NetworkManager command**:
+   nmcli connection modify "Wired connection 1" ipv4.gateway 10.25.33.254
+   nmcli connection up "Wired connection 1"
+
+The GUI method is simplest since NetworkManager is managing your network!
+
+================================================================================

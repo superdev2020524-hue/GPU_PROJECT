@@ -1,0 +1,154 @@
+================================================================================
+        HOW TO CONFIGURE NETWORK IN UBUNTU GUI (Wired Network Settings)
+================================================================================
+
+You're seeing the "Wired" network configuration dialog. Here's how to fill it correctly:
+
+CURRENT STATUS IN YOUR CONFIGURATION:
+-------------------------------------
+❌ **IPv4 Method: "Automatic (DHCP)"** - CRITICAL! Must be "Manual"
+   (This is why SSH doesn't work - static IP is being ignored!)
+❌ Address: `10.25.33.10.13` - WRONG (has extra ".10" - should be "10.25.33.13")
+✓ Netmask: `255.255.255.0` - CORRECT
+✓ Gateway: `10.25.33.1` - CORRECT
+✓ Metric: Empty - OK (can leave empty)
+❌ DNS Automatic: ON - NEEDS TO BE OFF
+❌ Routes Automatic: ON - NEEDS TO BE OFF
+
+
+CORRECT CONFIGURATION:
+----------------------
+
+STEP 1: Switch to "IPv4" Tab (You're already here)
+----------------------------------------------------
+
+STEP 1.5: Set IPv4 Method to "Manual" (CRITICAL!)
+--------------------------------------------------
+**THIS IS THE MOST IMPORTANT STEP!**
+
+1. At the top of the dialog, find "IPv4 Method" section
+2. You'll see radio buttons:
+   - "Automatic (DHCP)" - Currently selected (orange circle) ❌
+   - "Manual" - Select this one ✓
+   - "Shared to other computers" - Don't use
+   - "Link-Local Only" - Don't use
+   - "Disable" - Don't use
+
+3. **Click "Manual"** to select it
+   - This tells Ubuntu to use your static IP configuration
+   - Without this, all your static IP settings will be ignored!
+
+
+STEP 2: Configure DNS Section
+------------------------------
+1. Find the "DNS" section (top of the dialog)
+2. **IMPORTANT:** Turn OFF the "Automatic" toggle (click it so it moves to the LEFT, turns gray/off)
+   - Currently it's ON (orange, on the right) - you need it OFF
+3. The text field already shows "8.8.8.8" - that's correct, leave it as is
+   - (This is Google's DNS server - you can add more separated by commas if needed)
+
+
+STEP 3: Configure Routes Section
+----------------------------------
+1. Find the "Routes" section (below DNS section)
+2. **IMPORTANT:** Turn OFF the "Automatic" toggle (click it so it moves to the LEFT, turns gray/off)
+   - Currently it's ON (orange, on the right) - you need it OFF
+3. In the Routes table, fix the first row:
+
+   Address:  **FIX THIS** - Currently shows "10.25.33.10.13"
+             - Click in the Address field
+             - Delete the extra ".10" part
+             - Should be: "10.25.33.13"
+             (or 10.25.33.14, 10.25.33.15, etc. - choose an unused IP)
+             
+   Netmask:  "255.255.255.0" - Already correct, leave it
+             
+   Gateway:  "10.25.33.1" - Already correct, leave it
+             
+   Metric:   Leave empty (or enter: 100)
+             (Lower number = higher priority, 100 is default)
+
+4. Delete the second empty row (click the trash can icon on the right of the empty row)
+
+
+STEP 4: Apply Settings
+------------------------
+1. Click the "Apply" button (top right)
+2. The button should become active after you make changes
+
+
+IMPORTANT NOTES:
+----------------
+
+1. **IP Address Selection:**
+   - Dom0 uses: 10.25.33.10
+   - Test-1 uses: 10.25.33.11
+   - Test-2 uses: 10.25.33.12
+   - **Use 10.25.33.13 or higher for your new VM**
+   - Make sure the IP is not already in use
+
+2. **Netmask Format:**
+   - If the field accepts: `255.255.255.0` (use this)
+   - If the field accepts: `24` (use this - it's CIDR notation)
+   - If the field accepts: `/24` (use this)
+   - **DO NOT use:** `8.8.8.8` (that's a DNS server!)
+
+3. **Routes vs DNS:**
+   - **Routes** = How to reach networks (needs netmask, gateway)
+   - **DNS** = How to resolve domain names (needs DNS server IPs like 8.8.8.8)
+
+4. **If Netmask Field Doesn't Accept 255.255.255.0:**
+   - Try: `24` (CIDR notation)
+   - Or: `/24`
+   - Or: `255.255.255.0` (dotted decimal)
+   - The format depends on Ubuntu version and GUI
+
+
+ALTERNATIVE: If GUI is Confusing, Use Command Line
+----------------------------------------------------
+If the GUI is too confusing, you can configure network via terminal:
+
+# SSH into the VM (if you can) or use VNC console
+sudo nano /etc/netplan/00-installer-config.yaml
+
+# Add this configuration:
+network:
+  version: 2
+  ethernets:
+    enp0s3:  # Replace with your actual interface name (check with: ip addr)
+      addresses:
+        - 10.25.33.13/24  # Your VM IP
+      routes:
+        - to: default
+          via: 10.25.33.1
+      nameservers:
+        addresses:
+          - 8.8.8.8
+
+# Save and apply:
+sudo netplan apply
+
+
+QUICK REFERENCE:
+----------------
+Network:     10.25.33.0/24
+Your VM IP:  10.25.33.13 (or 14, 15, etc. - choose unused)
+Gateway:     10.25.33.1
+DNS:         8.8.8.8
+Netmask:     255.255.255.0 (or 24 in CIDR)
+
+
+TROUBLESHOOTING:
+----------------
+
+If "Apply" button stays greyed out:
+- Make sure you've changed at least one setting
+- Turn OFF both "Automatic" toggles
+- Fill in at least the Address and Gateway fields
+
+If network doesn't work after applying:
+- Check IP is not already in use: ping 10.25.33.13
+- Verify gateway is reachable: ping 10.25.33.1
+- Check interface name: ip addr show
+
+================================================================================

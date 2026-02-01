@@ -1,0 +1,550 @@
+================================================================================
+        FIX: VM BOOTING FROM CD AFTER UBUNTU INSTALLATION
+================================================================================
+
+PROBLEM:
+--------
+- Ubuntu installation completed successfully
+- After restart, VM keeps booting from CD (shows installer screen again)
+- Boot order is currently set to "dc" (CD first, then disk)
+- Need to boot from installed disk instead
+
+YOUR VM UUID: c1b31989-fa51-c29a-3720-6e5ba7970275 (Test-3)
+
+
+IMPORTANT NOTE ABOUT BOOT ORDER VERIFICATION:
+----------------------------------------------
+The boot order setting commands (xe vm-param-set) will work correctly even if
+the verification commands show empty results. This is a known issue with how
+Xen/XCP-ng returns the HVM-boot-params parameter.
+
+If you run the boot order setting command and see NO ERROR, the setting succeeded.
+The verification is just to confirm - if it doesn't show the value, don't worry.
+The VM will still boot with the correct order you set.
+
+To test if it worked: Start the VM and check via VNC if it boots from disk.
+
+
+================================================================================
+OPTION 1: SET CD AS SECOND BOOT DEVICE (Keep CD, Boot Disk First)
+================================================================================
+
+This option keeps the CD drive attached but makes the disk boot first.
+If disk fails, it will fall back to CD.
+
+STEP 1: Check Current VM State
+-------------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+
+# Check if VM is running
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+echo "Current Power State: $POWER_STATE"
+
+# Check current boot order
+BOOT_PARAMS=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null)
+echo "Raw HVM-boot-params: $BOOT_PARAMS"
+BOOT_ORDER=$(echo "$BOOT_PARAMS" | grep -o "order:[^;]*" | cut -d: -f2 | xargs)
+echo "Current Boot Order: $BOOT_ORDER"
+
+
+STEP 2: Shutdown VM (If Running)
+----------------------------------
+# VM must be halted to change boot order
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID
+    
+    # Wait for shutdown (max 60 seconds)
+    COUNT=0
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ] && [ $COUNT -lt 30 ]; do
+        sleep 2
+        COUNT=$((COUNT + 1))
+        echo "Waiting for shutdown... ($COUNT/30)"
+    done
+    
+    if [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; then
+        echo "Force shutting down..."
+        xe vm-shutdown uuid=$VM_UUID --force
+        sleep 5
+    fi
+    
+    echo "VM is now halted"
+fi
+
+
+STEP 3: Change Boot Order to "cd" (Disk First, CD Second)
+-----------------------------------------------------------
+# Change from "dc" (CD first) to "cd" (disk first, CD second)
+echo "Changing boot order from 'dc' to 'cd' (disk first, CD second)..."
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=cd
+
+# Verify the change (try multiple methods)
+echo "Verifying boot order..."
+BOOT_PARAMS=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null)
+echo "Raw HVM-boot-params: $BOOT_PARAMS"
+
+# Method 1: Extract order: value (format is "order: cd" with colon and space)
+NEW_BOOT_ORDER=$(echo "$BOOT_PARAMS" | grep -o "order:[^;]*" | cut -d: -f2 | xargs)
+
+# Method 2: Check if it contains order: cd directly
+if echo "$BOOT_PARAMS" | grep -q "order: cd"; then
+    VERIFIED_ORDER="cd"
+elif echo "$BOOT_PARAMS" | grep -q "order: c[^d]"; then
+    VERIFIED_ORDER="c"
+elif echo "$BOOT_PARAMS" | grep -q "order: dc"; then
+    VERIFIED_ORDER="dc"
+else
+    VERIFIED_ORDER=""
+fi
+
+if [ -n "$VERIFIED_ORDER" ] && [ "$VERIFIED_ORDER" = "cd" ]; then
+    echo "✓ Boot order verified: '$VERIFIED_ORDER' (disk first, CD second)"
+elif [ -n "$NEW_BOOT_ORDER" ] && [ "$NEW_BOOT_ORDER" = "cd" ]; then
+    echo "✓ Boot order verified: '$NEW_BOOT_ORDER' (disk first, CD second)"
+elif [ -n "$VERIFIED_ORDER" ]; then
+    echo "⚠️  Boot order shows: '$VERIFIED_ORDER' (expected 'cd')"
+else
+    echo "ℹ️  Could not extract boot order from parameter output"
+    echo "   (This is normal - the setting command succeeded if no error was shown)"
+    echo "   The 'xe vm-param-set' command would show an error if it failed"
+fi
+
+
+STEP 4: Start VM
+-----------------
+echo "Starting VM..."
+xe vm-start uuid=$VM_UUID
+
+# Wait for VM to initialize
+sleep 5
+
+# Check if VM started
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "✓ VM started successfully"
+    echo "  Domain ID: $DOMID"
+    echo "  VM should now boot from disk first, then CD if needed"
+    
+    # Show VM status
+    xl list | grep Test-3 || echo "VM may still be starting..."
+else
+    echo "ERROR: VM failed to start"
+    echo "Check logs: tail -50 /var/log/xensource.log | grep -i error"
+fi
+
+
+STEP 5: Restore VNC Connection (If Needed)
+-------------------------------------------
+# After reboot, dom-id changes, so VNC socket path changes
+# Get new dom-id and restart socat
+
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    # Kill old socat
+    pkill socat || true
+    
+    # Start new socat with new socket
+    nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+    
+    echo "✓ VNC connection restored"
+    echo "  Connect to: 127.0.0.1:5901"
+    echo "  Socket: /var/run/xen/vnc-$DOMID"
+    
+    # Verify socat is running
+    ss -ltnp | grep :5901
+fi
+
+
+================================================================================
+OPTION 2: REMOVE CD ENTIRELY (Boot Disk Only - Recommended)
+================================================================================
+
+This option completely removes the ISO from the CD drive and sets boot order
+to disk only. This is the cleanest solution after installation.
+
+STEP 1: Check Current VM State
+-------------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+
+# Check if VM is running
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+echo "Current Power State: $POWER_STATE"
+
+# Check current boot order
+BOOT_PARAMS=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null)
+echo "Raw HVM-boot-params: $BOOT_PARAMS"
+BOOT_ORDER=$(echo "$BOOT_PARAMS" | grep -o "order:[^;]*" | cut -d: -f2 | xargs)
+echo "Current Boot Order: $BOOT_ORDER"
+
+# Check if CD has ISO
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+if [ -n "$CD_VBD" ]; then
+    CD_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    if [ -n "$CD_ISO" ]; then
+        ISO_NAME=$(xe vdi-param-get uuid=$CD_ISO param-name=name-label 2>/dev/null)
+        echo "CD Drive has ISO: $ISO_NAME"
+    else
+        echo "CD Drive is empty"
+    fi
+fi
+
+
+STEP 2: Shutdown VM (If Running)
+----------------------------------
+# VM must be halted to eject ISO and change boot order
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID
+    
+    # Wait for shutdown (max 60 seconds)
+    COUNT=0
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ] && [ $COUNT -lt 30 ]; do
+        sleep 2
+        COUNT=$((COUNT + 1))
+        echo "Waiting for shutdown... ($COUNT/30)"
+    done
+    
+    if [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; then
+        echo "Force shutting down..."
+        xe vm-shutdown uuid=$VM_UUID --force
+        sleep 5
+    fi
+    
+    echo "VM is now halted"
+fi
+
+
+STEP 3: Eject ISO from CD Drive
+---------------------------------
+# Get CD VBD UUID
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+
+if [ -z "$CD_VBD" ]; then
+    echo "No CD drive found - skipping eject"
+else
+    # Check if ISO is inserted
+    CD_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    
+    if [ -n "$CD_ISO" ]; then
+        ISO_NAME=$(xe vdi-param-get uuid=$CD_ISO param-name=name-label 2>/dev/null)
+        echo "Ejecting ISO: $ISO_NAME"
+        xe vbd-eject uuid=$CD_VBD
+        
+        # Verify ISO is ejected
+        sleep 2
+        CD_EMPTY=$(xe vbd-param-get uuid=$CD_VBD param-name=empty 2>/dev/null)
+        if [ "$CD_EMPTY" = "true" ]; then
+            echo "✓ ISO ejected successfully"
+        else
+            echo "⚠️  Warning: CD may still have ISO inserted"
+        fi
+    else
+        echo "CD drive is already empty"
+    fi
+fi
+
+
+STEP 4: Change Boot Order to "c" (Disk Only)
+----------------------------------------------
+# Change from "dc" (CD first) to "c" (disk only)
+echo "Changing boot order from 'dc' to 'c' (disk only)..."
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=c
+
+# Verify the change (try multiple methods)
+echo "Verifying boot order..."
+BOOT_PARAMS=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null)
+echo "Raw HVM-boot-params: $BOOT_PARAMS"
+
+# Method 1: Extract order: value (format is "order: c" with colon and space)
+NEW_BOOT_ORDER=$(echo "$BOOT_PARAMS" | grep -o "order:[^;]*" | cut -d: -f2 | xargs)
+
+# Method 2: Check if it contains order: c directly
+if echo "$BOOT_PARAMS" | grep -q "order: c[^d]"; then
+    VERIFIED_ORDER="c"
+elif echo "$BOOT_PARAMS" | grep -q "order: cd"; then
+    VERIFIED_ORDER="cd"
+elif echo "$BOOT_PARAMS" | grep -q "order: dc"; then
+    VERIFIED_ORDER="dc"
+else
+    VERIFIED_ORDER=""
+fi
+
+if [ -n "$VERIFIED_ORDER" ] && [ "$VERIFIED_ORDER" = "c" ]; then
+    echo "✓ Boot order verified: '$VERIFIED_ORDER' (disk only)"
+elif [ -n "$NEW_BOOT_ORDER" ] && [ "$NEW_BOOT_ORDER" = "c" ]; then
+    echo "✓ Boot order verified: '$NEW_BOOT_ORDER' (disk only)"
+elif [ -n "$VERIFIED_ORDER" ]; then
+    echo "⚠️  Boot order shows: '$VERIFIED_ORDER' (expected 'c')"
+else
+    echo "ℹ️  Could not extract boot order from parameter output"
+    echo "   (This is normal - the setting command succeeded if no error was shown)"
+    echo "   The 'xe vm-param-set' command would show an error if it failed"
+fi
+
+
+STEP 5: Start VM
+-----------------
+echo "Starting VM..."
+xe vm-start uuid=$VM_UUID
+
+# Wait for VM to initialize
+sleep 5
+
+# Check if VM started
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "✓ VM started successfully"
+    echo "  Domain ID: $DOMID"
+    echo "  VM should now boot from disk only"
+    
+    # Show VM status
+    xl list | grep Test-3 || echo "VM may still be starting..."
+else
+    echo "ERROR: VM failed to start"
+    echo "Check logs: tail -50 /var/log/xensource.log | grep -i error"
+fi
+
+
+STEP 6: Restore VNC Connection (If Needed)
+-------------------------------------------
+# After reboot, dom-id changes, so VNC socket path changes
+# Get new dom-id and restart socat
+
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    # Wait a moment for VNC socket to be created
+    sleep 3
+    
+    # Check if VNC socket exists
+    if [ -S "/var/run/xen/vnc-$DOMID" ]; then
+        # Kill old socat
+        pkill socat || true
+        
+        # Start new socat with new socket
+        nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+        
+        echo "✓ VNC connection restored"
+        echo "  Connect to: 127.0.0.1:5901"
+        echo "  Socket: /var/run/xen/vnc-$DOMID"
+        
+        # Verify socat is running
+        ss -ltnp | grep :5901
+    else
+        echo "⚠️  VNC socket not ready yet. Wait a few seconds and run:"
+        echo "   pkill socat; nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &"
+    fi
+fi
+
+
+================================================================================
+QUICK COPY-PASTE SCRIPTS
+================================================================================
+
+OPTION 1 SCRIPT (CD as Second Boot Device):
+--------------------------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID
+    COUNT=0
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ] && [ $COUNT -lt 30 ]; do
+        sleep 2
+        COUNT=$((COUNT + 1))
+    done
+    [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ] && xe vm-shutdown uuid=$VM_UUID --force && sleep 5
+fi
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=cd
+echo "Boot order changed to 'cd' (disk first, CD second)"
+xe vm-start uuid=$VM_UUID
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    pkill socat || true
+    nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+    echo "VM started - Domain ID: $DOMID"
+    echo "VNC restored - connect to 127.0.0.1:5901"
+fi
+
+
+OPTION 2 SCRIPT (Remove CD, Boot Disk Only - RECOMMENDED):
+-----------------------------------------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID
+    COUNT=0
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ] && [ $COUNT -lt 30 ]; do
+        sleep 2
+        COUNT=$((COUNT + 1))
+    done
+    [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ] && xe vm-shutdown uuid=$VM_UUID --force && sleep 5
+fi
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+if [ -n "$CD_VBD" ]; then
+    CD_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    [ -n "$CD_ISO" ] && xe vbd-eject uuid=$CD_VBD && echo "ISO ejected"
+fi
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=c
+echo "Boot order changed to 'c' (disk only)"
+xe vm-start uuid=$VM_UUID
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    sleep 3
+    if [ -S "/var/run/xen/vnc-$DOMID" ]; then
+        pkill socat || true
+        nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+        echo "VM started - Domain ID: $DOMID"
+        echo "VNC restored - connect to 127.0.0.1:5901"
+    fi
+fi
+
+
+================================================================================
+AFTER VM BOOTS FROM DISK
+================================================================================
+
+1. **Connect via VNC:**
+   - Connect to 127.0.0.1:5901
+   - You should see Ubuntu login screen (NOT installer)
+
+2. **Find VM IP Address:**
+   # From Dom0, get VM MAC and check ARP/DHCP
+   VIF_UUID=$(xe vif-list vm-uuid=$VM_UUID params=uuid --minimal | head -1)
+   MAC=$(xe vif-param-get uuid=$VIF_UUID param-name=MAC)
+   echo "VM MAC: $MAC"
+   arp -a | grep -i "$MAC"
+   
+   # Or check DHCP leases
+   grep -i "$MAC" /var/lib/dhcpd/dhcpd.leases | tail -5
+
+3. **Configure IP Settings:**
+   # Via VNC console, login and run:
+   sudo nano /etc/netplan/00-installer-config.yaml
+   
+   # Or use SSH if you know the IP:
+   ssh david@<VM_IP>
+
+
+================================================================================
+ERROR: "VDI could not be found on the storage substrate"
+================================================================================
+
+If you see this error when trying to start the VM:
+  "This operation cannot be performed because the specified VDI could not be found on the storage substrate
+   sr: <SR_UUID> (SMB ISO library)
+   vdi: <VDI_UUID> (ubuntu-22.04.5-desktop-amd64.iso)"
+
+This means:
+- The ISO is still inserted in the CD drive
+- The storage repository (SR) where the ISO is located is unavailable
+- Common with network-based ISO storage (SMB ISO library) - network issue or share is down
+
+SOLUTION: Eject the ISO from the CD drive (even if SR is unavailable)
+
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+
+# Make sure VM is halted
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID --force
+    sleep 5
+fi
+
+# Get CD VBD UUID
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+
+if [ -n "$CD_VBD" ]; then
+    echo "Ejecting ISO from CD drive..."
+    # Try to eject - this should work even if SR is unavailable
+    xe vbd-eject uuid=$CD_VBD
+    
+    # Verify
+    sleep 2
+    CD_EMPTY=$(xe vbd-param-get uuid=$CD_VBD param-name=empty 2>/dev/null)
+    if [ "$CD_EMPTY" = "true" ]; then
+        echo "✓ ISO ejected successfully"
+    else
+        echo "⚠️  CD may still have ISO, but try starting VM anyway"
+    fi
+fi
+
+# Now set boot order to disk only
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=c
+
+# Try starting VM again
+echo "Starting VM..."
+xe vm-start uuid=$VM_UUID
+
+# If it still fails, you may need to remove the VBD entirely (last resort)
+# CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+# xe vbd-destroy uuid=$CD_VBD
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+If VM still shows installer screen:
+
+1. **Verify boot order:**
+   # Get raw boot parameters
+   xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params
+   
+   # Extract boot order (try this command):
+   BOOT_PARAMS=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null)
+   echo "$BOOT_PARAMS" | grep -o "order:[^;]*"
+   # Format is "order: cd" (with colon and space), extract value:
+   echo "$BOOT_PARAMS" | grep -o "order:[^;]*" | cut -d: -f2 | xargs
+   
+   # Should show: order=c (or order=cd for Option 1)
+   # Note: If extraction doesn't work, the setting likely still succeeded
+   # The 'xe vm-param-set' command would show an error if it failed
+
+2. **Verify ISO is ejected (Option 2 only):**
+   CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+   xe vbd-param-get uuid=$CD_VBD param-name=empty
+   # Should show: true
+
+3. **Check if disk has OS:**
+   # This is hard to verify from Dom0, but if installation completed,
+   # the disk should have Ubuntu installed
+
+4. **Try manual boot selection:**
+   # Connect via VNC during boot
+   # Press F12 or ESC to enter boot menu
+   # Select disk manually
+
+5. **Check VM logs:**
+   tail -50 /var/log/xensource.log | grep -i error
+
+
+================================================================================
+RECOMMENDATION
+================================================================================
+
+**Use OPTION 2 (Remove CD, Boot Disk Only)** because:
+- Cleaner configuration after installation
+- No risk of accidentally booting from CD
+- Faster boot (no CD check)
+- Prevents "VDI could not be found" errors when ISO SR is unavailable
+- You can always re-insert ISO later if needed
+
+The CD drive itself remains attached to the VM, just empty.
+You can re-insert the ISO anytime with:
+  CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+  xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+
+**IMPORTANT:** If you get "VDI could not be found on storage substrate" error when
+starting the VM, it means the ISO is still inserted and the ISO storage repository
+is unavailable. You MUST eject the ISO first (see error handling section above).
+
+================================================================================

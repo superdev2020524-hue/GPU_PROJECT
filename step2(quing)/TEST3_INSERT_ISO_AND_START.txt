@@ -1,0 +1,165 @@
+================================================================================
+                    TEST-3 INSERT ISO AND START - Ready to Go!
+================================================================================
+
+CURRENT STATUS:
+---------------
+✓ Test-3 VM recreated: UUID c1b31989-fa51-c29a-3720-6e5ba7970275
+✓ VM is configured: 4GB RAM, 4 vCPUs, disk, network, CD drive
+✓ Boot order set: CD first (dc)
+✓ vgpu-stub attached: pool_id=A, priority=low, vm_id=3
+✓ SMB SR is accessible (mount point exists)
+✓ VM is halted (ready for ISO insertion)
+
+Now you just need to insert the Ubuntu ISO and start the VM!
+
+
+STEP 1: Insert Ubuntu 22.04 ISO
+--------------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+
+# Verify SMB SR is accessible
+if [ ! -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "ERROR: SMB SR is not accessible"
+    exit 1
+fi
+echo "SMB SR is accessible"
+
+# Get CD VBD UUID
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+echo "CD VBD: $CD_VBD"
+
+# Check if CD drive already has ISO
+CURRENT_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+if [ -n "$CURRENT_ISO" ]; then
+    echo "CD drive has ISO - ejecting first..."
+    xe vbd-eject uuid=$CD_VBD
+    sleep 1
+fi
+
+# Insert Ubuntu 22.04 ISO
+echo "Inserting Ubuntu 22.04 ISO..."
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+
+if [ $? -eq 0 ]; then
+    echo "ISO inserted successfully"
+    
+    # Verify
+    INSERTED_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    if [ "$INSERTED_ISO" = "$ISO_VDI_UUID" ]; then
+        ISO_NAME=$(xe vdi-param-get uuid=$INSERTED_ISO param-name=name-label 2>/dev/null)
+        echo "Verified: $ISO_NAME is in CD drive"
+    fi
+else
+    echo "ERROR: Failed to insert ISO"
+    echo "Check if VDI UUID is correct and SR is accessible"
+    exit 1
+fi
+
+
+STEP 2: Verify Boot Order
+--------------------------
+echo ""
+echo "Verifying boot order..."
+BOOT_ORDER=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null | grep -o "order=[^;]*" | cut -d= -f2)
+echo "Boot order: $BOOT_ORDER"
+
+if [ "$BOOT_ORDER" != "dc" ]; then
+    echo "Setting boot order to CD first..."
+    xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+    xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+fi
+
+
+STEP 3: Start VM
+----------------
+echo ""
+echo "Starting Test-3 VM..."
+xe vm-start uuid=$VM_UUID
+
+# Wait for VM to start
+sleep 5
+
+# Get domain ID
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "VM started successfully"
+    echo "Domain ID: $DOMID"
+    echo ""
+    echo "VM is now booting from Ubuntu 22.04 ISO"
+    echo ""
+    echo "Verify VM is running:"
+    xl list | grep Test-3
+    echo ""
+    echo "VNC socket: /var/run/xen/vnc-$DOMID"
+    echo ""
+    echo "Next: Connect via VNC to see Ubuntu installer"
+else
+    echo "ERROR: VM failed to start"
+    echo "Check logs:"
+    tail -50 /var/log/xensource.log | grep -i error | tail -10
+    echo ""
+    echo "If you see 'qemu-dm timeout', check QEMU logs:"
+    echo "  tail -200 /var/log/xen/qemu-dm-*.log | tail -50"
+fi
+
+
+COMPLETE SCRIPT (All Steps)
+----------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+
+# Verify SR accessible
+if [ ! -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "ERROR: SMB SR not accessible"
+    exit 1
+fi
+
+# Insert ISO
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+CURRENT_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+if [ -n "$CURRENT_ISO" ]; then
+    xe vbd-eject uuid=$CD_VBD
+fi
+
+echo "Inserting ISO..."
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+echo "ISO inserted"
+
+# Verify boot order
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=dc
+
+# Start VM
+echo "Starting VM..."
+xe vm-start uuid=$VM_UUID
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "VM started - Domain ID: $DOMID"
+    xl list | grep Test-3
+else
+    echo "VM failed to start - check logs"
+fi
+
+
+AFTER VM STARTS
+---------------
+1. Connect via VNC to see Ubuntu installer
+   - VNC socket: /var/run/xen/vnc-$DOMID
+   - See VNC CONNECTION GUIDE in DELETE_AND_RECREATE_TEST3_TEST4.txt
+
+2. During Ubuntu installation:
+   - Network: Manual
+   - IP: 10.25.33.13/24
+   - Gateway: 10.25.33.1
+   - DNS: 8.8.8.8
+
+3. After installation, SSH into VM:
+   ssh david@10.25.33.13
+
+================================================================================

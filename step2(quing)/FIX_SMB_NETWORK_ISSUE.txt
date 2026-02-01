@@ -1,0 +1,342 @@
+================================================================================
+                    FIX SMB ISO LIBRARY NETWORK CONNECTION ISSUE
+================================================================================
+
+PROBLEM:
+--------
+SMB ISO library SR (097e2b8c-af1a-d945-1432-8c0e7d0163fa) is not accessible.
+Error: "SR is not available [opterr=no such directory /var/run/sr-mount/...]"
+
+This means the SMB network share cannot be mounted/accessed.
+
+
+STEP 1: Get SMB Server Configuration
+-------------------------------------
+# Get SMB server details from PBD configuration (not SR directly)
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+
+echo "=== SMB SR Basic Info ==="
+xe sr-list uuid=$SMB_SR_UUID params=uuid,name-label,type,content-type
+
+# Get PBD UUID for this SR
+PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+
+if [ -n "$PBD_UUID" ]; then
+    echo ""
+    echo "=== PBD Configuration (Contains SMB Details) ==="
+    xe pbd-list uuid=$PBD_UUID params=uuid,device-config,currently-attached
+    
+    # Try to get device-config as a parameter
+    echo ""
+    echo "=== Device Config Details ==="
+    xe pbd-param-get uuid=$PBD_UUID param-name=device-config 2>/dev/null || \
+        xe pbd-list uuid=$PBD_UUID params=device-config --minimal
+    
+    # This will show:
+    # - SMB server IP/hostname (in location field)
+    # - Share path (in location field, format: //server/share)
+    # - Username (if configured)
+    # - Password (if configured, may be hidden)
+    # - Domain (if configured)
+else
+    echo "ERROR: No PBD found for SMB SR"
+    echo "SR may need to be re-introduced"
+fi
+
+# Alternative: List all PBD params to see what's available
+echo ""
+echo "=== All PBD Parameters ==="
+xe pbd-list uuid=$PBD_UUID params=all
+
+
+STEP 2: Test Network Connectivity to SMB Server
+-------------------------------------------------
+# Extract SMB server IP from device-config (you'll need to do this manually)
+# Example output format: location=//192.168.1.100/share,username=user,password=pass
+
+# Test if SMB server is reachable
+# Replace <SMB_SERVER_IP> with actual IP from device-config above
+echo "Testing SMB server connectivity..."
+
+# Method 1: Ping test
+# SMB_SERVER_IP="<IP_FROM_DEVICE_CONFIG>"
+# ping -c 3 $SMB_SERVER_IP
+
+# Method 2: Check if SMB port (445) is open
+# nc -zv $SMB_SERVER_IP 445
+
+# Method 3: Try to list shares (if smbclient is installed)
+# smbclient -L //$SMB_SERVER_IP -U <username> -N
+
+
+STEP 3: Check SMB/CIFS Services on Dom0
+----------------------------------------
+# Check if SMB/CIFS mount tools are available
+which mount.cifs || echo "mount.cifs not found - may need to install cifs-utils"
+
+# Check if SMB services are running (if any)
+systemctl list-units | grep -i smb || echo "No SMB services found"
+
+# Check for SMB-related processes
+ps aux | grep -i smb | grep -v grep || echo "No SMB processes running"
+
+
+STEP 4: Check PBD Status
+-------------------------
+PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+
+if [ -n "$PBD_UUID" ]; then
+    echo "=== PBD Status ==="
+    xe pbd-list uuid=$PBD_UUID params=uuid,currently-attached,device-config
+    
+    PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+    echo "PBD Currently Attached: $PBD_ATTACHED"
+    
+    if [ "$PBD_ATTACHED" != "true" ]; then
+        echo "PBD is not attached - attempting to plug..."
+        xe pbd-plug uuid=$PBD_UUID
+        
+        sleep 3
+        PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+        echo "PBD Attached after plug: $PBD_ATTACHED"
+    fi
+else
+    echo "ERROR: No PBD found for SMB SR"
+    echo "SR may need to be re-introduced"
+fi
+
+
+STEP 5: Check Mount Point
+--------------------------
+# Check if mount point exists
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+MOUNT_POINT="/var/run/sr-mount/$SMB_SR_UUID"
+
+if [ -d "$MOUNT_POINT" ]; then
+    echo "Mount point exists: $MOUNT_POINT"
+    ls -la "$MOUNT_POINT" | head -10
+    echo ""
+    echo "Checking mount status:"
+    mount | grep "$MOUNT_POINT" || echo "Not mounted (directory exists but not mounted)"
+else
+    echo "Mount point does NOT exist: $MOUNT_POINT"
+    echo "SR is not mounted"
+fi
+
+
+STEP 6: Try Manual SMB Mount (Diagnostic)
+------------------------------------------
+# This helps diagnose the exact issue
+# Get SMB configuration from PBD:
+PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+DEVICE_CONFIG=$(xe pbd-param-get uuid=$PBD_UUID param-name=device-config 2>/dev/null || \
+                xe pbd-list uuid=$PBD_UUID params=device-config --minimal)
+echo "Device Config: $DEVICE_CONFIG"
+
+# Extract components (you'll need to parse this):
+# Format is usually: location=//server/share,username=user,password=pass,type=cifs
+
+# Try manual mount (requires cifs-utils):
+# mkdir -p /tmp/test-smb-mount
+# mount -t cifs //<SERVER>/<SHARE> /tmp/test-smb-mount -o username=<USER>,password=<PASS>
+# 
+# If this works, the issue is with XCP-ng SR mounting
+# If this fails, the issue is with SMB server/network
+
+
+STEP 7: Check XCP-ng SR Backend Logs
+-------------------------------------
+# Check for SR-related errors in logs
+echo "=== Recent SR Errors ==="
+tail -100 /var/log/xensource.log | grep -i "sr\|smb\|cifs\|097e2b8c" | tail -20
+
+# Check daemon log
+tail -100 /var/log/daemon.log | grep -i "sr\|smb\|cifs" | tail -20
+
+# Check system messages
+tail -100 /var/log/messages | grep -i "sr\|smb\|cifs" | tail -20 2>/dev/null || true
+
+
+STEP 8: Try SR Scan (May Help)
+-------------------------------
+# Sometimes scanning the SR can trigger a remount
+echo "Attempting to scan SR..."
+xe sr-scan uuid=$SMB_SR_UUID
+
+# Check if scan helped
+sleep 3
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "SR scan succeeded - SR is now accessible"
+else
+    echo "SR scan did not fix the issue"
+fi
+
+
+COMMON FIXES
+------------
+
+Fix 1: SMB Server is Down
+--------------------------
+# If SMB server is down or unreachable:
+# 1. Check SMB server status (from another machine or server console)
+# 2. Verify SMB server is running
+# 3. Check SMB server firewall rules
+# 4. Verify network connectivity from Dom0 to SMB server
+
+# Test from Dom0:
+# ping <SMB_SERVER_IP>
+# telnet <SMB_SERVER_IP> 445  # Test SMB port
+
+
+Fix 2: Network Connectivity Issue
+----------------------------------
+# Check Dom0 network configuration
+ip addr show
+ip route show
+
+# Test DNS resolution (if using hostname)
+# nslookup <SMB_SERVER_HOSTNAME>
+
+# Check if gateway is reachable
+# ping <GATEWAY_IP>
+
+# Check firewall on Dom0
+# iptables -L -n | grep 445
+
+
+Fix 3: SMB Credentials Issue
+-----------------------------
+# If credentials are wrong, you need to update PBD device-config
+# First, get current config:
+PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+xe pbd-param-get uuid=$PBD_UUID param-name=device-config
+
+# Update credentials (example - adjust values):
+# Note: You may need to unplug PBD first, update config, then replug
+# xe pbd-unplug uuid=$PBD_UUID
+# xe pbd-param-set uuid=$PBD_UUID device-config:location=//server/share
+# xe pbd-param-set uuid=$PBD_UUID device-config:username=newuser
+# xe pbd-param-set uuid=$PBD_UUID device-config:password=newpass
+# xe pbd-plug uuid=$PBD_UUID
+
+# Then try plugging PBD again:
+# PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+# xe pbd-unplug uuid=$PBD_UUID
+# xe pbd-plug uuid=$PBD_UUID
+
+
+Fix 4: SMB Share Path Changed
+-----------------------------
+# If share path changed on SMB server:
+# Update location in PBD device-config:
+# PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+# xe pbd-unplug uuid=$PBD_UUID
+# xe pbd-param-set uuid=$PBD_UUID device-config:location=//server/newshare
+
+# Then unplug and replug PBD:
+# PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+# xe pbd-unplug uuid=$PBD_UUID
+# xe pbd-plug uuid=$PBD_UUID
+
+
+Fix 5: XCP-ng SR Backend Issue
+------------------------------
+# If SR backend is having issues, try:
+# 1. Unplug PBD
+PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+xe pbd-unplug uuid=$PBD_UUID
+
+# 2. Wait a moment
+sleep 2
+
+# 3. Plug PBD again
+xe pbd-plug uuid=$PBD_UUID
+
+# 4. Scan SR
+xe sr-scan uuid=$SMB_SR_UUID
+
+# 5. Check if accessible
+sleep 3
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "SR is now accessible"
+else
+    echo "SR still not accessible - check network/server"
+fi
+
+
+DIAGNOSTIC SCRIPT (Run All Checks)
+----------------------------------
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+
+echo "=== SMB SR Network Diagnostic ==="
+echo ""
+
+# 1. Get configuration from PBD
+echo "1. PBD Configuration (contains SMB details):"
+PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+if [ -n "$PBD_UUID" ]; then
+    xe pbd-list uuid=$PBD_UUID params=device-config,currently-attached
+else
+    echo "ERROR: No PBD found"
+fi
+echo ""
+
+# 2. Check PBD status
+echo "2. PBD Status:"
+PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+if [ -n "$PBD_UUID" ]; then
+    xe pbd-list uuid=$PBD_UUID params=uuid,currently-attached,device-config
+    PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+    echo "PBD Attached: $PBD_ATTACHED"
+else
+    echo "ERROR: No PBD found"
+fi
+echo ""
+
+# 3. Check mount point
+echo "3. Mount Point Status:"
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "Mount point exists"
+    mount | grep "$SMB_SR_UUID" || echo "Not mounted"
+else
+    echo "Mount point does NOT exist"
+fi
+echo ""
+
+# 4. Check logs for errors
+echo "4. Recent Errors:"
+tail -50 /var/log/xensource.log | grep -i "sr.*$SMB_SR_UUID\|smb\|cifs" | tail -5 || echo "No recent errors found"
+echo ""
+
+# 5. Try to plug PBD
+echo "5. Attempting to plug PBD:"
+if [ -n "$PBD_UUID" ]; then
+    xe pbd-plug uuid=$PBD_UUID
+    sleep 3
+    if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+        echo "SUCCESS: SR is now accessible"
+    else
+        echo "FAILED: SR still not accessible"
+        echo ""
+        echo "Next steps:"
+        echo "1. Check SMB server is running and accessible"
+        echo "2. Verify network connectivity from Dom0 to SMB server"
+        echo "3. Check SMB credentials in device-config"
+        echo "4. Verify SMB share path is correct"
+    fi
+fi
+
+
+WORKAROUND: Use Alternative ISO Source
+---------------------------------------
+If SMB connection cannot be fixed immediately:
+
+1. Upload ISO to local storage SR (if you have ISO file)
+2. Use ISO from different SR (if accessible)
+3. Start VM without ISO and fix SMB later
+4. Use PXE boot if configured
+
+See: TEST3_DIAGNOSE_AND_FIX.txt for alternative options
+
+
+================================================================================

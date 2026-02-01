@@ -1,0 +1,314 @@
+================================================================================
+                    TEST SMB CONNECTION - Based on Your Configuration
+================================================================================
+
+YOUR SMB CONFIGURATION (From Terminal Output):
+----------------------------------------------
+SMB Server IP: 10.25.33.33
+Share Path: /test
+Full Location: //10.25.33.33/test
+Username: momi
+SMB Version: 3.0
+Type: cifs
+PBD UUID: b492084d-5db6-df96-58a8-173a0699ebce
+PBD Status: currently-attached = true ✓
+
+KEY FINDING:
+------------
+PBD is ATTACHED (true) but SR mount point does NOT exist.
+This means the PBD attachment succeeded but the actual CIFS mount failed.
+
+
+STEP 1: Test Network Connectivity to SMB Server
+-------------------------------------------------
+SMB_SERVER_IP="10.25.33.33"
+
+echo "=== Testing Network Connectivity ==="
+
+# Test 1: Ping SMB server
+echo "1. Testing ping to $SMB_SERVER_IP..."
+ping -c 3 $SMB_SERVER_IP
+
+if [ $? -eq 0 ]; then
+    echo "✓ Ping successful - server is reachable"
+else
+    echo "✗ Ping failed - server is NOT reachable"
+    echo "Check network connectivity and firewall"
+    exit 1
+fi
+
+# Test 2: Test SMB port (445)
+echo ""
+echo "2. Testing SMB port (445)..."
+if command -v nc >/dev/null 2>&1; then
+    nc -zv $SMB_SERVER_IP 445
+    if [ $? -eq 0 ]; then
+        echo "✓ SMB port is open"
+    else
+        echo "✗ SMB port is closed or blocked"
+        echo "Check firewall on server or network"
+    fi
+else
+    echo "nc (netcat) not installed - skipping port test"
+    echo "Install with: yum install -y nc"
+fi
+
+# Test 3: Test SMB connection (if smbclient available)
+echo ""
+echo "3. Testing SMB connection..."
+if command -v smbclient >/dev/null 2>&1; then
+    # Try to list shares (will prompt for password)
+    echo "Attempting to connect to SMB server..."
+    smbclient -L //$SMB_SERVER_IP -U momi -N 2>&1 | head -20
+else
+    echo "smbclient not installed - skipping SMB test"
+    echo "Install with: yum install -y samba-client"
+fi
+
+
+STEP 2: Check Why Mount Failed (Even Though PBD is Attached)
+-------------------------------------------------------------
+# PBD is attached but mount point doesn't exist - check logs
+echo ""
+echo "=== Checking Mount Errors ==="
+
+# Check recent SR mount errors
+tail -100 /var/log/xensource.log | grep -i "sr.*097e2b8c\|mount.*cifs\|smb.*error" | tail -20
+
+# Check daemon log for mount errors
+tail -100 /var/log/daemon.log | grep -i "mount.*cifs\|smb\|097e2b8c" | tail -20
+
+# Check system messages
+tail -100 /var/log/messages | grep -i "mount.*cifs\|smb\|097e2b8c" 2>/dev/null | tail -20 || true
+
+# Check if cifs-utils is installed (required for CIFS mounts)
+echo ""
+echo "=== Checking CIFS Tools ==="
+if command -v mount.cifs >/dev/null 2>&1; then
+    echo "✓ mount.cifs is available"
+    which mount.cifs
+else
+    echo "✗ mount.cifs NOT found"
+    echo "Install with: yum install -y cifs-utils"
+    echo "This is required for CIFS/SMB mounts"
+fi
+
+
+STEP 3: Try Manual CIFS Mount (Diagnostic)
+-------------------------------------------
+# This helps identify the exact mount issue
+SMB_SERVER_IP="10.25.33.33"
+SMB_SHARE="/test"
+SMB_USER="momi"
+TEST_MOUNT="/tmp/test-smb-mount"
+
+echo ""
+echo "=== Attempting Manual CIFS Mount ==="
+echo "This will help diagnose the mount issue"
+
+# Create test mount point
+mkdir -p $TEST_MOUNT
+
+# Try manual mount (will prompt for password)
+echo "Attempting to mount //$SMB_SERVER_IP$SMB_SHARE to $TEST_MOUNT"
+echo "You will be prompted for password for user: $SMB_USER"
+echo ""
+echo "Command: mount -t cifs //$SMB_SERVER_IP$SMB_SHARE $TEST_MOUNT -o username=$SMB_USER,vers=3.0"
+
+# Uncomment to try (requires password):
+# mount -t cifs //$SMB_SERVER_IP$SMB_SHARE $TEST_MOUNT -o username=$SMB_USER,vers=3.0
+
+# If manual mount works:
+# - The issue is with XCP-ng SR backend
+# - SR may need to be re-scanned or re-introduced
+
+# If manual mount fails:
+# - Check password is correct
+# - Check SMB server permissions
+# - Check SMB server allows CIFS connections
+# - Check firewall rules
+
+
+STEP 4: Try Unplug/Replug PBD
+-------------------------------
+# Sometimes unplugging and replugging helps
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+PBD_UUID="b492084d-5db6-df96-58a8-173a0699ebce"
+
+echo ""
+echo "=== Unplugging and Replugging PBD ==="
+
+# Unplug PBD
+echo "Unplugging PBD..."
+xe pbd-unplug uuid=$PBD_UUID
+sleep 2
+
+# Check status
+PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+echo "PBD Attached after unplug: $PBD_ATTACHED"
+
+# Replug PBD
+echo "Replugging PBD..."
+xe pbd-plug uuid=$PBD_UUID
+sleep 5
+
+# Check if mount point exists now
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "✓ SUCCESS: SR mount point now exists!"
+    ls -la /var/run/sr-mount/$SMB_SR_UUID | head -10
+else
+    echo "✗ Mount point still does not exist"
+    echo "Check logs for mount errors (see Step 2)"
+fi
+
+
+STEP 5: Try SR Scan
+-------------------
+# Sometimes scanning the SR triggers a remount
+echo ""
+echo "=== Scanning SR ==="
+xe sr-scan uuid=$SMB_SR_UUID
+
+sleep 3
+
+# Check if mount point exists
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "✓ SR scan succeeded - mount point exists"
+else
+    echo "✗ SR scan did not create mount point"
+fi
+
+
+STEP 6: Check Password Secret
+------------------------------
+# The password is stored as a secret reference
+PASSWORD_SECRET="75fad6b5-f030-d5ff-acd5-f157688cb654"
+
+echo ""
+echo "=== Checking Password Secret ==="
+echo "Password secret UUID: $PASSWORD_SECRET"
+
+# Check if secret exists (may not be directly accessible)
+# The password might have expired or been changed on SMB server
+# If password changed, you need to update it in XCP-ng
+
+
+COMPLETE DIAGNOSTIC SCRIPT
+---------------------------
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+PBD_UUID="b492084d-5db6-df96-58a8-173a0699ebce"
+SMB_SERVER_IP="10.25.33.33"
+SMB_SHARE="/test"
+SMB_USER="momi"
+
+echo "=== Complete SMB Connection Diagnostic ==="
+echo ""
+
+# 1. Network connectivity
+echo "1. Testing network connectivity..."
+ping -c 2 $SMB_SERVER_IP >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "   ✓ Server is reachable"
+else
+    echo "   ✗ Server is NOT reachable"
+    echo "   Fix: Check network connectivity and firewall"
+    exit 1
+fi
+
+# 2. SMB port
+echo ""
+echo "2. Testing SMB port..."
+if command -v nc >/dev/null 2>&1; then
+    nc -zv $SMB_SERVER_IP 445 >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo "   ✓ SMB port is open"
+    else
+        echo "   ✗ SMB port is closed"
+    fi
+fi
+
+# 3. PBD status
+echo ""
+echo "3. PBD Status:"
+PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+echo "   PBD Attached: $PBD_ATTACHED"
+
+# 4. Mount point
+echo ""
+echo "4. Mount Point Status:"
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "   ✓ Mount point exists"
+    mount | grep "$SMB_SR_UUID" || echo "   (Not mounted)"
+else
+    echo "   ✗ Mount point does NOT exist"
+fi
+
+# 5. CIFS tools
+echo ""
+echo "5. CIFS Tools:"
+if command -v mount.cifs >/dev/null 2>&1; then
+    echo "   ✓ mount.cifs available"
+else
+    echo "   ✗ mount.cifs NOT found"
+    echo "   Install: yum install -y cifs-utils"
+fi
+
+# 6. Try unplug/replug
+echo ""
+echo "6. Attempting unplug/replug..."
+if [ "$PBD_ATTACHED" = "true" ]; then
+    xe pbd-unplug uuid=$PBD_UUID
+    sleep 2
+fi
+xe pbd-plug uuid=$PBD_UUID
+sleep 5
+
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "   ✓ SUCCESS: SR is now accessible!"
+    echo ""
+    echo "You can now insert ISO into Test-3"
+else
+    echo "   ✗ Still not accessible"
+    echo ""
+    echo "Next steps:"
+    echo "1. Check SMB server is running and share is accessible"
+    echo "2. Verify password for user 'momi' is correct"
+    echo "3. Check SMB server allows connections from Dom0 (10.25.33.10)"
+    echo "4. Check firewall rules on SMB server"
+    echo "5. Try manual mount to see exact error"
+fi
+
+
+MOST LIKELY ISSUES
+------------------
+Based on your configuration (PBD attached but not mounted):
+
+1. **Password Issue** (Most Common)
+   - Password for user 'momi' may have changed
+   - Password secret in XCP-ng may be outdated
+   - Solution: Update password in XCP-ng or verify on SMB server
+
+2. **SMB Server Permissions**
+   - User 'momi' may not have access to /test share
+   - Share may have been moved or renamed
+   - Solution: Verify on SMB server
+
+3. **Network/Firewall**
+   - SMB server may be blocking connections from Dom0
+   - Firewall may be blocking port 445
+   - Solution: Check firewall rules on SMB server
+
+4. **CIFS Mount Tools Missing**
+   - mount.cifs may not be installed
+   - Solution: yum install -y cifs-utils
+
+5. **SMB Version Mismatch**
+   - Server may not support SMB 3.0
+   - Solution: Try different SMB version in config
+
+
+IMMEDIATE ACTION
+----------------
+Run the complete diagnostic script above to identify the exact issue.
+
+================================================================================

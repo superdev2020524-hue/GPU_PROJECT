@@ -141,10 +141,10 @@ STEP 4: Verify Detachment
 --------------------------
 # Check all VMs again - should show no vgpu-stub devices
 xe vm-list is-control-domain=false params=uuid,name-label | while read uuid name; do
-    if [ -n "$uuid" ]; then
+    if [ -n "$uuid" ] && [ -n "$name" ]; then
         args=$(xe vm-param-get uuid=$uuid param-name=platform param-key=device-model-args 2>/dev/null)
         if [ -n "$args" ] && echo "$args" | grep -q "vgpu-stub"; then
-            echo "⚠️  WARNING: VM $name still has vgpu-stub device!"
+            echo "WARNING: VM $name still has vgpu-stub device"
         fi
     fi
 done

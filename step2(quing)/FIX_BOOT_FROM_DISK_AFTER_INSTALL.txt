@@ -1,0 +1,284 @@
+================================================================================
+        FIX: VM KEEPS BOOTING FROM CD AFTER INSTALLATION
+================================================================================
+
+PROBLEM:
+--------
+- Installation completed successfully
+- But VM keeps showing installer window on reboot
+- Boot order is still set to "dc" (CD first, then disk)
+- ISO is still inserted in CD drive
+- Need to boot from disk instead
+
+SOLUTION:
+---------
+After installation completes, you need to:
+1. Eject the ISO from CD drive
+2. Change boot order from "dc" to "c" (disk only)
+3. Reboot the VM
+
+This will make the VM boot from the installed disk instead of the CD.
+
+
+STEP 1: Check Current VM State
+-------------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+
+# Check VM power state
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+echo "VM Power State: $POWER_STATE"
+
+# Check current boot order
+BOOT_ORDER=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null | grep -o "order=[^;]*" | cut -d= -f2)
+echo "Current Boot Order: $BOOT_ORDER"
+
+# Check if CD drive has ISO
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+if [ -n "$CD_VBD" ]; then
+    CD_EMPTY=$(xe vbd-param-get uuid=$CD_VBD param-name=empty 2>/dev/null)
+    CD_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    echo "CD Drive UUID: $CD_VBD"
+    echo "CD Empty: $CD_EMPTY"
+    if [ -n "$CD_ISO" ]; then
+        ISO_NAME=$(xe vdi-param-get uuid=$CD_ISO param-name=name-label 2>/dev/null)
+        echo "CD has ISO: $ISO_NAME"
+    fi
+fi
+
+
+STEP 2: Shutdown VM (If Running)
+----------------------------------
+# If VM is running, shut it down first
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID
+    
+    # Wait for shutdown
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; do
+        sleep 2
+        echo "Waiting for shutdown..."
+    done
+    echo "VM is now halted"
+fi
+
+
+STEP 3: Eject ISO from CD Drive
+---------------------------------
+# Get CD VBD UUID
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+
+if [ -z "$CD_VBD" ]; then
+    echo "No CD drive found - skipping eject"
+else
+    # Check if ISO is inserted
+    CD_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    
+    if [ -n "$CD_ISO" ]; then
+        echo "Ejecting ISO from CD drive..."
+        xe vbd-eject uuid=$CD_VBD
+        
+        # Verify ISO is ejected
+        CD_EMPTY=$(xe vbd-param-get uuid=$CD_VBD param-name=empty 2>/dev/null)
+        if [ "$CD_EMPTY" = "true" ]; then
+            echo "✓ ISO ejected successfully"
+        else
+            echo "⚠️  Warning: CD may still have ISO"
+        fi
+    else
+        echo "CD drive is already empty"
+    fi
+fi
+
+
+STEP 4: Change Boot Order to Disk Only
+---------------------------------------
+# Change boot order from "dc" (CD first) to "c" (disk only)
+echo "Changing boot order from 'dc' to 'c' (disk only)..."
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=c
+
+# Verify boot order
+NEW_BOOT_ORDER=$(xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params 2>/dev/null | grep -o "order=[^;]*" | cut -d= -f2)
+echo "New Boot Order: $NEW_BOOT_ORDER (should be 'c')"
+
+
+STEP 5: Start/Reboot VM
+------------------------
+echo "Starting VM to boot from disk..."
+xe vm-start uuid=$VM_UUID
+
+# Wait for VM to start
+sleep 5
+
+# Get domain ID
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "✓ VM started - Domain ID: $DOMID"
+    echo "VM should now boot from disk (not CD)"
+    
+    # Check VM status
+    xl list | grep Test-3
+else
+    echo "ERROR: VM failed to start"
+    echo "Check logs: tail -50 /var/log/xensource.log | grep -i error"
+fi
+
+
+STEP 6: Find VM IP Address (If DHCP Was Used)
+----------------------------------------------
+Since you mentioned there was no IP configuration during installation, 
+Ubuntu likely used DHCP to get an IP automatically.
+
+# Method 1: Check from Dom0 (if VM is running)
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "Checking VM network configuration..."
+    
+    # Get MAC address
+    VIF_UUID=$(xe vif-list vm-uuid=$VM_UUID params=uuid --minimal | head -1)
+    MAC=$(xe vif-param-get uuid=$VIF_UUID param-name=MAC 2>/dev/null)
+    echo "VM MAC Address: $MAC"
+    
+    # Check ARP table for this MAC
+    echo "Checking ARP table for VM IP..."
+    arp -a | grep -i "$MAC" || echo "VM IP not found in ARP table yet"
+    
+    # Check DHCP leases (if available)
+    if [ -f /var/lib/dhcpd/dhcpd.leases ]; then
+        echo "Checking DHCP leases..."
+        grep -i "$MAC" /var/lib/dhcpd/dhcpd.leases | tail -5
+    fi
+fi
+
+# Method 2: Check from VM console (via VNC)
+# Connect via VNC and run: ip addr show
+
+# Method 3: Scan network range (from your desktop)
+# nmap -sn 10.25.33.0/24 | grep -A 2 "Nmap scan report"
+
+
+STEP 7: Connect to VM (After It Boots)
+----------------------------------------
+Once VM boots from disk, you can access it via:
+
+# Option 1: SSH (if you know the IP)
+# ssh david@<VM_IP>
+
+# Option 2: VNC (to see console and find IP)
+# Follow VNC connection steps from previous guides
+# Then in VM console, run: ip addr show
+
+# Option 3: Check if VM responds to ping
+# ping <VM_IP>
+
+
+COMPLETE SCRIPT (All Steps Combined)
+--------------------------------------
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+
+# Step 1: Shutdown if running
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; do
+        sleep 2
+    done
+fi
+
+# Step 2: Eject ISO
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+if [ -n "$CD_VBD" ]; then
+    CD_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    if [ -n "$CD_ISO" ]; then
+        echo "Ejecting ISO..."
+        xe vbd-eject uuid=$CD_VBD
+        echo "ISO ejected"
+    fi
+fi
+
+# Step 3: Change boot order
+echo "Changing boot order to disk only..."
+xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
+xe vm-param-set uuid=$VM_UUID HVM-boot-params:order=c
+
+# Step 4: Start VM
+echo "Starting VM..."
+xe vm-start uuid=$VM_UUID
+sleep 5
+
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "VM started - Domain ID: $DOMID"
+    echo "VM should now boot from disk"
+    
+    # Get MAC to help find IP
+    VIF_UUID=$(xe vif-list vm-uuid=$VM_UUID params=uuid --minimal | head -1)
+    MAC=$(xe vif-param-get uuid=$VIF_UUID param-name=MAC 2>/dev/null)
+    echo "VM MAC: $MAC"
+    echo "Check ARP or DHCP leases to find IP address"
+else
+    echo "VM failed to start"
+fi
+
+
+FINDING VM IP ADDRESS:
+----------------------
+Since Ubuntu used DHCP, the IP was assigned automatically. To find it:
+
+1. **From Dom0 - Check ARP table:**
+   # Get VM MAC address
+   VIF_UUID=$(xe vif-list vm-uuid=c1b31989-fa51-c29a-3720-6e5ba7970275 params=uuid --minimal | head -1)
+   MAC=$(xe vif-param-get uuid=$VIF_UUID param-name=MAC)
+   
+   # Check ARP
+   arp -a | grep -i "$MAC"
+
+2. **From Dom0 - Check DHCP leases:**
+   grep -i "$MAC" /var/lib/dhcpd/dhcpd.leases | tail -5
+
+3. **From your desktop - Scan network:**
+   nmap -sn 10.25.33.0/24
+
+4. **Via VNC - Check in VM console:**
+   # Connect via VNC, then in VM run:
+   ip addr show
+   # or
+   hostname -I
+
+5. **Check XCP-ng logs:**
+   # Look for DHCP assignments
+   grep -i "dhcp" /var/log/xensource.log | tail -20
+
+
+AFTER VM BOOTS FROM DISK:
+--------------------------
+1. VM should show Ubuntu login screen (not installer)
+2. Login with the username/password you set during installation
+3. Check IP address: ip addr show
+4. SSH from your desktop: ssh david@<VM_IP>
+
+
+TROUBLESHOOTING:
+----------------
+If VM still shows installer:
+
+1. Verify boot order:
+   xe vm-param-get uuid=$VM_UUID param-name=HVM-boot-params
+   # Should show: order=c (not order=dc)
+
+2. Verify ISO is ejected:
+   CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+   xe vbd-param-get uuid=$CD_VBD param-name=empty
+   # Should show: true
+
+3. Check if disk has OS installed:
+   # This is harder to verify, but if installation completed, disk should have OS
+
+4. Try manual boot selection:
+   # Connect via VNC during boot
+   # Press F12 or ESC to enter boot menu
+   # Select disk manually
+
+
+================================================================================

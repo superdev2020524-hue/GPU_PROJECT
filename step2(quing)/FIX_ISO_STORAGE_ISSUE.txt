@@ -1,0 +1,213 @@
+================================================================================
+                    FIX: ISO Storage Substrate Error
+                    "VDI could not be found on the storage substrate"
+================================================================================
+
+Error Message:
+--------------
+This operation cannot be performed because the specified VDI could not be found
+on the storage substrate
+sr: 097e2b8c-af1a-d945-1432-8c0e7d0163fa (SMB ISO library)
+vdi: 049254cd-4a70-484f-a543-cd4c29bba023 (ubuntu-22.04.5-desktop-amd64.iso)
+
+What This Means:
+----------------
+The ISO VDI exists in the XAPI database, but XCP-ng cannot access it on the
+actual storage (SMB ISO library). This usually means:
+1. SMB share is not mounted or network connection lost
+2. Storage repository is not accessible
+3. ISO file was moved or deleted from the SMB share
+
+Current Situation:
+------------------
+- VM UUID: c2c6a98e-a76b-ebe6-f8ab-939457f73f38
+- ISO VDI UUID: 049254cd-4a70-484f-a543-cd4c29bba023
+- ISO SR UUID: 097e2b8c-af1a-d945-1432-8c0e7d0163fa (SMB ISO library)
+- CD VBD: 18da73cf-9e09-4e86-6b0b-737886bafcf8
+
+================================================================================
+                    SOLUTION OPTIONS
+================================================================================
+
+OPTION 1: Check and Fix SMB Storage Repository
+-----------------------------------------------
+Step 1: Check SR status
+-----------------------
+xe sr-list uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid,name-label,type,content-type
+
+Expected: Should show SR is available
+
+Step 2: Check if SR is mounted
+------------------------------
+xe sr-list uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=name-label,type
+
+If SR shows as unavailable:
+- Check SMB share is accessible from Dom0
+- Verify network connectivity to SMB server
+- Check SMB credentials are correct
+
+Step 3: Try to scan SR
+----------------------
+xe sr-scan uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+This will refresh the SR and may make the ISO accessible again.
+
+Step 4: Verify ISO is accessible
+---------------------------------
+xe vdi-list uuid=049254cd-4a70-484f-a543-cd4c29bba023 params=name-label,sr-uuid
+
+If this fails, the VDI is not accessible.
+
+Step 5: Try starting VM again
+------------------------------
+xe vm-start uuid=c2c6a98e-a76b-ebe6-f8ab-939457f73f38
+
+
+OPTION 2: Use ISO from Different SR (Recommended if SMB is unreliable)
+-----------------------------------------------------------------------
+Step 1: Find ISO in a different SR
+-----------------------------------
+# List all ISO SRs
+xe sr-list content-type=iso params=uuid,name-label,type
+
+# Check if there's a local ISO SR or different network SR
+# Look for SRs that are not SMB (e.g., local, NFS)
+
+Step 2: Find Ubuntu ISO in different SR
+---------------------------------------
+# Use the ISO search method from Step 12
+# But specify a different SR UUID
+
+ISO_SR_UUID="<different-sr-uuid>"  # Use local or NFS SR instead of SMB
+
+# Search for Ubuntu ISO in this SR
+ALL_VDIS=$(xe vdi-list sr-uuid=$ISO_SR_UUID params=uuid --minimal)
+for VDI_UUID in $(echo "$ALL_VDIS" | tr ',' ' '); do
+    VDI_UUID=$(echo "$VDI_UUID" | xargs)
+    VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+    if echo "$VDI_NAME" | grep -qi "ubuntu.*22.04"; then
+        echo "Found: $VDI_NAME (UUID: $VDI_UUID)"
+        NEW_ISO_VDI_UUID="$VDI_UUID"
+        break
+    fi
+done
+
+Step 3: Eject old ISO and insert new one
+-----------------------------------------
+VM_UUID="c2c6a98e-a76b-ebe6-f8ab-939457f73f38"
+CD_VBD="18da73cf-9e09-4e86-6b0b-737886bafcf8"
+
+# Eject current ISO
+xe vbd-eject uuid=$CD_VBD
+
+# Insert ISO from different SR
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$NEW_ISO_VDI_UUID
+
+Step 4: Start VM
+-----------------
+xe vm-start uuid=$VM_UUID
+
+
+OPTION 3: Copy ISO to Local Storage (If Available)
+---------------------------------------------------
+If you have a local storage SR, you can:
+
+Step 1: Find local storage SR
+------------------------------
+LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
+echo "Local SR: $LOCAL_SR_UUID"
+
+Step 2: Upload ISO to local SR (if possible)
+---------------------------------------------
+# This requires the ISO file to be accessible on Dom0
+# Then use xe vdi-create or xe-import
+
+Note: This may not be practical if ISO is large and network is slow.
+
+
+OPTION 4: Remove CD Drive and Start Without ISO (Install Later)
+------------------------------------------------------------------
+If you just need to start the VM without installing OS immediately:
+
+Step 1: Remove CD drive
+-----------------------
+VM_UUID="c2c6a98e-a76b-ebe6-f8ab-939457f73f38"
+CD_VBD="18da73cf-9e09-4e86-6b0b-737886bafcf8"
+
+xe vbd-unplug uuid=$CD_VBD
+# Or remove it entirely:
+# xe vbd-destroy uuid=$CD_VBD
+
+Step 2: Start VM
+----------------
+xe vm-start uuid=$VM_UUID
+
+Note: VM will boot but won't have installation media.
+You'll need to add ISO later for OS installation.
+
+
+================================================================================
+                    QUICK DIAGNOSTIC COMMANDS
+================================================================================
+
+Run these to diagnose the issue:
+
+# 1. Check SR status
+xe sr-list uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid,name-label,type
+
+# 2. Check if VDI exists
+xe vdi-list uuid=049254cd-4a70-484f-a543-cd4c29bba023 params=name-label,sr-uuid
+
+# 3. List all ISO SRs
+xe sr-list content-type=iso params=uuid,name-label,type
+
+# 4. Check VM configuration
+xe vm-list uuid=c2c6a98e-a76b-ebe6-f8ab-939457f73f38 params=name-label,power-state
+
+# 5. Check CD drive status
+xe vbd-list vm-uuid=c2c6a98e-a76b-ebe6-f8ab-939457f73f38 type=CD params=uuid,vdi-uuid,userdevice
+
+# 6. Check for errors in logs
+tail -50 /var/log/daemon.log | grep -i "error\|vdi\|storage\|substrate"
+
+
+================================================================================
+                    RECOMMENDED ACTION
+================================================================================
+
+Based on the error, the SMB ISO library is not accessible. Recommended steps:
+
+1. First, try to scan the SR:
+   xe sr-scan uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+2. If that doesn't work, check SMB connectivity:
+   # Test if SMB share is accessible (if you know the server)
+   # Or check network connectivity
+
+3. If SMB is unreliable, use Option 2: Find ISO in a different SR
+   - Check if there are other ISO SRs available
+   - Use local storage or NFS-based ISO SR if available
+   - This is more reliable for VM operations
+
+4. Once ISO is accessible, try starting VM again:
+   xe vm-start uuid=c2c6a98e-a76b-ebe6-f8ab-939457f73f38
+
+
+================================================================================
+                    PREVENTION FOR FUTURE
+================================================================================
+
+To avoid this issue in the future:
+
+1. Use local storage SR for ISOs when possible (more reliable)
+2. If using network storage (SMB/NFS), ensure:
+   - Network connectivity is stable
+   - Storage server is always accessible
+   - Credentials are correct and don't expire
+3. Verify ISO accessibility before starting VM:
+   xe vdi-list uuid=<ISO_VDI_UUID> params=name-label,sr-uuid
+4. Consider copying frequently-used ISOs to local storage
+
+================================================================================
+                            END OF TROUBLESHOOTING GUIDE
+================================================================================

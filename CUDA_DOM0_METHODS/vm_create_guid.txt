@@ -80,6 +80,7 @@ If you do not add a disk, the VM cannot install anything.
 
 1) Create a 40GiB disk on Local storage:
    LOCAL_SR_UUID=<PUT_YOUR_LOCAL_STORAGE_SR_UUID_HERE>
+   LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
    DISK_VDI=$(xe vdi-create sr-uuid=$LOCAL_SR_UUID name-label="ubuntu-fresh-disk0" virtual-size=40GiB type=user)
    echo "DISK_VDI=$DISK_VDI"
 
@@ -100,6 +101,7 @@ SECTION E — Add a NETWORK interface (Dom0)  [REQUIRED for SSH later]
 
 2) Create VIF on device 0:
    NET_UUID=<PUT_YOUR_NETWORK_UUID_HERE>
+   NET_UUID=$(xe network-list bridge=xenbr0 params=uuid --minimal | head -1)
    VIF_UUID=$(xe vif-create vm-uuid=$VM_UUID network-uuid=$NET_UUID device=0)
    echo "VIF_UUID=$VIF_UUID"
 

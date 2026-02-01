@@ -1,0 +1,342 @@
+================================================================================
+                    TEST-3 DIAGNOSTIC & FIX - Current Situation
+================================================================================
+
+TERMINAL OUTPUT ANALYSIS
+-------------------------
+DIAGNOSTIC RESULTS (Lines 1-34):
+  Line 6: CD VBD exists: a6c8627a-6e4e-8a25-a822-a66f90345fe7 ✓
+  Line 10: ISO VBD UUID: <not in database> ✗
+    → CD drive is EMPTY - no ISO inserted
+  Line 17: ISO SR UUID: (empty) ✗
+    → Confirms no ISO in CD drive
+  Lines 18-33: No accessible ISO SRs found ✗
+    → All ISO storage repositories are not mounted/accessible
+
+CURRENT SITUATION:
+  - Test-3 VM exists and is configured ✓
+  - CD drive exists but is EMPTY ✗
+  - No accessible ISO storage repositories ✗
+  - Cannot insert ISO because all SRs are inaccessible ✗
+
+This means:
+  1. The ISO that was previously inserted is no longer in the CD drive
+  2. All ISO SRs (including SMB ISO library) are not accessible
+  3. You need to either:
+     a) Fix SMB connection to access the ISO library
+     b) Upload ISO to local storage SR
+     c) Start VM without ISO (for now)
+
+
+STEP 1: Full Diagnostic - Check Everything
+-------------------------------------------
+VM_UUID="a30bbe3a-467c-695d-e0ab-ac92146a2269"
+
+# Check CD VBD exists
+echo "=== CD Drive Status ==="
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+echo "CD VBD UUID: $CD_VBD"
+
+if [ -z "$CD_VBD" ]; then
+    echo "ERROR: No CD drive found - need to create one"
+    exit 1
+fi
+
+# Check if ISO is inserted (get VDI UUID)
+ISO_VDI=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+echo "ISO VDI UUID: $ISO_VDI"
+
+if [ -z "$ISO_VDI" ]; then
+    echo "CD drive is EMPTY - ISO needs to be inserted"
+else
+    echo "ISO VDI UUID found: $ISO_VDI"
+    
+    # Try to get ISO name (may fail if SR not accessible)
+    ISO_NAME=$(xe vdi-param-get uuid=$ISO_VDI param-name=name-label 2>/dev/null)
+    if [ -z "$ISO_NAME" ]; then
+        echo "WARNING: Cannot read ISO name - SR may not be accessible"
+        echo "ISO UUID: $ISO_VDI"
+    else
+        echo "ISO Name: $ISO_NAME"
+    fi
+    
+    # Check which SR this ISO is in
+    ISO_SR_UUID=$(xe vdi-param-get uuid=$ISO_VDI param-name=sr-uuid 2>/dev/null)
+    if [ -n "$ISO_SR_UUID" ]; then
+        SR_NAME=$(xe sr-param-get uuid=$ISO_SR_UUID param-name=name-label 2>/dev/null)
+        echo "ISO SR: $SR_NAME (UUID: $ISO_SR_UUID)"
+        
+        # Check if SR is mounted
+        if [ -d "/var/run/sr-mount/$ISO_SR_UUID" ]; then
+            echo "✓ SR is mounted"
+        else
+            echo "✗ SR is NOT mounted"
+        fi
+    fi
+fi
+
+# Check PBD status
+echo ""
+echo "=== PBD Status ==="
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+echo "PBD UUID: $PBD_UUID"
+
+if [ -n "$PBD_UUID" ]; then
+    PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+    echo "PBD Attached: $PBD_ATTACHED"
+    
+    if [ "$PBD_ATTACHED" != "true" ]; then
+        echo "Attempting to plug PBD..."
+        xe pbd-plug uuid=$PBD_UUID
+        sleep 3
+        PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+        echo "PBD Attached after plug: $PBD_ATTACHED"
+    fi
+fi
+
+# Check SR mount
+echo ""
+echo "=== SR Mount Status ==="
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "✓ SR mount point exists"
+    ls -la /var/run/sr-mount/$SMB_SR_UUID | head -5
+else
+    echo "✗ SR mount point does NOT exist"
+fi
+
+
+STEP 2: Decision Point - Choose Your Path
+------------------------------------------
+Based on diagnostic results above, choose one:
+
+
+OPTION A: Re-insert ISO (If ISO UUID is known)
+-----------------------------------------------
+# If diagnostic shows ISO_VDI UUID but SR not accessible:
+# 1. First, try to make SR accessible (see troubleshooting below)
+# 2. Then re-insert ISO:
+
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+
+# If CD drive is empty, insert ISO:
+if [ -z "$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)" ]; then
+    # Use the known ISO UUID from earlier:
+    ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+    echo "Inserting ISO: $ISO_VDI_UUID"
+    xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+fi
+
+
+OPTION B: Find Alternative ISO from Accessible SR
+--------------------------------------------------
+# Check all ISO SRs for accessible ones:
+echo "=== Checking All ISO SRs ==="
+for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' ' '); do
+    SR_UUID=$(echo "$SR_UUID" | xargs)
+    SR_NAME=$(xe sr-param-get uuid=$SR_UUID param-name=name-label 2>/dev/null)
+    
+    if [ -d "/var/run/sr-mount/$SR_UUID" ]; then
+        echo ""
+        echo "✓ ACCESSIBLE: $SR_NAME (UUID: $SR_UUID)"
+        echo "  Available ISOs:"
+        
+        for VDI_UUID in $(xe vdi-list sr-uuid=$SR_UUID params=uuid --minimal | tr ',' ' '); do
+            VDI_UUID=$(echo "$VDI_UUID" | xargs)
+            VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+            if [ -n "$VDI_NAME" ]; then
+                echo "    - $VDI_NAME"
+                echo "      UUID: $VDI_UUID"
+                
+                # Check if it's Ubuntu
+                if echo "$VDI_NAME" | grep -qi "ubuntu"; then
+                    echo "      *** UBUNTU ISO - Can use this! ***"
+                fi
+            fi
+        done
+    else
+        echo "✗ Not accessible: $SR_NAME"
+    fi
+done
+
+# If you find an accessible Ubuntu ISO, use it:
+# CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+# xe vbd-eject uuid=$CD_VBD  # Eject current (if any)
+# xe vbd-insert uuid=$CD_VBD vdi-uuid=<NEW_ISO_VDI_UUID>
+# xe vm-start uuid=$VM_UUID
+
+
+OPTION C: Start VM Without ISO (For Now)
+-----------------------------------------
+# If you just want to get the VM running:
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+
+# Eject any ISO (if present)
+ISO_VDI=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+if [ -n "$ISO_VDI" ]; then
+    echo "Ejecting ISO..."
+    xe vbd-eject uuid=$CD_VBD
+fi
+
+# Start VM (will boot from empty disk)
+echo "Starting VM without ISO..."
+xe vm-start uuid=$VM_UUID
+
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "✓ VM started! Domain ID: $DOMID"
+    echo ""
+    echo "Note: VM booted from empty disk"
+    echo "You can add ISO later when SR is accessible"
+else
+    echo "✗ VM failed to start"
+    echo "Check logs: tail -50 /var/log/xensource.log | grep -i error"
+fi
+
+
+TROUBLESHOOTING SMB CONNECTION (If you want to fix it)
+-------------------------------------------------------
+# Check SMB server configuration:
+echo "=== SMB SR Configuration ==="
+xe sr-param-get uuid=$SMB_SR_UUID param-name=device-config
+
+# Check PBD device-config:
+if [ -n "$PBD_UUID" ]; then
+    echo ""
+    echo "=== PBD Configuration ==="
+    xe pbd-param-get uuid=$PBD_UUID param-name=device-config
+fi
+
+# Try scanning SR (may help):
+echo ""
+echo "Attempting to scan SR..."
+xe sr-scan uuid=$SMB_SR_UUID
+
+# Check if scan helped:
+sleep 2
+if [ -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "✓ SR is now accessible after scan!"
+else
+    echo "✗ SR still not accessible"
+    echo ""
+    echo "Possible issues:"
+    echo "1. SMB server is down or unreachable"
+    echo "2. Network connectivity issue"
+    echo "3. SMB credentials are incorrect"
+    echo "4. SMB share path is wrong"
+    echo ""
+    echo "Recommendation: Use OPTION B (find alternative ISO) or OPTION C (start without ISO)"
+fi
+
+
+RECOMMENDED IMMEDIATE ACTION (Based on Diagnostic Results)
+----------------------------------------------------------
+SITUATION: CD drive is empty, no accessible ISO SRs found
+
+You have 3 options:
+
+
+OPTION 1: Fix SMB Connection and Insert ISO (If SMB Server is Available)
+-------------------------------------------------------------------------
+# Step 1: Check SMB server connectivity
+# (You'll need SMB server IP - check device-config)
+xe sr-param-get uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa param-name=device-config
+
+# Step 2: Try to scan SR (may help if connection is restored)
+xe sr-scan uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+# Step 3: Try plugging PBD again
+PBD_UUID=$(xe pbd-list sr-uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid --minimal | head -1)
+xe pbd-plug uuid=$PBD_UUID
+sleep 3
+
+# Step 4: Check if SR is now accessible
+if [ -d "/var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa" ]; then
+    echo "✓ SR is now accessible!"
+    
+    # Step 5: Find Ubuntu ISO in SMB SR
+    for VDI_UUID in $(xe vdi-list sr-uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid --minimal | tr ',' ' '); do
+        VDI_UUID=$(echo "$VDI_UUID" | xargs)
+        VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+        if echo "$VDI_NAME" | grep -qi "ubuntu.*22.04"; then
+            echo "Found: $VDI_NAME (UUID: $VDI_UUID)"
+            
+            # Step 6: Insert ISO into CD drive
+            CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+            xe vbd-insert uuid=$CD_VBD vdi-uuid=$VDI_UUID
+            echo "ISO inserted!"
+            
+            # Step 7: Start VM
+            xe vm-start uuid=$VM_UUID
+            break
+        fi
+    done
+else
+    echo "✗ SR still not accessible - try other options"
+fi
+
+
+OPTION 2: Upload ISO to Local Storage SR (If You Have ISO File)
+----------------------------------------------------------------
+# If you have Ubuntu 22.04 ISO file on your local machine:
+# 1. Copy ISO to Dom0 (via SCP or other method)
+# 2. Create VDI from ISO file on local storage SR
+
+LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
+echo "Local SR UUID: $LOCAL_SR_UUID"
+
+# Note: Creating ISO VDI from file requires specific XCP-ng tools
+# This is more complex - may need to use xe-import or other methods
+# See XCP-ng documentation for importing ISO files
+
+# Alternative: If you can access SMB share from another machine,
+# you could copy ISO to a location accessible to Dom0, then import it
+
+
+OPTION 3: Start VM Without ISO (Recommended for Now)
+----------------------------------------------------
+# Get VM running now, add ISO later when SR is accessible
+
+VM_UUID="a30bbe3a-467c-695d-e0ab-ac92146a2269"
+
+# CD drive is already empty, so just start VM
+echo "Starting VM without ISO..."
+xe vm-start uuid=$VM_UUID
+
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "✓ VM started! Domain ID: $DOMID"
+    echo ""
+    echo "Note: VM booted from empty disk"
+    echo ""
+    echo "Next steps:"
+    echo "1. Connect via VNC to see VM console"
+    echo "2. When SMB SR is accessible, insert ISO:"
+    echo "   CD_VBD=\$(xe vbd-list vm-uuid=\$VM_UUID type=CD params=uuid --minimal | head -1)"
+    echo "   xe vbd-insert uuid=\$CD_VBD vdi-uuid=049254cd-4a70-484f-a543-cd4c29bba023"
+    echo "3. Reboot VM to boot from ISO"
+else
+    echo "✗ VM failed to start"
+    echo "Check logs: tail -50 /var/log/xensource.log | grep -i error"
+    echo ""
+    echo "If you see 'qemu-dm timeout' error, see QEMU troubleshooting section"
+    echo "in DELETE_AND_RECREATE_TEST3_TEST4.txt"
+fi
+
+
+RECOMMENDATION
+--------------
+Since no ISO SRs are accessible right now:
+1. Use OPTION 3 to start VM without ISO (gets VM running)
+2. Troubleshoot SMB connection separately
+3. Once SMB SR is accessible, insert ISO and reboot VM
+
+This allows you to:
+- Continue with Test-4 creation
+- Verify VM configuration works
+- Add ISO later when storage is available
+
+================================================================================

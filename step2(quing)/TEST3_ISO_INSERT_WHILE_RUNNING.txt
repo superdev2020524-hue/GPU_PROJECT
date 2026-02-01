@@ -1,0 +1,249 @@
+================================================================================
+                    TEST-3 ISO INSERTION - What Happened & Correct Procedure
+================================================================================
+
+TERMINAL OUTPUT ANALYSIS (Lines 1-89)
+-------------------------------------
+
+Line 1: Typo - "vm-shotdown" (should be "vm-shutdown")
+  - Error: Unknown command
+  - Fixed on line 23
+
+Line 23: Attempted to shutdown VM
+  - Error: VM was already halted (not running)
+  - This is fine - VM was already stopped
+
+Line 39: Successfully started VM ✓
+  - Command: xe vm-start uuid=$VM_UUID
+  - No error - VM started
+
+Line 60: VM started successfully!
+  - Domain ID: 29
+  - VM is running
+
+Line 70: Verified VM is running
+  - xl list shows: Test-3, ID 29, State: r----- (running)
+
+Line 72: Attempted to insert ISO while VM is RUNNING ✗
+  - Command: xe vbd-insert uuid=$CD_VBD vdi-uuid=049254cd-4a70-484f-a543-cd4c29bba023
+  - Error: "VM that was not in an appropriate power state"
+  - Expected: Running
+  - Actual: Halted
+  - NOTE: Error message is confusing - it says "expected: Running" but VM needs to be HALTED
+
+Line 77: VM is no longer running
+  - xl list shows only Domain-0
+  - Test-3 crashed or stopped (likely due to no bootable media)
+
+KEY FINDING:
+------------
+You CANNOT insert or eject ISO from CD drive while VM is RUNNING.
+The VM must be HALTED first.
+
+
+CORRECT PROCEDURE: Insert ISO into Running VM
+----------------------------------------------
+IMPORTANT: You cannot insert/eject ISO while VM is running. You must:
+
+Step 1: Shutdown the VM
+-----------------------
+VM_UUID="a30bbe3a-467c-695d-e0ab-ac92146a2269"
+
+# Shutdown VM gracefully
+xe vm-shutdown uuid=$VM_UUID
+
+# Wait for shutdown to complete
+echo "Waiting for VM to shutdown..."
+while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; do
+    sleep 2
+    echo "VM state: $(xe vm-param-get uuid=$VM_UUID param-name=power-state)"
+done
+
+echo "✓ VM is now halted"
+
+
+Step 2: Verify VM is Halted
+---------------------------
+# Check power state
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "ERROR: VM is not halted (state: $POWER_STATE)"
+    echo "Force shutdown if needed:"
+    echo "  xe vm-shutdown uuid=$VM_UUID force=true"
+    exit 1
+fi
+
+# Verify with xl list (should not show Test-3)
+xl list | grep -i test-3 || echo "✓ Test-3 not in xl list (correct - it's halted)"
+
+
+Step 3: Check SMB SR Accessibility (Before Inserting ISO)
+----------------------------------------------------------
+# Before inserting ISO, verify SMB SR is accessible
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+
+# Check if SR is mounted
+if [ ! -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "WARNING: SMB SR is not mounted"
+    echo "Attempting to plug PBD..."
+    
+    PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+    if [ -n "$PBD_UUID" ]; then
+        xe pbd-plug uuid=$PBD_UUID
+        sleep 3
+    fi
+    
+    # Check again
+    if [ ! -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+        echo "✗ SMB SR still not accessible"
+        echo ""
+        echo "Cannot insert ISO - SR is not available"
+        echo "Options:"
+        echo "1. Fix SMB connection first"
+        echo "2. Use ISO from different (accessible) SR"
+        echo "3. Start VM without ISO and fix SR later"
+        exit 1
+    fi
+fi
+
+echo "✓ SMB SR is accessible"
+
+
+Step 4: Insert ISO into CD Drive
+---------------------------------
+# Get CD VBD UUID
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+echo "CD VBD: $CD_VBD"
+
+# Check if CD drive already has ISO
+CURRENT_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+if [ -n "$CURRENT_ISO" ]; then
+    echo "CD drive already has ISO - ejecting first..."
+    xe vbd-eject uuid=$CD_VBD
+fi
+
+# Insert Ubuntu 22.04 ISO
+ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+echo "Inserting ISO: $ISO_VDI_UUID"
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+
+if [ $? -eq 0 ]; then
+    echo "✓ ISO inserted successfully"
+    
+    # Verify
+    INSERTED_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+    if [ "$INSERTED_ISO" = "$ISO_VDI_UUID" ]; then
+        ISO_NAME=$(xe vdi-param-get uuid=$INSERTED_ISO param-name=name-label 2>/dev/null)
+        echo "✓ Verified: $ISO_NAME"
+    fi
+else
+    echo "✗ Failed to insert ISO"
+    echo "Check if VDI exists and SR is accessible"
+    exit 1
+fi
+
+
+Step 5: Start VM with ISO
+--------------------------
+echo "Starting VM with ISO..."
+xe vm-start uuid=$VM_UUID
+
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "✓ VM started successfully!"
+    echo "Domain ID: $DOMID"
+    echo ""
+    echo "VM should now boot from Ubuntu 22.04 ISO"
+    echo "Next: Connect via VNC to see installer"
+else
+    echo "✗ VM failed to start"
+    echo "Check logs:"
+    tail -50 /var/log/xensource.log | grep -i error
+    echo ""
+    echo "If you see 'qemu-dm timeout', check QEMU logs:"
+    echo "  tail -200 /var/log/xen/qemu-dm-*.log | tail -50"
+fi
+
+
+COMPLETE SCRIPT (All Steps Combined)
+-------------------------------------
+VM_UUID="a30bbe3a-467c-695d-e0ab-ac92146a2269"
+ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+SMB_SR_UUID="097e2b8c-af1a-d945-1432-8c0e7d0163fa"
+
+# Step 1: Shutdown VM if running
+POWER_STATE=$(xe vm-param-get uuid=$VM_UUID param-name=power-state)
+if [ "$POWER_STATE" != "halted" ]; then
+    echo "Shutting down VM..."
+    xe vm-shutdown uuid=$VM_UUID
+    while [ "$(xe vm-param-get uuid=$VM_UUID param-name=power-state)" != "halted" ]; do
+        sleep 2
+    done
+    echo "✓ VM halted"
+fi
+
+# Step 2: Check SMB SR accessibility
+if [ ! -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+    echo "Attempting to mount SMB SR..."
+    PBD_UUID=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+    if [ -n "$PBD_UUID" ]; then
+        xe pbd-plug uuid=$PBD_UUID
+        sleep 3
+    fi
+    
+    if [ ! -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+        echo "ERROR: SMB SR is not accessible"
+        echo "Cannot insert ISO - fix SMB connection first"
+        exit 1
+    fi
+fi
+echo "✓ SMB SR is accessible"
+
+# Step 3: Insert ISO
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+CURRENT_ISO=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+if [ -n "$CURRENT_ISO" ]; then
+    echo "Ejecting current ISO..."
+    xe vbd-eject uuid=$CD_VBD
+fi
+
+echo "Inserting ISO..."
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+echo "✓ ISO inserted"
+
+# Step 4: Start VM
+echo "Starting VM..."
+xe vm-start uuid=$VM_UUID
+sleep 5
+DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+    echo "✓ VM started! Domain ID: $DOMID"
+else
+    echo "✗ VM failed to start"
+fi
+
+
+IMPORTANT NOTES
+---------------
+1. You CANNOT insert/eject ISO while VM is running
+2. VM must be HALTED before inserting ISO
+3. SMB SR must be accessible (mounted) before inserting ISO
+4. After inserting ISO, start VM to boot from it
+5. If SMB SR is not accessible, you cannot use ISOs from that SR
+
+BASH HISTORY EXPANSION ERROR (Line 47)
+---------------------------------------
+The error "-bash: !": event not found" is caused by the exclamation mark
+in the echo statement. To avoid this, use single quotes or escape it:
+
+# Instead of:
+echo "✓ VM started successfully!"
+
+# Use:
+echo '✓ VM started successfully!'
+# or
+echo "VM started successfully"
+
+================================================================================

@@ -1,0 +1,117 @@
+================================================================================
+        FIX: Wrong Gateway IP - VM Configured with 10.25.33.1, Should be 10.25.33.254
+================================================================================
+
+PROBLEM IDENTIFIED:
+-------------------
+✓ Dom0's default route: `default via 10.25.33.254 dev xenbr0`
+✓ Dom0's ARP shows gateway: `gateway (10.25.33.254) at 00:10:db:ff:10:00`
+✗ VM is configured with gateway: `10.25.33.1` (WRONG!)
+✗ ARP for 10.25.33.1 shows: `<incomplete>` (not responding)
+
+**The actual gateway is 10.25.33.254, not 10.25.33.1!**
+
+
+================================================================================
+SOLUTION: Update VM's Gateway to 10.25.33.254
+================================================================================
+
+OPTION 1: Update via GUI (Easiest)
+------------------------------------
+1. Open Network Settings in VM (via VNC)
+2. Go to "Wired" → "IPv4" tab
+3. In the Routes section (or Addresses section):
+   - Change Gateway from: `10.25.33.1`
+   - To: `10.25.33.254`
+4. Click "Apply"
+5. Test: `ping -c 3 10.25.33.254`
+
+
+OPTION 2: Update via Command Line (Faster)
+-------------------------------------------
+# SSH to VM (from Dom0):
+ssh david@10.25.33.11
+
+# Or use VNC console, open terminal and run:
+
+# Edit netplan configuration
+sudo nano /etc/netplan/00-installer-config.yaml
+
+# Change the gateway from 10.25.33.1 to 10.25.33.254
+# Should look like:
+network:
+  version: 2
+  ethernets:
+    eth0:
+      addresses:
+        - 10.25.33.11/24
+      routes:
+        - to: default
+          via: 10.25.33.254  # <-- Change this from 10.25.33.1
+      nameservers:
+        addresses:
+          - 8.8.8.8
+
+# Save and apply
+sudo netplan apply
+
+# Verify
+ip route show
+# Should show: default via 10.25.33.254 dev eth0
+
+# Test
+ping -c 3 10.25.33.254
+ping -c 3 8.8.8.8
+
+
+OPTION 3: Quick Command Line Fix (Temporary)
+----------------------------------------------
+# Add correct route manually (temporary, until reboot):
+sudo ip route del default via 10.25.33.1 dev eth0
+sudo ip route add default via 10.25.33.254 dev eth0
+
+# Test
+ping -c 3 10.25.33.254
+ping -c 3 8.8.8.8
+
+# Then make permanent with Option 2 above
+
+
+================================================================================
+VERIFICATION
+================================================================================
+
+After updating the gateway, verify:
+
+# Check routing table
+ip route show
+# Should show: default via 10.25.33.254 dev eth0
+
+# Test gateway
+ping -c 3 10.25.33.254
+
+# Test internet
+ping -c 3 8.8.8.8
+
+# Test DNS
+nslookup google.com
+
+# Test SSH from your desktop (should work now)
+ssh david@10.25.33.11
+
+
+================================================================================
+SUMMARY
+================================================================================
+
+✅ Problem: VM configured with wrong gateway (10.25.33.1)
+✅ Solution: Change gateway to 10.25.33.254
+✅ Method: Update netplan config or use GUI
+
+After this fix:
+- VM should be able to reach gateway
+- VM should have internet access
+- SSH from desktop should work
+- All network connectivity should work
+
+================================================================================

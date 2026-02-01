@@ -1,0 +1,162 @@
+================================================================================
+                    TEST-3 CD INSERTION - CURRENT STATUS & NEXT STEPS
+================================================================================
+
+CURRENT STATUS:
+---------------
+✓ Test-3 VM created: UUID a30bbe3a-467c-695d-e0ab-ac92146a2269
+✓ CD drive created: VBD a6c8627a-6e4e-8a25-a822-a66f90345fe7
+✓ Ubuntu 22.04 ISO already inserted: VDI 049254cd-4a70-484f-a543-cd4c29bba023
+✗ VM cannot start: SMB SR (097e2b8c-af1a-d945-1432-8c0e7d0163fa) not accessible
+
+The ISO is already in the CD drive, but the VM can't read it because the
+SMB storage repository is not mounted/accessible.
+
+
+OPTION 1: Check Current CD Drive Status (First Step)
+-----------------------------------------------------
+# Verify what's currently in the CD drive:
+VM_UUID="a30bbe3a-467c-695d-e0ab-ac92146a2269"
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+echo "CD VBD: $CD_VBD"
+
+# Check if ISO is inserted:
+ISO_VDI=$(xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid 2>/dev/null)
+if [ -n "$ISO_VDI" ]; then
+    ISO_NAME=$(xe vdi-param-get uuid=$ISO_VDI param-name=name-label 2>/dev/null)
+    echo "Current ISO: $ISO_NAME (UUID: $ISO_VDI)"
+else
+    echo "CD drive is empty"
+fi
+
+
+OPTION 2: Try to Fix SMB Connection and Use Current ISO
+-------------------------------------------------------
+# Step 1: Check PBD status
+PBD_UUID=$(xe pbd-list sr-uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=uuid --minimal | head -1)
+echo "PBD UUID: $PBD_UUID"
+
+# Step 2: Check if PBD is attached
+PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+echo "PBD Attached: $PBD_ATTACHED"
+
+# Step 3: Try to plug PBD
+if [ "$PBD_ATTACHED" != "true" ]; then
+    echo "Plugging PBD..."
+    xe pbd-plug uuid=$PBD_UUID
+    sleep 3
+    PBD_ATTACHED=$(xe pbd-param-get uuid=$PBD_UUID param-name=currently-attached 2>/dev/null)
+fi
+
+# Step 4: Check if SR is mounted
+if [ -d "/var/run/sr-mount/097e2b8c-af1a-d945-1432-8c0e7d0163fa" ]; then
+    echo "✓ SR is mounted - ISO should be accessible"
+    
+    # Step 5: Try starting VM
+    echo "Starting VM..."
+    xe vm-start uuid=$VM_UUID
+    
+    # Step 6: Get dom-id for VNC
+    sleep 5
+    DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+    if [ -n "$DOMID" ] && [ "$DOMID" != "-1" ]; then
+        echo "✓ VM started successfully!"
+        echo "Domain ID: $DOMID"
+        echo ""
+        echo "Next: Connect via VNC to install Ubuntu"
+        echo "See: DELETE_AND_RECREATE_TEST3_TEST4.txt Section 'VNC CONNECTION GUIDE'"
+    else
+        echo "✗ VM failed to start - check logs"
+        tail -50 /var/log/xensource.log | grep -i error
+    fi
+else
+    echo "✗ SR still not mounted"
+    echo "SMB connection issue - see troubleshooting below"
+fi
+
+
+OPTION 3: Use a Different ISO from Accessible SR
+-------------------------------------------------
+# If SMB SR cannot be fixed, find an ISO from an accessible SR
+
+# Step 1: List all ISO SRs
+echo "Checking accessible ISO SRs..."
+for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' ' '); do
+    SR_UUID=$(echo "$SR_UUID" | xargs)
+    SR_NAME=$(xe sr-param-get uuid=$SR_UUID param-name=name-label 2>/dev/null)
+    
+    # Check if SR is accessible
+    if [ -d "/var/run/sr-mount/$SR_UUID" ]; then
+        echo "✓ Accessible SR: $SR_NAME (UUID: $SR_UUID)"
+        
+        # List ISOs in this SR
+        echo "  Available ISOs:"
+        for VDI_UUID in $(xe vdi-list sr-uuid=$SR_UUID params=uuid --minimal | tr ',' ' '); do
+            VDI_UUID=$(echo "$VDI_UUID" | xargs)
+            VDI_NAME=$(xe vdi-param-get uuid=$VDI_UUID param-name=name-label 2>/dev/null)
+            echo "    - $VDI_NAME (UUID: $VDI_UUID)"
+        done
+    else
+        echo "✗ Not accessible: $SR_NAME (UUID: $SR_UUID)"
+    fi
+done
+
+# Step 2: If you find an accessible ISO, eject current and insert new one
+# (Replace <NEW_ISO_VDI_UUID> with UUID from above)
+# CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+# xe vbd-eject uuid=$CD_VBD
+# xe vbd-insert uuid=$CD_VBD vdi-uuid=<NEW_ISO_VDI_UUID>
+# xe vm-start uuid=$VM_UUID
+
+
+OPTION 4: Eject Current ISO and Start VM Without It
+----------------------------------------------------
+# If you just want to start the VM now (will boot from empty disk):
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+xe vbd-eject uuid=$CD_VBD
+xe vm-start uuid=$VM_UUID
+
+# Later, when SMB SR is accessible, re-insert ISO:
+# xe vbd-insert uuid=$CD_VBD vdi-uuid=049254cd-4a70-484f-a543-cd4c29bba023
+
+
+RECOMMENDED ACTION PLAN:
+------------------------
+1. First, run OPTION 1 to check current CD drive status
+2. Then try OPTION 2 to fix SMB connection and start VM with current ISO
+3. If OPTION 2 fails, check OPTION 3 for alternative ISOs
+4. If you need VM running immediately, use OPTION 4 (start without ISO, add later)
+
+
+TROUBLESHOOTING SMB CONNECTION:
+-------------------------------
+If PBD plug fails or SR doesn't mount:
+
+1. Check SMB server is running and accessible
+2. Verify network connectivity:
+   # (You'll need SMB server IP from device-config)
+   xe sr-param-get uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa param-name=device-config
+
+3. Check PBD device-config for credentials:
+   xe pbd-list sr-uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa params=device-config
+
+4. Try scanning the SR:
+   xe sr-scan uuid=097e2b8c-af1a-d945-1432-8c0e7d0163fa
+
+
+AFTER VM STARTS SUCCESSFULLY:
+-----------------------------
+1. Get dom-id for VNC:
+   DOMID=$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)
+
+2. Set up VNC connection (see VNC CONNECTION GUIDE in main document)
+
+3. Install Ubuntu with static IP:
+   - IP: 10.25.33.13/24
+   - Gateway: 10.25.33.1
+   - DNS: 8.8.8.8
+
+4. After installation, SSH into VM:
+   ssh david@10.25.33.13
+
+================================================================================

@@ -1,0 +1,158 @@
+================================================================================
+                    TEST-3 IS RUNNING - Next Steps
+================================================================================
+
+CURRENT STATUS:
+---------------
+✓ Test-3 VM is running
+✓ Domain ID: 31
+✓ ISO inserted: Ubuntu 22.04
+✓ Boot order: CD first (dc)
+✓ vgpu-stub attached: pool_id=A, priority=low, vm_id=3
+✓ VM should be booting from Ubuntu installer now
+
+
+STEP 1: Connect to VM Console via VNC
+---------------------------------------
+On Dom0, expose VNC socket:
+
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+DOMID=31
+
+# Verify VNC socket exists
+ls -la /var/run/xen/vnc-$DOMID
+
+# Install socat if needed
+yum install -y socat
+
+# Start socat to expose VNC on TCP port 5901
+pkill socat || true
+nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+
+# Verify socat is listening
+ss -ltnp | grep :5901
+
+# Check socat log if needed
+tail -f /root/socat-vnc.log
+
+
+STEP 2: Create SSH Tunnel from Your Desktop
+--------------------------------------------
+⚠️ IMPORTANT: Run this from your desktop/laptop, NOT from Dom0!
+
+Open a NEW terminal window on your desktop/laptop (NOT the SSH session to Dom0):
+
+# Check if port 5901 is free on your desktop:
+netstat -an | grep 5901
+
+# If port is free, create SSH tunnel:
+ssh -N -L 5901:127.0.0.1:5901 root@10.25.33.10
+
+# If port 5901 is busy, use port 5902:
+# On Dom0: Change socat to port 5902 (see troubleshooting below)
+# On desktop: ssh -N -L 5902:127.0.0.1:5902 root@10.25.33.10
+
+Replace 10.25.33.10 with your XCP-ng host IP if different.
+
+Leave this terminal window open - it's forwarding the connection.
+
+
+STEP 3: Connect VNC Viewer
+----------------------------
+1. Open TigerVNC Viewer (or any VNC client)
+2. Connect to: 127.0.0.1:5901
+3. You should see Ubuntu installer
+
+
+STEP 4: Install Ubuntu with Static IP
+--------------------------------------
+During Ubuntu installation:
+
+1. Network Configuration:
+   - Select your network interface (shows MAC address)
+   - IPv4: Manual
+   - Address: 10.25.33.13/24
+   - Gateway: 10.25.33.1
+   - DNS: 8.8.8.8
+
+2. SSH Setup:
+   - Enable "Install OpenSSH server"
+
+3. Create User:
+   - Username: david (or your preferred)
+   - Password: (your preferred)
+
+4. Complete Installation:
+   - Follow installer prompts
+   - After reboot, VM will boot from disk (not CD)
+
+
+STEP 5: After Installation - Verify VM
+---------------------------------------
+# Check VM is running
+xl list | grep Test-3
+
+# Get VM IP (should be 10.25.33.13)
+# SSH into VM:
+ssh david@10.25.33.13
+
+# Verify vgpu-stub device in VM:
+lspci | grep -i vgpu
+# Should show: "VGPU-STUB Device" or similar
+
+
+IMPORTANT NOTES:
+----------------
+1. Domain ID Changes: If VM reboots, dom-id will change
+   - Update socat: pkill socat && nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-<NEW_DOMID> >/root/socat-vnc.log 2>&1 &
+
+2. Auto-Repoint Script (Optional):
+   # Run on Dom0 to auto-update VNC when dom-id changes:
+   VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+   PORT=5901
+   while true; do
+     DOMID="$(xe vm-param-get uuid=$VM_UUID param-name=dom-id)"
+     SOCK="/var/run/xen/vnc-$DOMID"
+     if [ -S "$SOCK" ]; then
+       if ! ps auxww | grep -E "[s]ocat.*TCP-LISTEN:$PORT" | grep -q "$SOCK"; then
+         pkill socat || true
+         nohup socat TCP-LISTEN:$PORT,fork,reuseaddr UNIX-CONNECT:$SOCK >/root/socat-vnc.log 2>&1 &
+         echo "Repointed socat: TCP $PORT -> $SOCK"
+       fi
+     fi
+     sleep 2
+   done
+
+3. If VNC Connection Fails:
+   - Check socat is running: ps aux | grep socat
+   - Check VNC socket exists: ls -la /var/run/xen/vnc-31
+   - Check socat log: tail -f /root/socat-vnc.log
+   - Verify SSH tunnel is active on your desktop
+
+4. If VM Doesn't Boot:
+   - Check VM logs: tail -50 /var/log/xensource.log | grep -i error
+   - Check QEMU logs: tail -200 /var/log/xen/qemu-dm-*.log | tail -50
+   - Verify ISO is accessible: xe vbd-param-get uuid=$CD_VBD param-name=vdi-uuid
+
+
+QUICK REFERENCE COMMANDS:
+-------------------------
+# Get current dom-id
+DOMID=$(xe vm-param-get uuid=c1b31989-fa51-c29a-3720-6e5ba7970275 param-name=dom-id)
+echo "DOMID=$DOMID"
+
+# Restart socat with current dom-id
+pkill socat || true
+nohup socat TCP-LISTEN:5901,fork,reuseaddr UNIX-CONNECT:/var/run/xen/vnc-$DOMID >/root/socat-vnc.log 2>&1 &
+
+# Check VM status
+xl list | grep Test-3
+
+# Check VNC socket
+ls -la /var/run/xen/vnc-$DOMID
+
+# Check socat is listening
+ss -ltnp | grep :5901
+
+
+================================================================================
