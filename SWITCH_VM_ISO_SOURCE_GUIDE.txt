@@ -1,0 +1,458 @@
+================================================================================
+        Guide: Switch VM ISO Source (Local VGS to SMB or Vice Versa)
+================================================================================
+
+WHAT THIS GUIDE DOES:
+---------------------
+This guide explains how to change which ISO Storage Repository (SR) a VM uses
+for its installation media. For example:
+- Switching from a local VGS ISO to an SMB network ISO
+- Switching from SMB ISO back to local VGS ISO
+- Switching between any two ISO sources
+
+WHY YOU MIGHT WANT TO DO THIS:
+-------------------------------
+1. The current ISO SR is not accessible (network down, SMB share unavailable)
+2. You want to use a different ISO file that's in a different SR
+3. You want to free up local storage by using network-based ISOs
+4. You want better reliability by switching to local storage
+
+IMPORTANT CONCEPTS:
+-------------------
+- ISO Storage Repository (SR): A location where ISO files are stored
+  - Local SR: ISO files stored on the XCP-NG host (like your VGS volume)
+  - SMB SR: ISO files stored on a network share (Windows/Samba server)
+  
+- Virtual Block Device (VBD): The "CD drive" that connects a VM to an ISO file
+  - Each VM can have one CD drive (VBD) attached at a time
+  - To switch ISOs, you remove the old VBD and create a new one
+
+- VDI (Virtual Disk Image): The actual ISO file as XCP-NG sees it
+  - Each ISO file becomes a VDI in an SR
+  - You need the VDI UUID to attach it to a VM
+
+================================================================================
+STEP 1: Find Your VM UUID
+================================================================================
+
+First, you need to identify which VM you want to modify:
+
+#!/bin/bash
+
+echo "=== Finding Your VM ==="
+echo ""
+
+# List all VMs
+xe vm-list is-control-domain=false params=uuid,name-label,power-state
+
+echo ""
+echo "Find your VM in the list above and note its UUID"
+echo "Or search for a specific VM by name:"
+echo "  xe vm-list name-label='Your-VM-Name' params=uuid --minimal"
+
+# Example: If your VM is named "Test-3"
+# VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal)
+# echo "VM UUID: $VM_UUID"
+
+================================================================================
+STEP 2: Check Current ISO Configuration
+================================================================================
+
+See what ISO the VM is currently using:
+
+#!/bin/bash
+
+# Set your VM UUID (replace with actual UUID)
+VM_UUID="your-vm-uuid-here"
+
+echo "=== Current VM ISO Configuration ==="
+echo ""
+
+# Find the CD drive (VBD) attached to this VM
+CD_VBD_UUID=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+
+if [ -z "$CD_VBD_UUID" ]; then
+    echo "No CD drive found for this VM"
+    echo "The VM doesn't have an ISO attached"
+else
+    echo "CD Drive (VBD) UUID: $CD_VBD_UUID"
+    
+    # Get the ISO VDI UUID
+    ISO_VDI_UUID=$(xe vbd-list uuid=$CD_VBD_UUID params=vdi-uuid --minimal)
+    echo "ISO VDI UUID: $ISO_VDI_UUID"
+    
+    # Get ISO details
+    ISO_NAME=$(xe vdi-list uuid=$ISO_VDI_UUID params=name-label --minimal)
+    ISO_SR_UUID=$(xe vdi-list uuid=$ISO_VDI_UUID params=sr-uuid --minimal)
+    SR_NAME=$(xe sr-list uuid=$ISO_SR_UUID params=name-label --minimal)
+    
+    echo "ISO Name: $ISO_NAME"
+    echo "ISO SR: $SR_NAME ($ISO_SR_UUID)"
+    echo ""
+    echo "This is the current ISO source"
+fi
+
+================================================================================
+STEP 3: Find Available ISO Sources
+================================================================================
+
+List all available ISO Storage Repositories and their ISOs:
+
+#!/bin/bash
+
+echo "=== Available ISO Storage Repositories ==="
+echo ""
+
+# List all ISO SRs
+for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' '\n'); do
+    SR_NAME=$(xe sr-list uuid=$SR_UUID params=name-label --minimal)
+    SR_TYPE=$(xe sr-list uuid=$SR_UUID params=type --minimal)
+    SR_SHARED=$(xe sr-list uuid=$SR_UUID params=shared --minimal)
+    
+    echo "SR Name: $SR_NAME"
+    echo "  UUID: $SR_UUID"
+    echo "  Type: $SR_TYPE"
+    echo "  Shared: $SR_SHARED"
+    
+    # Check if SR is accessible
+    PBD_UUID=$(xe pbd-list sr-uuid=$SR_UUID params=uuid --minimal | head -1)
+    if [ -n "$PBD_UUID" ]; then
+        PBD_ATTACHED=$(xe pbd-list uuid=$PBD_UUID params=currently-attached --minimal)
+        if [ "$PBD_ATTACHED" = "true" ]; then
+            echo "  Status: ✓ Accessible"
+        else
+            echo "  Status: ⚠ Not mounted (may need to plug PBD)"
+        fi
+    else
+        echo "  Status: ✗ No PBD (not accessible)"
+    fi
+    
+    # List ISOs in this SR
+    echo "  Available ISOs:"
+    ISO_COUNT=0
+    for ISO_VDI in $(xe vdi-list sr-uuid=$SR_UUID params=uuid --minimal | tr ',' '\n'); do
+        ISO_NAME=$(xe vdi-list uuid=$ISO_VDI params=name-label --minimal)
+        echo "    - $ISO_NAME ($ISO_VDI)"
+        ISO_COUNT=$((ISO_COUNT + 1))
+    done
+    
+    if [ $ISO_COUNT -eq 0 ]; then
+        echo "    (No ISOs found)"
+    fi
+    
+    echo ""
+done
+
+================================================================================
+STEP 4: Switch VM to New ISO Source
+================================================================================
+
+Complete script to switch a VM from one ISO source to another:
+
+#!/bin/bash
+set -e
+
+echo "========================================================================"
+echo "  Switch VM ISO Source"
+echo "========================================================================"
+echo ""
+
+# ============================================================================
+# CONFIGURATION - SET THESE VALUES
+# ============================================================================
+
+# Your VM UUID (from Step 1)
+VM_UUID="your-vm-uuid-here"
+
+# Target ISO name (the ISO file you want to use)
+TARGET_ISO_NAME="ubuntu-22.04.5-desktop-amd64.iso"
+
+# Target SR UUID (the ISO SR you want to use)
+# Leave empty to auto-detect (will prefer local SRs over SMB)
+TARGET_SR_UUID=""
+
+# ============================================================================
+# SCRIPT STARTS HERE
+# ============================================================================
+
+echo "VM UUID: $VM_UUID"
+
+# Verify VM exists
+VM_NAME=$(xe vm-list uuid=$VM_UUID params=name-label --minimal 2>/dev/null)
+if [ -z "$VM_NAME" ]; then
+    echo "ERROR: VM not found: $VM_UUID"
+    exit 1
+fi
+echo "VM Name: $VM_NAME"
+echo ""
+
+# Check VM power state
+POWER_STATE=$(xe vm-list uuid=$VM_UUID params=power-state --minimal)
+echo "VM Power State: $POWER_STATE"
+
+if [ "$POWER_STATE" != "halted" ]; then
+    echo ""
+    echo "WARNING: VM is not halted. You need to shut down the VM first."
+    echo "Current state: $POWER_STATE"
+    echo ""
+    read -p "Shut down the VM now? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "Shutting down VM..."
+        xe vm-shutdown uuid=$VM_UUID
+        echo "Waiting for VM to shut down..."
+        while [ "$(xe vm-list uuid=$VM_UUID params=power-state --minimal)" != "halted" ]; do
+            sleep 2
+        done
+        echo "✓ VM is now halted"
+    else
+        echo "Please shut down the VM manually and run this script again"
+        exit 1
+    fi
+fi
+
+echo ""
+
+# Find current CD drive (VBD)
+CURRENT_CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+
+if [ -n "$CURRENT_CD_VBD" ]; then
+    CURRENT_ISO_VDI=$(xe vbd-list uuid=$CURRENT_CD_VBD params=vdi-uuid --minimal)
+    CURRENT_ISO_NAME=$(xe vdi-list uuid=$CURRENT_ISO_VDI params=name-label --minimal)
+    CURRENT_SR_UUID=$(xe vdi-list uuid=$CURRENT_ISO_VDI params=sr-uuid --minimal)
+    CURRENT_SR_NAME=$(xe sr-list uuid=$CURRENT_SR_UUID params=name-label --minimal)
+    
+    echo "Current Configuration:"
+    echo "  ISO: $CURRENT_ISO_NAME"
+    echo "  SR: $CURRENT_SR_NAME ($CURRENT_SR_UUID)"
+    echo "  VBD UUID: $CURRENT_CD_VBD"
+    echo ""
+    
+    # Remove current CD drive
+    echo "Removing current CD drive..."
+    xe vbd-destroy uuid=$CURRENT_CD_VBD
+    echo "✓ Removed old CD drive"
+else
+    echo "No current CD drive found (VM has no ISO attached)"
+fi
+
+echo ""
+
+# Find target ISO SR if not specified
+if [ -z "$TARGET_SR_UUID" ]; then
+    echo "Finding target ISO SR..."
+    
+    # Prefer local SRs over network SRs
+    LOCAL_SR_UUID=""
+    NETWORK_SR_UUID=""
+    
+    for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' '\n'); do
+        SR_TYPE=$(xe sr-list uuid=$SR_UUID params=type --minimal)
+        SR_SHARED=$(xe sr-list uuid=$SR_UUID params=shared --minimal)
+        
+        # Skip udev (physical DVD drives)
+        if [ "$SR_TYPE" = "udev" ]; then
+            continue
+        fi
+        
+        # Check if SR has the target ISO
+        ISO_FOUND=$(xe vdi-list sr-uuid=$SR_UUID name-label="$TARGET_ISO_NAME" params=uuid --minimal | head -1)
+        if [ -z "$ISO_FOUND" ]; then
+            continue
+        fi
+        
+        # Prefer local (non-shared) SRs
+        if [ "$SR_SHARED" = "false" ]; then
+            LOCAL_SR_UUID=$SR_UUID
+        elif [ -z "$NETWORK_SR_UUID" ]; then
+            NETWORK_SR_UUID=$SR_UUID
+        fi
+    done
+    
+    if [ -n "$LOCAL_SR_UUID" ]; then
+        TARGET_SR_UUID=$LOCAL_SR_UUID
+        echo "✓ Found local ISO SR"
+    elif [ -n "$NETWORK_SR_UUID" ]; then
+        TARGET_SR_UUID=$NETWORK_SR_UUID
+        echo "✓ Found network ISO SR"
+    else
+        echo "ERROR: Target ISO '$TARGET_ISO_NAME' not found in any accessible SR"
+        exit 1
+    fi
+fi
+
+TARGET_SR_NAME=$(xe sr-list uuid=$TARGET_SR_UUID params=name-label --minimal)
+echo "Target SR: $TARGET_SR_NAME ($TARGET_SR_UUID)"
+echo ""
+
+# Ensure target SR is accessible
+PBD_UUID=$(xe pbd-list sr-uuid=$TARGET_SR_UUID params=uuid --minimal | head -1)
+if [ -z "$PBD_UUID" ]; then
+    echo "ERROR: Target SR has no PBD attached (not accessible)"
+    exit 1
+fi
+
+PBD_ATTACHED=$(xe pbd-list uuid=$PBD_UUID params=currently-attached --minimal)
+if [ "$PBD_ATTACHED" != "true" ]; then
+    echo "Mounting target SR..."
+    xe pbd-plug uuid=$PBD_UUID
+    sleep 2
+    echo "✓ SR mounted"
+fi
+
+# Find target ISO VDI
+TARGET_ISO_VDI=$(xe vdi-list sr-uuid=$TARGET_SR_UUID name-label="$TARGET_ISO_NAME" params=uuid --minimal | head -1)
+
+if [ -z "$TARGET_ISO_VDI" ]; then
+    echo "ERROR: ISO '$TARGET_ISO_NAME' not found in target SR"
+    echo "Available ISOs in $TARGET_SR_NAME:"
+    xe vdi-list sr-uuid=$TARGET_SR_UUID params=name-label --minimal | tr ',' '\n'
+    exit 1
+fi
+
+echo "Target ISO VDI: $TARGET_ISO_VDI"
+echo ""
+
+# Create new CD drive with target ISO
+echo "Creating new CD drive with target ISO..."
+NEW_VBD_UUID=$(xe vbd-create \
+    vm-uuid=$VM_UUID \
+    vdi-uuid=$TARGET_ISO_VDI \
+    device=1 \
+    type=CD \
+    mode=RO)
+
+if [ -n "$NEW_VBD_UUID" ]; then
+    echo "✓ Created new CD drive: $NEW_VBD_UUID"
+    
+    # Plug the VBD (attach it to the VM)
+    echo "Attaching CD drive to VM..."
+    xe vbd-plug uuid=$NEW_VBD_UUID
+    echo "✓ CD drive attached"
+else
+    echo "ERROR: Failed to create CD drive"
+    exit 1
+fi
+
+echo ""
+echo "========================================================================"
+echo "  SUCCESS"
+echo "========================================================================"
+echo "VM: $VM_NAME"
+echo "New ISO: $TARGET_ISO_NAME"
+echo "New SR: $TARGET_SR_NAME"
+echo "CD Drive VBD: $NEW_VBD_UUID"
+echo ""
+echo "The VM is now configured to use the new ISO source."
+echo "You can start the VM and it will boot from the new ISO."
+
+================================================================================
+STEP 5: Verify the Change
+================================================================================
+
+Verify that the VM is now using the new ISO:
+
+#!/bin/bash
+
+VM_UUID="your-vm-uuid-here"
+
+echo "=== Verifying VM ISO Configuration ==="
+echo ""
+
+CD_VBD_UUID=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+
+if [ -z "$CD_VBD_UUID" ]; then
+    echo "ERROR: No CD drive found"
+    exit 1
+fi
+
+ISO_VDI_UUID=$(xe vbd-list uuid=$CD_VBD_UUID params=vdi-uuid --minimal)
+ISO_NAME=$(xe vdi-list uuid=$ISO_VDI_UUID params=name-label --minimal)
+ISO_SR_UUID=$(xe vdi-list uuid=$ISO_VDI_UUID params=sr-uuid --minimal)
+SR_NAME=$(xe sr-list uuid=$ISO_SR_UUID params=name-label --minimal)
+
+echo "Current Configuration:"
+echo "  CD Drive (VBD): $CD_VBD_UUID"
+echo "  ISO Name: $ISO_NAME"
+echo "  ISO VDI UUID: $ISO_VDI_UUID"
+echo "  ISO SR: $SR_NAME ($ISO_SR_UUID)"
+echo ""
+
+VBD_ATTACHED=$(xe vbd-list uuid=$CD_VBD_UUID params=currently-attached --minimal)
+if [ "$VBD_ATTACHED" = "true" ]; then
+    echo "Status: ✓ CD drive is attached and ready"
+else
+    echo "Status: ⚠ CD drive exists but is not attached"
+    echo "You may need to plug it: xe vbd-plug uuid=$CD_VBD_UUID"
+fi
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+PROBLEM: "VM is not halted"
+--------------------------------
+SOLUTION: You must shut down the VM before changing its ISO configuration.
+  xe vm-shutdown uuid=<vm-uuid>
+  # Wait for it to halt, then run the switch script again
+
+PROBLEM: "Target SR has no PBD attached"
+------------------------------------------
+SOLUTION: The ISO SR is not accessible. Check:
+  1. For SMB SRs: Is the network share accessible? Is the server running?
+  2. Try plugging the PBD manually:
+     PBD_UUID=$(xe pbd-list sr-uuid=<sr-uuid> params=uuid --minimal | head -1)
+     xe pbd-plug uuid=$PBD_UUID
+
+PROBLEM: "ISO not found in target SR"
+---------------------------------------
+SOLUTION: The ISO file doesn't exist in that SR. Options:
+  1. Use a different ISO that exists in the SR
+  2. Copy the ISO to the target SR first
+  3. Use a different SR that contains the ISO
+
+PROBLEM: "Failed to create CD drive"
+-------------------------------------
+SOLUTION: Check:
+  1. Is the VM halted? (xe vm-list uuid=<vm-uuid> params=power-state --minimal)
+  2. Does the ISO VDI exist? (xe vdi-list uuid=<iso-vdi-uuid>)
+  3. Is there already a CD drive? Remove it first:
+     xe vbd-destroy uuid=<existing-cd-vbd-uuid>
+
+PROBLEM: VM won't boot from new ISO
+------------------------------------
+SOLUTION: Check boot order:
+  1. Verify CD drive is first in boot order:
+     xe vm-param-get uuid=<vm-uuid> param-name=HVM-boot-params
+  2. Set boot order to CD first:
+     xe vm-param-set uuid=<vm-uuid> HVM-boot-params="order=cd"
+  3. Or use PV-boot-params for PV guests
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
+Find VM UUID:
+  xe vm-list name-label="VM-Name" params=uuid --minimal
+
+List all ISO SRs:
+  xe sr-list content-type=iso params=uuid,name-label --minimal
+
+List ISOs in an SR:
+  xe vdi-list sr-uuid=<sr-uuid> params=uuid,name-label --minimal
+
+Find current CD drive:
+  xe vbd-list vm-uuid=<vm-uuid> type=CD params=uuid --minimal
+
+Remove CD drive:
+  xe vbd-destroy uuid=<vbd-uuid>
+
+Create new CD drive:
+  xe vbd-create vm-uuid=<vm-uuid> vdi-uuid=<iso-vdi-uuid> device=1 type=CD mode=RO
+
+Attach CD drive:
+  xe vbd-plug uuid=<vbd-uuid>
+
+================================================================================
+END OF GUIDE
+================================================================================

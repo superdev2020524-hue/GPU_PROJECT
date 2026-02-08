@@ -1,0 +1,291 @@
+================================================================================
+                    REGISTRY: CORE GOALS AND IMPLEMENTATION PLAN
+                    Configuration & Management Interface (Step 2-4)
+================================================================================
+
+STATUS: ABSOLUTE - DO NOT MODIFY WITHOUT EXPLICIT AUTHORIZATION
+Date Created: January 11, 2026
+Last Updated: [To be updated as implementation progresses]
+
+================================================================================
+                            CORE OBJECTIVE
+================================================================================
+
+Implement a Configuration & Management Interface that provides:
+
+1. Lightweight configuration store for:
+   - VM → pool assignment (Pool A or Pool B)
+   - VM → priority assignment (low, medium, high)
+
+2. Simple administrator CLI tool to:
+   - Register VMs
+   - Assign pools
+   - Set or change priorities
+   - Query system state (list VMs, pools, priorities)
+   - Add/delete VMs from configuration
+
+This serves as the first version of the "control panel" described in the
+requirements document (addtion_requrie_2026_1_11.txt).
+
+================================================================================
+                        ABSOLUTE REQUIREMENTS
+================================================================================
+
+These requirements CANNOT be changed without explicit user authorization:
+
+REQUIREMENT 1: Database Storage
+-------------------------------
+- MUST use SQLite database for configuration storage
+- Database location: /etc/vgpu/vgpu_config.db
+- MUST persist across reboots
+- MUST support querying by pool, priority, VM UUID
+
+REQUIREMENT 2: CLI Tool
+-----------------------
+- Tool name: vgpu-admin
+- Location: /usr/local/bin/vgpu-admin (or /etc/vgpu/vgpu-admin)
+- MUST support all operations: register, update, query, delete
+- MUST be scriptable (usable in bash scripts)
+- MUST provide clear, human-readable output
+
+REQUIREMENT 3: VM Integration
+---------------------------
+- MUST integrate with existing XCP-ng VM management
+- MUST read configuration from database when VM starts
+- MUST automatically set device-model-args based on DB config
+- MUST use existing vGPU stub device mechanism (no changes to QEMU)
+
+REQUIREMENT 4: Operations Support
+---------------------------------
+The system MUST support:
+- Adding/registering new VMs
+- Deleting/removing VMs
+- Assigning VMs to pools (A or B)
+- Setting/changing VM priorities (low, medium, high)
+- Querying VMs by pool
+- Querying VMs by priority
+- Viewing individual VM configuration
+- Getting system-wide statistics
+
+REQUIREMENT 5: Data Model
+------------------------
+- Primary identifier: XCP-ng VM UUID (TEXT)
+- VM ID: INTEGER - User-assignable unique identifier (NOT auto-increment)
+- Pool: CHAR(1) - 'A' or 'B' only (default: 'A')
+- Priority: INTEGER - 0 (low), 1 (medium), 2 (high) only (default: 1)
+- VM Name: TEXT - Human-readable name (optional)
+- Pools: Two pools (Pool A and Pool B) auto-created during initialization
+- Timestamps: Created and updated timestamps
+
+REQUIREMENT 6: User Confirmation
+--------------------------------
+- Commands that require VM restart (set-pool, set-priority, set-vm-id, update-vm):
+  - MUST show current and new configuration
+  - MUST ask: "Do you want to apply these settings? (yes/no):"
+  - MUST wait for user confirmation before stopping VM
+  - If user says "no", operation is cancelled, VM continues running
+
+REQUIREMENT 7: VM Scanning
+--------------------------
+- scan-vms command MUST:
+  - Group VMs by pool (Pool A first, then Pool B, alphabetically)
+  - Show all registered VMs in their assigned pools
+  - Show unregistered VMs at the end (marked as "Not registered")
+  - Display current device-model-args configuration for each VM
+
+================================================================================
+                        IMPLEMENTATION STEPS
+================================================================================
+
+These steps define the implementation order. Each step must be completed
+and verified before proceeding to the next.
+
+STEP 1: Database Schema Design and Initialization
+--------------------------------------------------
+Objective: Create SQLite database with proper schema
+Deliverables:
+  - Database schema definition (SQL)
+  - Database initialization script
+  - Schema validation queries
+Success Criteria:
+  - Database file created at /etc/vgpu/vgpu_config.db
+  - Schema includes all required tables and indexes
+  - Can insert, query, update, delete test records
+
+STEP 2: Core Library Implementation
+------------------------------------
+Objective: Create C library for database operations
+Deliverables:
+  - vgpu_config.c (implementation)
+  - vgpu_config.h (header)
+  - Functions: init, get_vm_config, set_vm_config, list_vms, etc.
+Success Criteria:
+  - Library compiles without errors
+  - All CRUD operations work correctly
+  - Proper error handling and validation
+
+STEP 3: CLI Tool Implementation
+--------------------------------
+Objective: Build vgpu-admin command-line tool
+Deliverables:
+  - vgpu-admin.c (main CLI program)
+  - Command parsing and argument handling
+  - Integration with core library
+  - User-friendly output formatting
+Success Criteria:
+  - All commands work: register-vm, set-pool, set-priority, list-vms, etc.
+  - Help text is clear and complete
+  - Error messages are informative
+
+STEP 4: VM Startup Integration
+-------------------------------
+Objective: Automatically apply configuration when VM starts
+Deliverables:
+  - vgpu-vm-startup.sh (shell script)
+  - Integration with XCP-ng VM lifecycle
+  - Reads DB and sets device-model-args
+Success Criteria:
+  - VM starts with correct pool/priority from database
+  - No manual intervention required
+  - Works with existing VM creation process
+
+STEP 5: Testing and Validation
+------------------------------
+Objective: Verify all functionality works correctly
+Deliverables:
+  - Test scripts for all operations
+  - Validation of database integrity
+  - Integration testing with real VMs
+Success Criteria:
+  - All CRUD operations verified
+  - Pool assignments work correctly
+  - Priority assignments work correctly
+  - VM startup applies config automatically
+  - Queries return correct results
+
+STEP 6: Documentation
+---------------------
+Objective: Create complete usage documentation
+Deliverables:
+  - User guide for vgpu-admin
+  - Integration guide for VM management
+  - Example workflows
+  - Troubleshooting guide
+Success Criteria:
+  - Documentation is clear and complete
+  - Examples work as documented
+  - Others can follow without assistance
+
+================================================================================
+                        TECHNICAL SPECIFICATIONS
+================================================================================
+
+Database Schema:
+----------------
+Table: pools
+  - pool_id CHAR(1) PRIMARY KEY CHECK(pool_id IN ('A', 'B'))
+  - pool_name TEXT NOT NULL DEFAULT 'Pool A' OR 'Pool B'
+  - description TEXT
+  - enabled INTEGER DEFAULT 1 CHECK(enabled IN (0, 1))
+  - created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  - updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+Table: vms
+  - vm_id INTEGER NOT NULL UNIQUE  (user-assignable, no AUTOINCREMENT)
+  - vm_uuid TEXT UNIQUE NOT NULL
+  - vm_name TEXT
+  - pool_id CHAR(1) NOT NULL DEFAULT 'A' CHECK(pool_id IN ('A', 'B'))
+  - priority INTEGER NOT NULL DEFAULT 1 CHECK(priority IN (0, 1, 2))
+  - created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  - updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  - FOREIGN KEY (pool_id) REFERENCES pools(pool_id)
+
+Indexes:
+  - idx_vm_uuid ON vms(vm_uuid)
+  - idx_vm_pool ON vms(pool_id)
+  - idx_vm_priority ON vms(priority)
+
+Initialization:
+  - Pool A and Pool B are auto-inserted during database initialization
+
+CLI Commands:
+-------------
+Pool Management:
+  vgpu-admin list-pools                    # List Pool A and Pool B with statistics
+  vgpu-admin show-pool --pool-id=<A|B>     # Show detailed pool information
+
+VM Management:
+  vgpu-admin scan-vms                      # Scan VMs, grouped by pool (A, B, then unregistered)
+  vgpu-admin register-vm --vm-uuid=<uuid> [--vm-name=<name>] [--pool=<A|B>] [--priority=<low|medium|high>] [--vm-id=<id>]
+  vgpu-admin show-vm --vm-uuid=<uuid>     # Show VM config (includes pool)
+  vgpu-admin list-vms [--pool=<A|B>] [--priority=<low|medium|high>]
+  vgpu-admin set-pool --vm-uuid=<uuid> --pool=<A|B>  # Requires confirmation, stops VM, reconfigures, restarts
+  vgpu-admin set-priority --vm-uuid=<uuid> --priority=<low|medium|high>  # Requires confirmation, stops VM, reconfigures, restarts
+  vgpu-admin set-vm-id --vm-uuid=<uuid> --vm-id=<id>  # Requires confirmation, stops VM, reconfigures, restarts
+  vgpu-admin update-vm --vm-uuid=<uuid> [--pool=<A|B>] [--priority=<low|medium|high>] [--vm-id=<id>]  # Requires confirmation, stops VM, reconfigures, restarts
+  vgpu-admin remove-vm --vm-uuid=<uuid>
+
+System Overview:
+  vgpu-admin status                        # Control panel: Shows Pool A, Pool B, VMs, assignments
+
+Important Notes:
+  - Default pool: Pool A (if --pool not specified)
+  - Default priority: medium (if --priority not specified)
+  - vm_id: User-assignable (no auto-increment), must be unique
+  - Commands that change pool/priority/vm_id: ALWAYS show confirmation "Do you want to apply these settings?" before stopping VM
+  - set-pool-name command: NOT in initial implementation (can be added later)
+
+File Structure:
+---------------
+/etc/vgpu/
+  ├── vgpu_config.db          # SQLite database
+  ├── vgpu-admin              # CLI tool (executable)
+  ├── vgpu-vm-startup.sh      # VM startup integration script
+  ├── vgpu_config.c           # Core library (implementation)
+  └── vgpu_config.h           # Core library (header)
+
+/usr/local/bin/
+  └── vgpu-admin -> /etc/vgpu/vgpu-admin  # Symlink
+
+================================================================================
+                        CONSTRAINTS AND LIMITATIONS
+================================================================================
+
+1. MUST NOT modify existing QEMU or vGPU stub device code
+2. MUST work with existing XCP-ng VM management (xe commands)
+3. MUST use existing device-model-args mechanism
+4. MUST require VM restart for configuration changes (pool/priority/vm_id changes)
+5. MUST show confirmation message before stopping VM for configuration changes
+5. MUST maintain backward compatibility with manually configured VMs
+
+================================================================================
+                        SUCCESS METRICS
+================================================================================
+
+The implementation will be considered successful when:
+
+1. ✅ Administrator can register VMs via CLI
+2. ✅ Administrator can assign VMs to pools (A or B)
+3. ✅ Administrator can set VM priorities (low, medium, high)
+4. ✅ Administrator can query which VMs are in which pools
+5. ✅ Administrator can query VMs by priority level
+6. ✅ VM startup automatically applies configuration from database
+7. ✅ Configuration persists across reboots
+8. ✅ All operations are documented and testable
+
+================================================================================
+                        CHANGE CONTROL
+================================================================================
+
+This document defines ABSOLUTE requirements. Any changes to:
+- Core objectives
+- Required operations
+- Database schema
+- CLI command structure
+- Implementation steps
+
+MUST be explicitly approved by the user before implementation.
+
+================================================================================
+End of Registry: Core Goals
+================================================================================

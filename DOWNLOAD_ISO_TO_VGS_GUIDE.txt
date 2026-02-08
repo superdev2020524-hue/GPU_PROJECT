@@ -1,0 +1,167 @@
+================================================================================
+        Register ISO from VGS to XCP-NG ISO Storage Repository
+================================================================================
+
+GOAL:
+-----
+Mount the VGS volume and make the ISO file available for VM creation.
+
+================================================================================
+COMPLETE SCRIPT
+================================================================================
+
+Save this to a file (e.g., register_iso.sh) and run: bash register_iso.sh
+
+OR run directly with quoted heredoc:
+  bash << 'EOF'
+
+#!/bin/bash
+set -e
+
+echo "Mounting VGS volume and registering ISO..."
+
+# Mount VGS volume
+# lvs -o vg_name,lv_name outputs: VG_NAME LV_NAME
+LV_LINE=$(lvs --noheadings -o vg_name,lv_name 2>/dev/null | grep -i iso_download | head -1)
+
+if [ -z "$LV_LINE" ]; then
+    echo "ERROR: Could not find iso_download volume"
+    echo "Available volumes:"
+    lvs | grep -i iso || echo "No ISO volumes found"
+    exit 1
+fi
+
+VG_NAME=$(echo "$LV_LINE" | awk '{print $1}')
+echo "Found VG: $VG_NAME"
+
+LV_PATH="/dev/$VG_NAME/iso_download"
+MOUNT_POINT="/mnt/iso-storage"
+
+if [ ! -e "$LV_PATH" ]; then
+    echo "Activating logical volume..."
+    lvchange -ay "$VG_NAME/iso_download"
+    sleep 1
+fi
+
+mkdir -p $MOUNT_POINT
+if ! mountpoint -q $MOUNT_POINT; then
+    mount $LV_PATH $MOUNT_POINT
+    echo "✓ Mounted VGS volume"
+fi
+
+# Find ISO file
+ISO_FILE=$(find $MOUNT_POINT -name "*.iso" -type f 2>/dev/null | head -1)
+ISO_NAME=$(basename "$ISO_FILE")
+
+if [ -z "$ISO_FILE" ]; then
+    echo "ERROR: No ISO file found in VGS volume"
+    exit 1
+fi
+
+echo "✓ Found ISO: $ISO_NAME"
+
+# Find an accessible ISO SR (skip udev/DVD drives)
+ISO_SR_UUID=""
+for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' '\n'); do
+    SR_TYPE=$(xe sr-list uuid=$SR_UUID params=type --minimal)
+    if [ "$SR_TYPE" != "udev" ]; then
+        # Check if SR has a PBD and can be mounted
+        PBD_UUID=$(xe pbd-list sr-uuid=$SR_UUID params=uuid --minimal | head -1)
+        if [ -n "$PBD_UUID" ]; then
+            ISO_SR_UUID=$SR_UUID
+            break
+        fi
+    fi
+done
+
+if [ -z "$ISO_SR_UUID" ]; then
+    echo "ERROR: No accessible ISO SR found"
+    echo "All ISO SRs are either udev type (DVD drives) or have no PBDs attached"
+    echo ""
+    echo "The ISO file is available at: $ISO_FILE"
+    echo "You can manually copy it to an ISO SR mount point, or create a local ISO SR via XCP-NG Center"
+    exit 1
+fi
+
+SR_NAME=$(xe sr-list uuid=$ISO_SR_UUID params=name-label --minimal)
+echo "Using ISO SR: $SR_NAME ($ISO_SR_UUID)"
+
+# Get SR mount point and ensure it's accessible
+SR_MOUNT="/var/run/sr-mount/$ISO_SR_UUID"
+PBD_UUID=$(xe pbd-list sr-uuid=$ISO_SR_UUID params=uuid --minimal | head -1)
+
+if [ ! -d "$SR_MOUNT" ]; then
+    echo "Mounting SR..."
+    xe pbd-plug uuid=$PBD_UUID
+    sleep 2
+fi
+
+if [ ! -d "$SR_MOUNT" ]; then
+    echo "ERROR: Cannot access SR mount point: $SR_MOUNT"
+    exit 1
+fi
+
+# Check if ISO already exists in SR
+EXISTING_ISO=$(xe vdi-list sr-uuid=$ISO_SR_UUID name-label="$ISO_NAME" params=uuid --minimal 2>/dev/null | head -1)
+
+if [ -n "$EXISTING_ISO" ]; then
+    echo "✓ ISO already registered in SR"
+    ISO_VDI_UUID=$EXISTING_ISO
+else
+    # Copy ISO to SR
+    echo "Copying ISO to SR..."
+    cp "$ISO_FILE" "$SR_MOUNT/$ISO_NAME"
+    echo "✓ ISO copied to SR"
+fi
+
+# Scan SR to register the ISO (if not already registered)
+if [ -z "$ISO_VDI_UUID" ]; then
+    echo "Scanning SR to register ISO..."
+    xe sr-scan uuid=$ISO_SR_UUID
+    sleep 2
+    
+    # Get ISO VDI UUID
+    ISO_VDI_UUID=$(xe vdi-list sr-uuid=$ISO_SR_UUID name-label="$ISO_NAME" params=uuid --minimal | head -1)
+    
+    if [ -z "$ISO_VDI_UUID" ]; then
+        echo "WARNING: ISO not yet registered, scanning again..."
+        xe sr-scan uuid=$ISO_SR_UUID
+        sleep 2
+        ISO_VDI_UUID=$(xe vdi-list sr-uuid=$ISO_SR_UUID name-label="$ISO_NAME" params=uuid --minimal | head -1)
+    fi
+fi
+
+if [ -n "$ISO_VDI_UUID" ]; then
+    echo ""
+    echo "========================================================================"
+    echo "  SUCCESS"
+    echo "========================================================================"
+    echo "ISO Name: $ISO_NAME"
+    echo "ISO VDI UUID: $ISO_VDI_UUID"
+    echo "ISO SR UUID: $ISO_SR_UUID"
+    echo ""
+    echo "ISO is now available in XCP-NG for VM creation."
+else
+    echo "ERROR: ISO not registered. Check SR mount: $SR_MOUNT"
+    exit 1
+fi
+
+EOF
+
+================================================================================
+USAGE NOTES
+================================================================================
+
+IMPORTANT: When using heredoc, use SINGLE QUOTES around EOF to prevent variable
+expansion in your current shell:
+
+  bash << 'EOF'
+  [script here]
+  EOF
+
+Or save the script to a file and run:
+  bash register_iso.sh
+
+================================================================================
+END OF GUIDE
+================================================================================

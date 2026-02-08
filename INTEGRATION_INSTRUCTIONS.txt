@@ -1,0 +1,135 @@
+================================================================================
+        Simple Guide: Update vm_create_simple.txt to Use VGS ISO
+================================================================================
+
+WHAT WE'RE DOING:
+-----------------
+Right now, vm_create_simple.txt uses a hardcoded ISO UUID from the SMB network
+share. We want to change it to use the ISO file from your VGS volume instead.
+
+THREE SIMPLE CHANGES:
+---------------------
+
+CHANGE 1: Add a step to register the VGS ISO first
+---------------------------------------------------
+WHERE: Add this right after Step 1 (around line 22)
+
+WHAT TO ADD:
+------------
+STEP 1.5: Register ISO from VGS
+--------------------------------
+# Register the ISO from VGS before creating the VM
+# (Copy the entire script from DOWNLOAD_ISO_TO_VGS_GUIDE.txt, lines 18-147)
+
+# After running that script, you'll have:
+# - ISO_VDI_UUID (the ISO's UUID in XCP-NG)
+# - ISO_SR_UUID (which SR the ISO is in)
+# - ISO_NAME (the ISO filename)
+
+# These variables will be used in the next steps
+
+
+CHANGE 2: Insert ISO when creating the VM
+------------------------------------------
+WHERE: In Step 2, right after creating the CD drive (after line 57)
+
+FIND THIS:
+----------
+# Create CD drive
+CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+
+# Configure boot order
+
+REPLACE WITH THIS:
+------------------
+# Create CD drive
+CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+
+# Insert ISO from VGS (must run Step 1.5 first!)
+if [ -z "$ISO_VDI_UUID" ]; then
+    echo "ERROR: Run Step 1.5 first to register the ISO from VGS"
+    exit 1
+fi
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+echo "✓ ISO inserted"
+
+# Configure boot order
+
+
+CHANGE 3: Remove the old hardcoded section
+------------------------------------------
+WHERE: At the bottom of the file (lines 122-130)
+
+FIND THIS:
+----------
+================================================================================
+VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
+ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+
+# Insert ISO
+CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+echo "Inserting Ubuntu 22.04 ISO..."
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+echo "ISO inserted"
+
+DELETE ALL OF IT (or replace with a simple note):
+-------------------------------------------------
+# Note: ISO is now inserted during VM creation (Step 2)
+# If you need to re-insert the ISO later, use:
+#   CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
+#   xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+
+
+OPTIONAL: Add a note at the top
+--------------------------------
+WHERE: Right after the PROBLEM section (around line 11)
+
+ADD THIS:
+---------
+NOTE:
+-----
+This guide uses the ISO from your VGS volume (iso_download), not the SMB
+network share. Make sure to run Step 1.5 first to register the ISO.
+
+
+================================================================================
+SUMMARY - WHAT CHANGES
+================================================================================
+
+BEFORE:
+-------
+1. Create VM
+2. Create CD drive
+3. (Later) Insert ISO using hardcoded UUID from SMB
+
+AFTER:
+------
+1. Register ISO from VGS (new step!)
+2. Create VM
+3. Insert ISO from VGS immediately (uses the UUID from step 1)
+4. Done!
+
+
+================================================================================
+WHY THIS IS BETTER
+================================================================================
+
+OLD WAY:
+- Uses hardcoded UUID that might not exist
+- Relies on SMB network share (can fail)
+- ISO insertion happens separately
+
+NEW WAY:
+- Automatically finds your ISO in VGS
+- Uses local storage (more reliable)
+- Everything happens in the right order
+- No hardcoded UUIDs to break
+
+
+================================================================================
+THAT'S IT!
+================================================================================
+
+Just make those 3 changes and the guide will use your VGS ISO instead of
+the SMB one. The ISO will be registered automatically, and the VM will
+use it right away.

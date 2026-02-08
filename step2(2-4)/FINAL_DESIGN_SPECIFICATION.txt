@@ -1,0 +1,463 @@
+================================================================================
+                    FINAL DESIGN SPECIFICATION
+                    Configuration & Management Interface (Step 2-4)
+================================================================================
+
+Date: January 11, 2026
+Status: FINAL - Based on User Clarifications
+
+================================================================================
+                        USER CLARIFICATIONS (FINAL)
+================================================================================
+
+1. ✅ Create only two pools: Pool A and Pool B (not arbitrary number)
+2. ✅ Pools created automatically during database initialization
+3. ✅ scan-vms shows VMs grouped by pool (alphabetical order), then unregistered
+4. ✅ status command displays pools
+5. ✅ Pools are logical entities (not tied to physical GPUs)
+6. ✅ All VMs must belong to a pool (pools replace logical GPUs)
+7. ✅ Default pool: Pool A (if not specified)
+8. ✅ Pool names can be changed later (need edit-pool-name command)
+9. ✅ Changing pool/priority/vm_id requires: stop VM → reconfigure → restart VM
+
+================================================================================
+                        DATABASE SCHEMA (FINAL)
+================================================================================
+
+Table: pools
+------------
+CREATE TABLE pools (
+    pool_id CHAR(1) PRIMARY KEY CHECK(pool_id IN ('A', 'B')),
+    pool_name TEXT NOT NULL DEFAULT 'Pool A' OR 'Pool B',
+    description TEXT,
+    enabled INTEGER DEFAULT 1 CHECK(enabled IN (0, 1)),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Auto-insert Pool A and Pool B during initialization
+INSERT INTO pools (pool_id, pool_name, enabled) VALUES 
+    ('A', 'Pool A', 1),
+    ('B', 'Pool B', 1);
+
+Why This Schema:
+1. Only Pool A and B: CHECK constraint limits to 'A' and 'B'
+2. Auto-created: INSERT statements in init script
+3. pool_name: Can be edited later (e.g., "Production Pool", "Development Pool")
+4. Enabled by default: Both pools enabled from start
+
+---
+
+Table: vms
+----------
+CREATE TABLE vms (
+    vm_id INTEGER NOT NULL UNIQUE,
+    vm_uuid TEXT UNIQUE NOT NULL,
+    vm_name TEXT,
+    pool_id CHAR(1) NOT NULL DEFAULT 'A' CHECK(pool_id IN ('A', 'B')),
+    priority INTEGER NOT NULL DEFAULT 1 CHECK(priority IN (0, 1, 2)),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pool_id) REFERENCES pools(pool_id)
+);
+
+Indexes:
+CREATE INDEX idx_vm_uuid ON vms(vm_uuid);
+CREATE INDEX idx_vm_pool ON vms(pool_id);
+CREATE INDEX idx_vm_priority ON vms(priority);
+
+Why This Schema:
+1. Default pool: pool_id defaults to 'A' (Pool A)
+2. Default priority: priority defaults to 1 (medium)
+3. Foreign Key: Ensures VM can only be assigned to Pool A or B
+4. CHECK constraint: Double validation (database + application)
+
+================================================================================
+                        UPDATED COMMAND LIST (FINAL)
+================================================================================
+
+Pool Management:
+---------------
+vgpu-admin list-pools                    # List Pool A and Pool B with statistics
+vgpu-admin show-pool --pool-id=<A|B>    # Show detailed pool information
+
+Note: set-pool-name command will be added later (not in initial implementation)
+
+VM Management:
+-------------
+vgpu-admin scan-vms                      # Scan VMs, grouped by pool (A, B, then unregistered)
+vgpu-admin register-vm --vm-uuid=<uuid> [--vm-name=<name>] [--pool=<A|B>] [--priority=<low|medium|high>] [--vm-id=<id>]
+vgpu-admin show-vm --vm-uuid=<uuid>     # Show VM config (includes pool)
+vgpu-admin list-vms [--pool=<A|B>] [--priority=<low|medium|high>]
+vgpu-admin set-pool --vm-uuid=<uuid> --pool=<A|B>  # Stops VM, reconfigures, restarts
+vgpu-admin set-priority --vm-uuid=<uuid> --priority=<low|medium|high>  # Stops VM, reconfigures, restarts
+vgpu-admin set-vm-id --vm-uuid=<uuid> --vm-id=<id>  # Stops VM, reconfigures, restarts
+vgpu-admin update-vm --vm-uuid=<uuid> [--pool=<A|B>] [--priority=<low|medium|high>] [--vm-id=<id>]  # Stops VM, reconfigures, restarts
+vgpu-admin remove-vm --vm-uuid=<uuid>
+
+System Overview:
+---------------
+vgpu-admin status                        # Control panel: Shows Pool A, Pool B, VMs, assignments
+
+================================================================================
+                        COMMAND OUTPUT SPECIFICATIONS
+================================================================================
+
+scan-vms Output (Grouped by Pool, Alphabetical):
+------------------------------------------------
+$ vgpu-admin scan-vms
+
+=== Pool A: 7 VMs ===
+UUID: abc123... | Name: VM-1 | Pool: A | Priority: high (2) | VM ID: 1 | ✓ Configured
+UUID: def456... | Name: VM-2 | Pool: A | Priority: high (2) | VM ID: 2 | ✓ Configured
+UUID: ghi789... | Name: VM-3 | Pool: A | Priority: medium (1) | VM ID: 3 | ✓ Configured
+UUID: jkl012... | Name: VM-4 | Pool: A | Priority: medium (1) | VM ID: 4 | ✓ Configured
+UUID: mno345... | Name: VM-5 | Pool: A | Priority: low (0) | VM ID: 5 | ✓ Configured
+UUID: pqr678... | Name: VM-6 | Pool: A | Priority: low (0) | VM ID: 6 | ✓ Configured
+UUID: stu901... | Name: VM-7 | Pool: A | Priority: low (0) | VM ID: 7 | ✓ Configured
+
+=== Pool B: 13 VMs ===
+UUID: vwx234... | Name: VM-8 | Pool: B | Priority: high (2) | VM ID: 8 | ✓ Configured
+UUID: yza567... | Name: VM-9 | Pool: B | Priority: high (2) | VM ID: 9 | ✓ Configured
+...
+
+=== Unregistered VMs: 3 ===
+UUID: bcd890... | Name: VM-21 | Status: ⚠ Not registered | Action: Run 'vgpu-admin register-vm'
+UUID: efg123... | Name: VM-22 | Status: ⚠ Not registered | Action: Run 'vgpu-admin register-vm'
+UUID: hij456... | Name: VM-23 | Status: ⚠ Not registered | Action: Run 'vgpu-admin register-vm'
+
+Why This Format:
+1. Alphabetical Pool Order: Pool A first, then Pool B
+2. Grouped by Pool: All Pool A VMs together, all Pool B VMs together
+3. Unregistered Last: Unregistered VMs shown at end
+4. Clear Status: Shows "Not registered" for unregistered VMs
+5. Actionable: Suggests command to register
+
+---
+
+status Command Output:
+----------------------
+$ vgpu-admin status
+
+================================================================================
+                    GPU Virtualization Control Panel
+================================================================================
+
+Pool A: "Pool A" (or custom name if changed)
+---------------------------------------------
+Status: Enabled
+VMs: 7
+  High Priority: 3 VMs (VM-1, VM-2, VM-3)
+  Medium Priority: 2 VMs (VM-4, VM-5)
+  Low Priority: 2 VMs (VM-6, VM-7)
+
+VM Details:
+  VM-1 (UUID: abc123...) | Priority: high | VM ID: 1
+  VM-2 (UUID: def456...) | Priority: high | VM ID: 2
+  VM-3 (UUID: ghi789...) | Priority: high | VM ID: 3
+  VM-4 (UUID: jkl012...) | Priority: medium | VM ID: 4
+  VM-5 (UUID: mno345...) | Priority: medium | VM ID: 5
+  VM-6 (UUID: pqr678...) | Priority: low | VM ID: 6
+  VM-7 (UUID: stu901...) | Priority: low | VM ID: 7
+
+Pool B: "Pool B" (or custom name if changed)
+---------------------------------------------
+Status: Enabled
+VMs: 13
+  High Priority: 5 VMs
+  Medium Priority: 6 VMs
+  Low Priority: 2 VMs
+
+VM Details:
+  VM-8 (UUID: vwx234...) | Priority: high | VM ID: 8
+  ...
+
+Unregistered VMs: 3
+  VM-21, VM-22, VM-23 (not registered - will default to Pool A if registered without --pool)
+
+System Summary:
+--------------
+Total Pools: 2 (both enabled)
+Total VMs Registered: 20
+Total VMs Unregistered: 3
+Total VMs in System: 23
+
+Why This Format:
+1. Pool-Focused: Shows Pool A and Pool B prominently
+2. Pool Names: Shows current pool names (default or custom)
+3. Complete Information: Shows all VMs in each pool
+4. Summary: System-wide statistics at bottom
+
+---
+
+register-vm Command (Updated):
+-------------------------------
+vgpu-admin register-vm --vm-uuid=<uuid> [--vm-name=<name>] [--pool=<A|B>] [--priority=<low|medium|high>] [--vm-id=<id>]
+
+Changes:
+- --pool is now OPTIONAL (defaults to Pool A)
+- --priority is now OPTIONAL (defaults to medium)
+- --vm-id is optional (auto-assigned if not provided)
+
+Examples:
+# Register with defaults (Pool A, medium priority, auto vm_id)
+vgpu-admin register-vm --vm-uuid=abc123 --vm-name="VM-1"
+
+# Register with explicit pool and priority
+vgpu-admin register-vm --vm-uuid=def456 --pool=B --priority=high --vm-id=8
+
+Why This Change:
+1. Default Pool: Matches user requirement (default to Pool A)
+2. Simpler: Less typing for common case
+3. Flexible: Can still specify all parameters
+
+================================================================================
+                        VM LIFECYCLE MANAGEMENT
+================================================================================
+
+IMPORTANT: Changing pool/priority/vm_id requires VM restart
+-----------------------------------------------------------
+
+When user changes:
+- Pool assignment (set-pool)
+- Priority (set-priority)
+- VM ID (set-vm-id)
+- Any combination (update-vm)
+
+The system must:
+1. Stop the VM (xe vm-shutdown or xe vm-force-shutdown)
+2. Wait for VM to stop
+3. Update database
+4. Update device-model-args with new configuration
+5. Restart the VM (xe vm-start)
+
+Implementation:
+---------------
+Functions needed:
+- vgpu_stop_vm(vm_uuid) - Stop VM gracefully, wait for shutdown
+- vgpu_update_vm_config(vm_uuid, pool_id, priority, vm_id) - Update device-model-args
+- vgpu_start_vm(vm_uuid) - Start VM
+- vgpu_reconfigure_vm(vm_uuid, pool_id, priority, vm_id) - Complete workflow
+
+Commands that trigger VM restart:
+- set-pool: Stops VM, updates pool, updates device-model-args, restarts
+- set-priority: Stops VM, updates priority, updates device-model-args, restarts
+- set-vm-id: Stops VM, updates vm_id, updates device-model-args, restarts
+- update-vm: Stops VM, updates all changed parameters, updates device-model-args, restarts
+
+User Confirmation:
+------------------
+For commands that require VM restart:
+- ALWAYS show confirmation message: "Do you want to apply these settings?"
+- User must confirm (yes/no) before VM is stopped
+- If user says "no", operation is cancelled, VM continues running
+- No --force flag initially (can add later if needed)
+
+Confirmation Message Format:
+----------------------------
+When user runs: vgpu-admin set-pool --vm-uuid=abc123 --pool=B
+
+System displays:
+  Current configuration:
+    Pool: A
+    Priority: high (2)
+    VM ID: 1
+  
+  New configuration:
+    Pool: B
+    Priority: high (2)
+    VM ID: 1
+  
+  This change requires stopping and restarting the VM.
+  Do you want to apply these settings? (yes/no):
+  
+If yes: Stop VM → Update config → Restart VM
+If no: Cancel operation, VM continues running
+
+================================================================================
+                        POOL NAME MANAGEMENT
+================================================================================
+
+Note: set-pool-name command will NOT be implemented initially
+-------------------------------------------------------------
+- Pool names will remain as "Pool A" and "Pool B" (defaults)
+- Can be added later if needed
+- For now, pools are identified by pool_id ('A' or 'B') only
+
+Future Enhancement:
+-------------------
+If needed later, can add:
+- vgpu-admin set-pool-name --pool-id=<A|B> --name=<new-name>
+- This would update pool_name in database
+- No VM restart required (just metadata)
+
+================================================================================
+                        IMPLEMENTATION UPDATES
+================================================================================
+
+STEP 1.2 UPDATE: Database Schema Design
+----------------------------------------
+- Add pools table with pool_name field (editable)
+- Auto-insert Pool A and Pool B with default names
+- Add default values to vms table (pool_id='A', priority=1)
+
+STEP 1.3 UPDATE: Database Initialization Script
+------------------------------------------------
+- Include INSERT statements for Pool A and Pool B with default names
+- Ensure pools are created before VMs can be assigned
+
+STEP 2.7 UPDATE: VM Lifecycle Library Functions
+-------------------------------------------------
+New functions:
+- vgpu_stop_vm(vm_uuid) - Stop VM and wait
+- vgpu_start_vm(vm_uuid) - Start VM
+- vgpu_update_device_model_args(vm_uuid, pool_id, priority, vm_id) - Update device-model-args
+- vgpu_reconfigure_vm(vm_uuid, pool_id, priority, vm_id) - Complete reconfiguration workflow
+
+Why:
+- Changing pool/priority/vm_id requires VM restart
+- Need functions to handle VM lifecycle
+- Need to update device-model-args after database update
+
+STEP 2.8 UPDATE: Pool Management Library Functions
+---------------------------------------------------
+Functions:
+- vgpu_list_pools() - List Pool A and Pool B
+- vgpu_show_pool(pool_id) - Show pool details
+- vgpu_set_pool_name(pool_id, new_name) - Update pool name
+- vgpu_get_pool_name(pool_id) - Get pool name (returns default if not set)
+- vgpu_validate_pool_exists(pool_id) - Validate pool is A or B
+
+STEP 3.7 UPDATE: scan-vms Command
+-----------------------------------
+- Group output by pool (alphabetical: Pool A, then Pool B)
+- Show all VMs in Pool A section
+- Show all VMs in Pool B section
+- Show unregistered VMs at end
+- Mark unregistered VMs clearly as "Not registered"
+
+STEP 3.8 UPDATE: register-vm Command
+-------------------------------------
+- Make --pool optional (defaults to 'A')
+- Make --priority optional (defaults to 1/medium)
+- Auto-assign vm_id if not provided
+- Use defaults for any missing parameters
+
+STEP 3.9 UPDATE: set-pool, set-priority, set-vm-id Commands
+------------------------------------------------------------
+- Add VM lifecycle management:
+  1. Show current configuration
+  2. Show new configuration
+  3. Show confirmation message: "Do you want to apply these settings?"
+  4. Wait for user confirmation (yes/no)
+  5. If yes:
+     a. Check if VM is running
+     b. If running: Stop VM
+     c. Update database
+     d. Update device-model-args
+     e. Restart VM
+  6. If no: Cancel operation, show message
+- No --force flag initially (always ask for confirmation)
+
+STEP 3.10: SKIPPED - set-pool-name Command
+-------------------------------------------
+- NOT implemented initially
+- Pool names remain as defaults ("Pool A", "Pool B")
+- Can be added later if needed
+
+STEP 3.15 UPDATE: status Command
+---------------------------------
+- Show Pool A section with custom name if set
+- Show Pool B section with custom name if set
+- Show all VMs in each pool
+- Show unregistered VMs
+- Show system summary
+
+================================================================================
+                        UPDATED WORKFLOW EXAMPLES
+================================================================================
+
+Workflow 1: Register VM with Defaults
+--------------------------------------
+$ vgpu-admin register-vm --vm-uuid=abc123 --vm-name="VM-1"
+# Result: Registered to Pool A, medium priority, auto-assigned vm_id
+
+Workflow 2: Register VM with Explicit Settings
+-----------------------------------------------
+$ vgpu-admin register-vm --vm-uuid=def456 --vm-name="VM-8" --pool=B --priority=high --vm-id=8
+# Result: Registered to Pool B, high priority, vm_id=8
+
+Workflow 3: Change VM Pool (Requires Restart)
+-----------------------------------------------
+$ vgpu-admin set-pool --vm-uuid=abc123 --pool=B
+
+System displays:
+  Current configuration:
+    Pool: A
+    Priority: high (2)
+    VM ID: 1
+  
+  New configuration:
+    Pool: B
+    Priority: high (2)
+    VM ID: 1
+  
+  This change requires stopping and restarting the VM.
+  Do you want to apply these settings? (yes/no): yes
+
+# If user confirms: System stops VM → Updates database → Updates device-model-args → Restarts VM
+# If user says no: Operation cancelled, VM continues running
+
+Workflow 4: Change Pool Name (Future Enhancement)
+--------------------------------------------------
+# Note: set-pool-name not implemented initially
+# Pool names remain as "Pool A" and "Pool B"
+# Can be added later if needed
+
+Workflow 5: Scan and Register Multiple VMs
+-------------------------------------------
+$ vgpu-admin scan-vms
+# See: Pool A (7 VMs), Pool B (13 VMs), Unregistered (3 VMs)
+
+$ vgpu-admin register-vm --vm-uuid=xyz789  # Defaults to Pool A
+$ vgpu-admin register-vm --vm-uuid=uvw012 --pool=B --priority=high
+$ vgpu-admin register-vm --vm-uuid=rst345 --pool=A --vm-id=21
+
+================================================================================
+                        KEY DESIGN DECISIONS
+================================================================================
+
+Decision 1: Default Pool is Pool A
+------------------------------------
+- If --pool not specified, use Pool A
+- Matches user requirement
+- Simplifies registration for common case
+
+Decision 2: VM Restart Required for Config Changes
+---------------------------------------------------
+- Changing pool/priority/vm_id requires VM restart
+- System handles this automatically
+- ALWAYS asks for confirmation: "Do you want to apply these settings?"
+- User must confirm before VM is stopped
+
+Decision 3: Pool Names are Fixed Initially
+------------------------------------------
+- Pool names remain as "Pool A" and "Pool B" (defaults)
+- set-pool-name command not implemented initially
+- Can be added later if needed
+
+Decision 4: scan-vms Groups by Pool
+------------------------------------
+- Output organized: Pool A → Pool B → Unregistered
+- Alphabetical pool order
+- Clear separation between registered and unregistered
+
+Decision 5: All VMs Must Belong to Pool
+----------------------------------------
+- Unregistered VMs are shown separately
+- When registered, must assign to Pool A or B
+- Default is Pool A if not specified
+
+================================================================================
+End of Final Design Specification
+================================================================================

@@ -1,0 +1,528 @@
+================================================================================
+                     VM_CREATE SESSION LOG (Beginner-Friendly Guide)
+================================================================================
+
+Purpose
+-------
+Keep a durable record of this working session so it can be resumed exactly after
+interruption. This log is also where we track decisions and the “why” behind
+them, before producing the final step-by-step guide/scripts.
+
+
+My role (as agreed)
+-------------------
+- Provide accurate, step-by-step guidance for creating a new VM in XCP-NG,
+  including ISO registration, VM creation, network configuration, VNC access,
+  and post-install steps.
+- Explain the reasoning behind each step (why it’s needed, what it proves).
+- Collaborate: discuss your perspective, propose options, and converge on an
+  agreed approach before finalizing the guide.
+- Maintain an accurate record of the guide direction and this session’s state
+  in THIS directory.
+
+
+Hard constraints (explicit)
+---------------------------
+- All materials must be stored under: /home/david/Downloads/gpu/vm_create/
+- Use non-interactive “internal shell” style workflows:
+  - self-contained copy/paste blocks or scripts
+  - variables set inside the block/script
+  - avoid reliance on exporting variables in the user’s interactive shell
+  - avoid prompts/read/confirmations
+- Primary objective right now: fix the ISO/boot failure that blocks VM start.
+- Network config requirement for Ubuntu guest (static IP):
+  - IP:      10.25.33.X (X chosen per VM)
+  - Gateway: 10.25.33.254
+  - DNS:     8.8.8.8
+- dom0 access: SSH as root.
+
+
+Session: 2026-02-04
+-------------------
+
+Role clarity (restated explicitly; per user request)
+---------------------------------------------------
+- I am acting as your collaborative technical writer + XCP-ng troubleshooting
+  partner. I will:
+  - keep an accurate, resumable session record in this directory
+  - propose non-interactive, self-contained command blocks (“internal shell”)
+  - explain *why* each step is necessary and what each output implies
+  - avoid creating additional files unless you explicitly instruct me to
+
+High-level problem statement
+----------------------------
+User has been blocked for days by an ISO workflow: after selecting/registering
+the ISO and configuring the VM, starting the VM fails with an error indicating
+the ISO cannot be found / network problem. Network itself appears OK; suspect
+is ISO storage substrate (SMB SR mount/availability) at VM start time.
+
+
+Key evidence collected (from user-pasted dom0 output; ~23:18)
+-------------------------------------------------------------
+1) ISO SRs present:
+   - a8a724d0-...  "DVD drives"        type=udev  shared=false
+   - 097e2b8c-...  "SMB ISO library"   type=iso   shared=true   <-- important
+   - 1a00261c-...  "XCP-ng Tools"      type=iso   shared=true
+
+2) Mount status check:
+   - SMB ISO library:
+     - /var/run/sr-mount/097e2b8c-... directory EXISTS
+     - BUT: mount table shows NOT MOUNTED (mount | grep ... => none)
+     - directory listing shows essentially empty mountpoint
+
+   Reasoning:
+   - In XCP-ng, the existence of /var/run/sr-mount/<SR_UUID> is not sufficient.
+     The SR must be actually mounted (visible in the mount table) and readable.
+   - A common failure mode is:
+       "VDI could not be found on the storage substrate"
+     meaning XAPI knows about the ISO VDI, but the backing file on SMB is not
+     reachable because the SR isn’t mounted or the share can’t be accessed.
+
+3) VM CD state check (this run resolved VM_NAME to Test-1 due to prior shell
+   environment; Test-1/2 are known-good and not the target of this work):
+   - CD_VBD present
+   - ISO_VDI reported as "<not in database>" (effectively: no ISO inserted)
+
+   Reasoning:
+   - Even if SMB SR is healthy, the VM won’t boot the installer unless the CD
+     VBD is backed by a valid ISO VDI UUID.
+
+New evidence (user pasted execution result; ~23:27–23:29)
+--------------------------------------------------------
+Goal of run: attempt to attach SMB ISO SR, insert Ubuntu ISO, and start a VM.
+
+Observed:
+- SMB SR PBD device-config:
+  - location: //10.25.33.33/test
+  - type: cifs
+  - vers: 3.0
+  - username: momi
+  - currently-attached: false
+
+- Attempted: xe pbd-plug uuid=<PBD_UUID>
+  - Result: currently-attached remained false
+
+- Attempted: xe sr-scan uuid=<SMB_SR_UUID>
+  - Output: "The SR has no attached PBDs"
+
+- ISO VDI list for SMB SR was still visible via XAPI, including:
+  - ubuntu-24.04.2-live-server-amd64.iso (VDI UUID: 86d22032-...)
+  - ubuntu-22.04.5-desktop-amd64.iso     (VDI UUID: 049254cd-...)
+
+- CD insert succeeded at XAPI level:
+  - VM CD VBD had vdi-uuid set to 86d22032-...
+
+Critical failure at VM start:
+- xe vm-start uuid=<VM_UUID> failed with:
+  "There are no suitable hosts to start this VM on"
+  per-host reason:
+    "Cannot start here [VM requires access to SR: 097e2b8c-... (SMB ISO library)]"
+
+Interpretation:
+- The hypervisor refuses to start the VM because the SR required by the VM
+  (the ISO SR) is not actually attached/accessible on the host.
+- This is consistent with PBD failing to attach (currently-attached=false),
+  and the SR not being mounted (mount table did not show an actual mount).
+
+Action item derived:
+- We must stop suppressing pbd-plug errors and capture the real failure reason
+  from xe/xensource logs. Then we can fix:
+  - credentials/secret validity, SMB version negotiation, share permissions,
+    CIFS tooling, or SR backend mount failure.
+
+
+Decision / direction (current)
+------------------------------
+- Treat ISO substrate reliability and “ISO is readable at VM start time” as the
+  gating condition.
+- The eventual guide must include a preflight that proves:
+  - the chosen ISO SR is truly mounted and readable
+  - the ISO VDI is visible (xe vdi-list works) and can be inserted
+  - the VM’s CD drive has a valid vdi-uuid attached before vm-start
+
+
+Next target VM
+--------------
+- VM name-label to create next: Test-3
+- Test-1 and Test-2 already work; focus is on creating new Test-X VMs reliably.
+
+
+Next actions (pending user-provided execution results)
+------------------------------------------------------
+User will paste output later. Once provided, we will:
+1) Determine if the SMB ISO SR can be made truly mounted:
+   - verify PBD currently-attached
+   - pbd-unplug/pbd-plug + sr-scan
+   - confirm mount table shows an actual mount for /var/run/sr-mount/<SR_UUID>
+   - confirm ISO VDIs listed from that SR
+
+2) Create VM Test-3 and attach install media deterministically:
+   - create VM from template "Other install media"
+   - set memory/vCPUs (avoid installer crash loops)
+   - create disk VDI + attach to device 0
+   - create VIF on chosen network (xenbr0 or user-selected)
+   - create CD VBD on numeric slot (e.g., device=3)
+   - insert ISO VDI UUID
+   - set boot order (CD then disk) and start VM
+
+3) VNC + post-install workflow:
+   - use dom-id based VNC unix socket /var/run/xen/vnc-<DOMID>
+   - socat to TCP 5901 + SSH tunnel from workstation
+   - document dom-id change on reboot and how to repoint socat
+   - inside Ubuntu installer, configure static IP:
+       10.25.33.X / gateway 10.25.33.254 / DNS 8.8.8.8
+   - post-install: eject ISO, set boot order to disk, validate SSH.
+
+
+Open questions / items to confirm later
+---------------------------------------
+- Which Ubuntu ISO name-label should be the default (22.04 vs 24.04) once we
+  see what’s available in the ISO SR(s).
+- Whether SMB ISO SR will be fixed/stabilized or replaced by a more reliable
+  local ISO SR workflow (GUI one-time step acceptable if needed).
+
+
+Critical new evidence (user pasted; ~00:53)
+------------------------------------------
+Attempted: xe pbd-plug uuid=<PBD_UUID> (without suppressing errors)
+
+Result:
+  Error code: SR_BACKEND_FAILURE_222
+  Error parameters: , Could not mount the directory specified in Device Configuration
+    [opterr=mount error(113): could not connect to 10.25.33.33
+    Unable to find suitable address.]
+
+Interpretation:
+  - Error 113 = "No route to host" / network unreachable
+  - This is NOT an XCP-ng configuration issue
+  - The SMB server at 10.25.33.33 is not reachable from dom0
+  - Possible causes:
+    * SMB server is down/offline
+    * Network routing issue (dom0 can't reach 10.25.33.33)
+    * Firewall blocking SMB port 445
+    * SMB server changed IP/network
+
+User feedback (critical):
+  - "Could it be that you are approaching this incorrectly?"
+  - "This same issue occurred during the work we did a few days ago"
+  - "I'm not sure if you're going in a direction I've already tried"
+  - "Without such a systematic approach, you won't find the answer, just like I didn't for several days"
+
+Acknowledgment:
+  - I have been repeating approaches already documented in:
+    * step2(quing)/FIX_SMB_NETWORK_ISSUE.txt
+    * step2(quing)/CHECK_SMB_MOUNT_STATUS.txt
+    * step2(quing)/TEST_SMB_CONNECTION.txt
+    * step2(quing)/DELETE_AND_RECREATE_TEST3_TEST4.txt
+  - These documents already show attempts to:
+    * Fix SMB credentials
+    * Test network connectivity
+    * Manually mount CIFS
+    * Diagnose PBD plug failures
+  - The root cause is clear: SMB server 10.25.33.33 is network unreachable
+
+
+Systematic plan (with rationale)
+---------------------------------
+Goal: Create a reliable VM creation workflow that doesn't depend on unreliable SMB ISO SR.
+
+Decision tree:
+  1) Can we fix SMB server connectivity?
+     - Check: Is 10.25.33.33 reachable from dom0? (ping, telnet 445)
+     - If NO: This is infrastructure/network issue, not XCP-ng issue
+     - If YES but mount still fails: SMB credentials/permissions/share path issue
+     - Rationale: User has tried this before; if it's still failing, it's likely
+       a persistent infrastructure problem (server down, network routing, firewall)
+
+  2) Alternative: Use a different ISO source that doesn't depend on SMB
+     - Option A: Local ISO SR (file-based, points to local path on dom0)
+       * Requires one-time GUI setup (XCP-ng Center) to create file-based ISO SR
+       * After that, fully scriptable and reliable
+       * Rationale: Local storage doesn't depend on network/SMB server availability
+     - Option B: VGS-based ISO (from your existing vm_create_simple.txt workflow)
+       * Mount VGS volume, copy ISO to accessible SR, register
+       * Rationale: VGS is local storage, more reliable than SMB
+     - Option C: Copy ISO from SMB to local storage (one-time manual step)
+       * If SMB is reachable sometimes, copy ISO files to local SR when it works
+       * Then use local SR for VM creation
+       * Rationale: Decouples VM creation from SMB availability
+
+  3) Workflow design principle:
+     - Preflight check: Verify ISO SR is mounted AND readable before VM creation
+     - Fail fast: If ISO SR not accessible, refuse to create VM (don't create broken state)
+     - Clear error messages: Tell user exactly what's wrong and what to fix
+     - Rationale: Prevents creating VMs that can't start (waste of time)
+
+Recommended approach (based on evidence):
+  Since SMB server is network unreachable (error 113), and user has tried fixing
+  SMB multiple times over days, we should:
+  1) Acknowledge SMB is unreliable for this use case
+  2) Design workflow around a reliable ISO source (local SR or VGS)
+  3) Document SMB as "optional/legacy" - if it works, great, but don't depend on it
+  4) Make the guide work even if SMB is completely broken
+
+Next concrete action:
+  - Propose a workflow that uses VGS-based ISO (already documented in
+    vm_create_simple.txt) OR local ISO SR
+  - Include preflight checks that verify ISO accessibility BEFORE creating VM
+  - Test with Test-3 creation using the reliable ISO source
+
+
+Critical lesson learned (user demonstration)
+---------------------------------------------
+User ran test.txt script (saved as 1.sh) and it reported "SUCCESS" even though:
+- SMB SR is not actually mounted (we know from earlier: mount error 113)
+- The script only checked if mount point directory exists (`-d "$SR_MOUNT"`)
+- Directory existence ≠ actual mount (we proved this earlier)
+- Script found ISO "already registered" in XAPI (stale records from when SR worked)
+- Script declared success without verifying SR is actually accessible
+
+The flaw in test.txt script (lines 93-102):
+  - Checks: `if [ ! -d "$SR_MOUNT" ]` (directory exists?)
+  - Tries: `xe pbd-plug` (can fail silently)
+  - Re-checks: `if [ ! -d "$SR_MOUNT" ]` (same check)
+  - Never verifies:
+    * Is mount in mount table? (`mount | grep`)
+    * Is PBD actually attached? (`currently-attached=true`)
+    * Can we read files from mount? (`ls -la "$SR_MOUNT"` shows files)
+
+This is why scripts can report false success: they check for directory existence
+but not actual mount/readability.
+
+Required fix for any ISO registration workflow:
+  - Verify mount point directory exists AND
+  - Verify mount is in mount table (`mount | grep "$SR_MOUNT"`) AND
+  - Verify PBD is attached (`currently-attached=true`) AND
+  - Verify files are readable (`test -r "$SR_MOUNT/$ISO_NAME"` or `ls` shows files)
+  - Only then declare success
+
+This is the systematic approach: verify actual functionality, not just directory existence.
+
+
+Deliverable created
+-------------------
+File: /home/david/Downloads/gpu/vm_create/create_test3_vm.sh
+
+Complete non-interactive workflow script that:
+- Properly verifies SR accessibility (mount table, PBD attachment, file readability)
+- Mounts VGS and finds Ubuntu ISO
+- Creates Test-3 VM with proper configuration
+- Inserts ISO and starts VM
+- Includes VNC connection instructions
+- All variables set internally (no external shell dependencies)
+
+Key improvements over test.txt:
+- verify_sr_accessible() function checks:
+  * Directory exists AND
+  * Mount is in mount table AND
+  * PBD is attached (currently-attached=true) AND
+  * Files are readable from mount
+- Verifies SR accessibility BEFORE declaring ISO ready
+- Verifies SR accessibility AGAIN before starting VM (prevents false success)
+- Clear error messages explaining what failed and why
+
+This script will fail fast if SR is not accessible, preventing the "false success"
+problem where ISO appears registered but VM can't start.
+
+
+Current blocker (2026-02-04, ~03:27)
+-------------------------------------
+SMB server diagnostic confirms:
+- SMB server 10.25.33.33 is NOT reachable (ping failed)
+- Network routing exists (same subnet 10.25.33.0/24)
+- Server is either down, firewall-blocked, or network/VPN interference
+- Cannot fix SMB SR without fixing server connectivity
+
+User network setup:
+- Windows PC with Astrill STEALVPN (blocks direct XCP-ng access)
+- Ubuntu in VMware on Windows
+- Ubuntu uses WireGuard
+- Ubuntu CAN SSH to XCP-ng (10.25.33.10) ✓
+- Windows CANNOT reach XCP-ng directly ✗
+
+User wants to:
+- Use XCP-ng management from Ubuntu (not Windows)
+- OR fix SMB server issue
+
+Root cause confirmed:
+- XCP-ng CLI does NOT support creating file-based ISO SRs
+- XCP-ng Center is Windows-only (can't use from Ubuntu)
+- SMB ISO SR is unreachable (server down/network issue)
+- No other ISO SRs are accessible
+
+ISO file is ready: /mnt/iso-storage/ubuntu-22.04.5-desktop-amd64.iso
+But cannot proceed without an accessible ISO SR.
+
+Solution path (updated):
+- Option 1: Install Xen Orchestra (XOA) - web-based, works from Ubuntu browser
+  - Created guide: XEN_ORCHESTRA_QUICK_START.md
+  - Created detailed step-by-step: INSTALL_XOA_STEP_BY_STEP.md
+  - XOA is pre-built VM, import into XCP-ng, access via browser
+  - Can create ISO SRs via web GUI
+- Option 2: Fix SMB server connectivity (if server is accessible/fixable)
+  - Created diagnostic: diagnose_smb_server.sh
+  - Requires SMB server to be online and reachable
+- Option 3: Other alternatives (to be explored if A and B fail)
+
+User decision: Proceed in order A → B → C
+
+Option A attempt (2026-02-04, ~03:33-03:34):
+- Tried official XOA installer: `bash <(curl -s https://xoa.io/install.sh)`
+  - Result: No output (script likely failed silently or doesn't exist)
+- Tried direct XVA download: `wget https://xoa.io/releases/xoa-vm.xva`
+  - Result: 404 Not Found (file doesn't exist at that URL)
+
+Created alternative: XOA_DOCKER_METHOD.md
+- Docker-based installation on Ubuntu
+- Simpler than VM import
+- XO runs on Ubuntu, manages XCP-ng over network
+- Can still create ISO SRs via web GUI
+
+Option A progress (2026-02-04, ~03:35-05:48):
+- User successfully installed XO via Docker method
+- User accessed XO web interface at http://localhost
+- User completed registration/login process
+- User successfully connected XCP-ng host (10.25.33.10) to XO
+- User successfully created "VGS ISO Storage" SR via XO web interface
+- SR mount point issue discovered: PBD attached but mount point didn't exist
+- Fixed by creating symlink: /var/run/sr-mount/fc99ca21-ebc8-89f5-dbd3-b7e9a0b2ae49 -> /mnt/iso-storage
+- Updated create_test3_vm.sh verification function to handle symlinks (file-based ISO SRs)
+- Test-3 VM successfully created and started:
+  - VM UUID: fbf30cd3-b5d6-6902-e7ce-cdf2841022e0
+  - Domain ID: 10
+  - ISO: ubuntu-22.04.5-desktop-amd64.iso (registered and inserted)
+  - Configuration: 4GB RAM, 4 CPUs, 40GB disk
+  - Network: xenbr0, static IP 10.25.33.13
+  - Status: Running
+- Next step: VNC access for Ubuntu installation
+
+Created: CONNECT_XCP_HOST_IN_XO.md
+- Detailed step-by-step guide for clicking "+ Connect pool" button
+- Form field instructions (Host: 10.25.33.10, Username: root, Password: Calvin@123)
+- Troubleshooting section for common connection issues
+- Success verification steps
+
+Created: CREATE_VGS_ISO_SR_VIA_XO.md
+- Step-by-step guide for creating file-based ISO SR via XO web interface
+- Instructions for finding "New" button, selecting ISO library type
+- Form fields: Name="VGS ISO Storage", Path="/mnt/iso-storage"
+- Troubleshooting for common creation issues
+- Alternative CLI method if web interface fails
+
+Created: fix_vgs_sr_mount.sh
+- Script to create symlink for file-based ISO SR mount point
+- Fixes issue where PBD is attached but mount point doesn't exist
+- Creates: /var/run/sr-mount/<SR_UUID> -> /mnt/iso-storage
+
+Updated: create_test3_vm.sh
+- Modified verify_sr_accessible() to handle symlinks
+- File-based ISO SRs use symlinks, not actual mounts
+- Verification now checks: symlink validity, PBD attachment, file readability
+- No longer requires mount table entry for file-based ISO SRs
+
+Created: delete_test3_vm.sh
+- Helper script to clean up existing VMs before recreation
+
+SOLUTION SUMMARY:
+-----------------
+The persistent ISO boot failure issue has been RESOLVED:
+1. Root cause: SMB ISO SR was unreachable (network issue)
+2. Solution: Created local file-based ISO SR "VGS ISO Storage" via Xen Orchestra
+3. Fix: Created symlink for mount point (file-based SRs don't use actual mounts)
+4. Result: Test-3 VM created successfully with ISO accessible
+5. VM is now running and ready for Ubuntu installation via VNC
+
+UNIVERSAL SCRIPTS CREATED:
+--------------------------
+- create_vm.sh - Universal VM creation script
+  * Takes VM name as parameter (e.g., Test-3, Test-4)
+  * Auto-generates IP based on VM number (Test-3 = 10.25.33.13, Test-4 = 10.25.33.14)
+  * Supports --delete-existing, --ip, --memory, --disk, --cpus options
+  * Can be reused for any Test-X VM
+
+- post_install_vm.sh - Post-installation configuration
+  * Removes ISO from CD drive
+  * Changes boot order to disk only
+  * Provides updated VNC connection info (domain ID may change after reboot)
+
+DOCUMENTATION CREATED:
+---------------------
+- SOLUTION_SUMMARY.md - Complete solution summary and technical details
+- POST_INSTALLATION_STEPS.md - Guide for post-installation configuration
+
+
+CRITICAL BUG FIX (2026-02-04, ~12:15):
+--------------------------------------
+User reported: VM keeps booting from CD after installation, won't boot from installed disk.
+
+Root cause discovered:
+- Boot order codes in XCP-ng: c=disk, d=CD, n=network
+- post_install_vm.sh was incorrectly using order=d (CD) instead of order=c (disk)
+- This caused VM to always try booting from CD, even after CD was removed
+
+Fix applied:
+- Updated post_install_vm.sh: Changed all instances of order=d to order=c
+- Created fix_test3_disk_boot.sh: Quick fix script for Test-3
+- Script now correctly:
+  1. Removes all CD drives completely
+  2. Sets boot order to 'c' (disk only)
+  3. Verifies disk is bootable
+  4. Shuts down VM if needed (boot order changes require VM to be halted)
+
+Result: Test-3 now boots correctly from installed Ubuntu system on disk.
+
+UNIVERSAL SCRIPTS (FINAL VERSIONS):
+------------------------------------
+- create_vm.sh - Universal VM creation script
+  * Auto-generates IP based on VM number
+  * Configures UEFI boot, disables VIRIDIAN (matching working VMs)
+  * Sets boot order to CD first (dc) for installation
+  * Supports --delete-existing, --ip, --memory, --disk, --cpus options
+
+- post_install_vm.sh - Post-installation configuration (CORRECTED)
+  * Removes all CD drives completely
+  * Sets boot order to 'c' (disk only) - CORRECTED from 'd'
+  * Verifies disk is bootable
+  * Handles VM shutdown/restart automatically
+  * Provides updated VNC connection info
+
+- fix_test3_disk_boot.sh - Quick fix for Test-3 boot issues
+  * Removes CD drives
+  * Sets boot order to disk only
+  * Verifies configuration
+
+- connect_vnc.sh - VNC connection helper
+  * Auto-assigns ports based on VM number
+  * Handles port conflicts
+  * Manages socat bridges
+
+- fix_boot_method.sh - Fix boot method (UEFI, VIRIDIAN, boot order)
+  * Sets platform:firmware=uefi and HVM-boot-params:firmware=uefi
+  * Disables VIRIDIAN in both platform and boot params
+  * Sets boot order correctly
+
+Changelog
+---------
+2026-02-04:
+- Created initial vm_create session log.
+- Recorded primary issue: ISO boot failure due to storage substrate / SR mount.
+- Recorded requirement: non-interactive internal-shell style guide.
+- Recorded target next VM: Test-3.
+- Added critical new evidence: mount error(113) = SMB server network unreachable.
+- Acknowledged repeating failed approaches; documented systematic plan with rationale.
+- Shifted direction: design workflow around reliable ISO source (VGS/local), not SMB.
+- Added critical lesson: scripts can report false success if they only check directory
+  existence, not actual mount/readability. Must verify: mount table, PBD attachment,
+  file readability before declaring success.
+- Created complete corrected workflow script: create_test3_vm.sh with proper SR
+  verification that prevents false success.
+- Confirmed CLI cannot create file-based ISO SRs (XCP-ng limitation).
+- Created SSH tunnel guide: XCP_CENTER_VIA_SSH_TUNNEL.md for Windows access to GUI.
+- Successfully created "VGS ISO Storage" SR via Xen Orchestra.
+- Fixed file-based ISO SR mount point issue (symlink creation).
+- Created universal create_vm.sh script for Test-X VMs.
+- Created post_install_vm.sh for post-installation configuration.
+- CRITICAL FIX: Corrected boot order bug (d=CD vs c=disk) in post_install_vm.sh.
+- Test-3 now boots correctly from installed Ubuntu system.
+
+================================================================================

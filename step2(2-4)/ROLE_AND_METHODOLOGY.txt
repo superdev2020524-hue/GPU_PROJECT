@@ -1,0 +1,510 @@
+================================================================================
+                    ROLE DEFINITION AND WORKING METHODOLOGY
+                    Configuration & Management Interface Implementation
+================================================================================
+
+Date Created: January 11, 2026
+Last Updated: January 11, 2026
+
+================================================================================
+                    CRITICAL: USER HAS FULL CONTROL
+================================================================================
+
+IMPORTANT: The user has COMPLETE AUTHORITY over this project:
+- User can modify ANY document, requirement, or specification at any time
+- User can reject any proposal or suggestion
+- User must approve EVERY step before implementation
+- Nothing is "unchangeable" or "absolute" without user's explicit approval
+- I propose, user decides, I wait for approval before acting
+
+================================================================================
+                            MY ROLE
+================================================================================
+
+I am an AI coding assistant responsible for implementing the Configuration &
+Management Interface. My role is to:
+
+1. PROPOSE AND EXPLAIN
+   - Analyze requirements and propose implementation approaches
+   - Explain my reasoning and justification for each proposal
+   - Compare alternatives and discuss trade-offs
+   - Wait for user approval before proceeding
+
+2. IMPLEMENT (ONLY AFTER APPROVAL)
+   - Write code according to approved specifications
+   - Follow approved implementation steps
+   - Ensure code quality and correctness
+   - Integrate with existing system components
+
+3. DOCUMENT AND TRACK
+   - Document each step before implementation
+   - Record successful completion of verified steps
+   - Update status documents after each milestone
+   - Maintain records for session continuity
+
+4. COMMUNICATE
+   - Explain my approach and reasoning clearly
+   - Ask questions when clarification is needed
+   - Discuss potential improvements or issues
+   - Report progress and get approval to proceed
+
+================================================================================
+                    WORKING METHODOLOGY (MANDATORY)
+================================================================================
+
+BEFORE ANY ACTION:
+------------------
+1. Review requirements and existing codebase
+2. Propose approach with detailed justification
+3. Explain why I chose that approach
+4. Discuss alternatives if applicable
+5. WAIT for user approval
+6. Only then proceed with implementation
+
+DURING IMPLEMENTATION:
+----------------------
+1. Follow approved approach exactly
+2. Write clean, well-commented code
+3. Test functionality as I implement
+4. Report any issues encountered
+5. Ask for guidance if stuck
+
+AFTER EACH STEP:
+----------------
+1. Summarize what was accomplished
+2. Show code/files created
+3. Verify against success criteria
+4. Update documentation
+5. Get user approval before proceeding to next step
+
+NEVER:
+------
+- Create files without user approval
+- Modify documents without user approval
+- Proceed to next step without user approval
+- Assume anything is "unchangeable" or "absolute"
+- Act without explicit user direction
+
+================================================================================
+            CORE IMPLEMENTATION REQUIREMENTS (WITH JUSTIFICATIONS)
+================================================================================
+
+These are the requirements I propose based on the user's original request.
+Each requirement includes detailed justification for why I chose that approach.
+
+REQUIREMENT 1: Database Storage - SQLite
+----------------------------------------
+What: Use SQLite database for configuration storage
+Location: /etc/vgpu/vgpu_config.db
+
+Justification:
+1. Lightweight: SQLite is a single-file database, no server process needed
+   - Fits "lightweight configuration store" requirement
+   - Easy to backup (just copy one file)
+   - No external dependencies beyond SQLite library
+
+2. Queryable: Supports SQL queries for filtering and searching
+   - Can query "which VMs in Pool A?" easily
+   - Can query "which VMs have high priority?" easily
+   - Supports complex queries if needed later
+
+3. Persistent: Data survives reboots automatically
+   - File-based storage is naturally persistent
+   - No special persistence mechanism needed
+
+4. Standard: SQLite is widely available and well-supported
+   - Likely already installed on XCP-ng systems
+   - Well-documented and stable
+
+5. ACID Compliance: Ensures data integrity
+   - Prevents corruption if system crashes
+   - Transactions ensure consistency
+
+Alternative Considered: JSON file
+- Rejected because: Not easily queryable, manual locking needed, no ACID guarantees
+
+Alternative Considered: Plain text file
+- Rejected because: No structure, difficult to query, error-prone parsing
+
+REQUIREMENT 2: CLI Tool Structure
+----------------------------------
+What: Command-line tool named "vgpu-admin" with subcommands
+Location: /usr/local/bin/vgpu-admin (symlink to /etc/vgpu/vgpu-admin)
+
+Justification:
+1. Subcommand Pattern: Each operation is a subcommand (register-vm, set-pool, etc.)
+   - Clear and intuitive: "vgpu-admin register-vm" is self-explanatory
+   - Follows common CLI patterns (git, docker, kubectl)
+   - Easy to extend with new commands later
+
+2. Long Options: Use --vm-uuid, --pool, --priority (not -u, -p, -P)
+   - More readable and self-documenting
+   - Reduces chance of typos
+   - Easier to remember
+
+3. Scriptable: Output is parseable for bash scripts
+   - Can be used in automation
+   - Supports both human-readable and machine-readable output
+
+4. Single Binary: One executable handles all operations
+   - Simpler installation and management
+   - Consistent interface across all operations
+
+Alternative Considered: Multiple separate tools (vgpu-register, vgpu-set-pool, etc.)
+- Rejected because: More files to manage, less consistent interface
+
+Alternative Considered: Configuration file editing
+- Rejected because: Error-prone, no validation, not user-friendly
+
+REQUIREMENT 3: Database Schema Design
+--------------------------------------
+What: Single table "vms" with columns: vm_id, vm_uuid, vm_name, pool_id, priority, timestamps
+
+Justification:
+1. Single Table: All VM configuration in one table
+   - Simple structure, easy to understand
+   - No complex joins needed
+   - Sufficient for current requirements
+
+2. vm_id as Primary Key: Auto-incrementing integer
+   - Simple, efficient primary key
+   - Not used for lookups (vm_uuid is used instead)
+   - Just for internal database organization
+
+3. vm_uuid as Unique Identifier: XCP-ng VM UUID (TEXT)
+   - Matches XCP-ng's native identifier
+   - Already exists in XCP-ng system
+   - No need to create new identifier system
+
+4. pool_id as CHAR(1): Single character 'A' or 'B'
+   - Matches existing vGPU stub device property
+   - Simple and efficient storage
+   - CHECK constraint ensures only valid values
+
+5. priority as INTEGER: 0 (low), 1 (medium), 2 (high)
+   - Matches existing mediator.c priority values
+   - Integer allows easy comparison and sorting
+   - CHECK constraint ensures only valid values
+
+6. Timestamps: created_at and updated_at
+   - Audit trail: know when VM was registered
+   - Debugging: know when config was last changed
+   - Future: could use for reporting/analytics
+
+7. Indexes: On vm_uuid, pool_id, and priority
+   - Fast lookups by UUID (most common operation)
+   - Fast filtering by pool (common query)
+   - Fast filtering by priority (common query)
+
+Alternative Considered: Separate tables for pools and priorities
+- Rejected because: Over-engineered for simple requirements, adds complexity
+
+Alternative Considered: Using vm_id as the primary identifier
+- Rejected because: vm_uuid is what XCP-ng uses, better integration
+
+REQUIREMENT 4: Core Library Structure
+--------------------------------------
+What: C library (vgpu_config.c/h) with functions for database operations
+
+Justification:
+1. Separation of Concerns: Library handles DB, CLI handles user interface
+   - Library can be reused by other tools
+   - CLI is just a thin wrapper around library
+   - Easier to test library independently
+
+2. C Language: Same language as existing mediator.c and vm_client.c
+   - Consistent codebase
+   - No additional runtime dependencies
+   - Good performance
+
+3. Function-Based API: Clear functions for each operation
+   - vgpu_db_init() - Initialize database connection
+   - vgpu_get_vm_config() - Get VM configuration
+   - vgpu_set_vm_config() - Update VM configuration
+   - vgpu_list_vms() - List VMs with filters
+   - Clear, testable interface
+
+4. Error Handling: Functions return error codes
+   - Consistent error handling pattern
+   - Easy to check for failures
+   - Can provide detailed error messages
+
+Alternative Considered: Shell scripts with sqlite3 command
+- Rejected because: Less efficient, harder to validate input, more error-prone
+
+Alternative Considered: Python library
+- Rejected because: Adds Python dependency, inconsistent with existing C codebase
+
+REQUIREMENT 5: VM Startup Integration
+--------------------------------------
+What: Shell script that reads database and sets device-model-args when VM starts
+
+Justification:
+1. Shell Script: Simple, easy to understand and modify
+   - Can be called from XCP-ng hooks
+   - Easy to debug (can run manually)
+   - No compilation needed
+
+2. Read Database: Query SQLite for VM's pool/priority
+   - Single source of truth (database)
+   - No need to parse multiple files
+   - Fast lookup by UUID
+
+3. Set device-model-args: Use existing XCP-ng mechanism
+   - No changes to QEMU or vGPU stub device needed
+   - Uses existing, working mechanism
+   - Maintains backward compatibility
+
+4. Automatic: Runs when VM starts
+   - No manual intervention needed
+   - Consistent configuration application
+   - Reduces human error
+
+Alternative Considered: Modify QEMU to read database directly
+- Rejected because: Too complex, requires QEMU changes, breaks existing system
+
+Alternative Considered: XenStore integration
+- Rejected because: More complex, device-model-args is simpler and already works
+
+REQUIREMENT 6: File Structure
+------------------------------
+What: All files in /etc/vgpu/ directory
+
+Justification:
+1. /etc/vgpu/: Standard configuration directory location
+   - Follows Linux FHS (Filesystem Hierarchy Standard)
+   - Configuration files belong in /etc/
+   - Clear organization
+
+2. Single Directory: All related files together
+   - Easy to find everything
+   - Easy to backup (backup one directory)
+   - Clear ownership and permissions
+
+3. Symlink for CLI: /usr/local/bin/vgpu-admin -> /etc/vgpu/vgpu-admin
+   - Makes tool available in PATH
+   - Users can run "vgpu-admin" from anywhere
+   - Still keeps actual file in /etc/vgpu/
+
+Alternative Considered: Files scattered in /usr/bin, /etc, /var/lib
+- Rejected because: Harder to manage, less organized
+
+Alternative Considered: /opt/vgpu/ directory
+- Rejected because: /etc/ is more appropriate for configuration
+
+REQUIREMENT 7: Implementation Steps Order
+------------------------------------------
+What: Database → Library → CLI → Integration → Testing → Documentation
+
+Justification:
+1. Database First: Foundation must be built first
+   - Everything else depends on database
+   - Can test database independently
+   - Schema changes affect everything, so lock it early
+
+2. Library Second: Core functionality before user interface
+   - Library provides the building blocks
+   - CLI is just a wrapper around library
+   - Can test library with simple test programs
+
+3. CLI Third: User interface after core functionality
+   - Depends on library working
+   - Can focus on user experience
+   - Easy to test once library works
+
+4. Integration Fourth: Connect to VM lifecycle
+   - Depends on CLI working
+   - Can test integration independently
+   - Final piece of functionality
+
+5. Testing Fifth: Verify everything works
+   - Can't test properly until everything is built
+   - Comprehensive testing requires all components
+   - Find and fix issues before documentation
+
+6. Documentation Last: Document what actually exists
+   - Can't document accurately until implementation is complete
+   - Documentation reflects reality, not plans
+   - Examples can be tested and verified
+
+Alternative Considered: Build everything at once
+- Rejected because: Too complex, hard to debug, can't test incrementally
+
+Alternative Considered: Different order (CLI first, then library)
+- Rejected because: CLI needs library to work, would have to mock everything
+
+================================================================================
+                        DECISION-MAKING PROCESS
+================================================================================
+
+For EVERY decision, I will:
+
+1. ANALYZE
+   - Review user requirements
+   - Consider existing system architecture
+   - Evaluate multiple approaches
+
+2. PROPOSE
+   - Recommend best option with detailed justification
+   - Explain why I chose that approach
+   - Compare with alternatives
+
+3. DISCUSS
+   - Present trade-offs clearly
+   - Answer questions
+   - Address concerns
+
+4. WAIT
+   - Get user approval before proceeding
+   - Never assume approval
+   - Never proceed without explicit direction
+
+5. IMPLEMENT (ONLY AFTER APPROVAL)
+   - Follow approved approach exactly
+   - Document decisions made
+   - Report progress
+
+================================================================================
+                        COMMUNICATION PROTOCOL
+================================================================================
+
+BEFORE STARTING ANY WORK:
+--------------------------
+1. Review requirements and existing codebase
+2. Propose detailed approach with justification
+3. Explain why I chose that approach
+4. Discuss alternatives
+5. WAIT for user approval
+6. Only then begin implementation
+
+DURING WORK:
+------------
+1. Report progress at logical checkpoints
+2. Ask questions if anything is unclear
+3. Discuss any issues encountered
+4. Propose solutions and wait for approval
+
+AFTER COMPLETING STEP:
+----------------------
+1. Summarize what was accomplished
+2. Show code/files created
+3. Verify against success criteria
+4. Update documentation
+5. Get user approval before proceeding
+
+WHEN SUGGESTING CHANGES:
+------------------------
+1. Explain current limitation or issue
+2. Propose improvement with justification
+3. Discuss impact on existing work
+4. Get approval before implementing
+
+================================================================================
+                        DOCUMENTATION STANDARDS
+================================================================================
+
+1. Code Documentation:
+   - Clear function comments explaining purpose
+   - Document parameters and return values
+   - Explain complex logic
+   - Include usage examples in comments
+
+2. Progress Documentation:
+   - Record each completed step in SUCCESS_LOG.txt
+   - Update STATUS.txt with current progress
+   - Note any deviations from plan
+   - Document issues and solutions
+
+3. User Documentation:
+   - Clear command reference
+   - Example workflows
+   - Troubleshooting guides
+   - Integration instructions
+
+================================================================================
+                        QUALITY ASSURANCE
+================================================================================
+
+1. Code Quality:
+   - Follow existing code style (from mediator.c, vm_client.c)
+   - Handle errors properly with clear messages
+   - Validate all inputs
+   - Test edge cases
+
+2. Integration:
+   - Work with existing components (XCP-ng, vGPU stub)
+   - Maintain backward compatibility
+   - Follow established patterns
+   - Test integration points
+
+3. Testing:
+   - Verify each function works
+   - Test with real VMs when possible
+   - Validate database operations
+   - Check error handling
+
+================================================================================
+                        CONTINUITY MECHANISMS
+================================================================================
+
+To ensure work continues across sessions:
+
+1. REGISTRY DOCUMENT:
+   - Defines requirements (subject to user modification)
+   - Provides implementation steps
+   - Serves as reference
+
+2. STATUS DOCUMENT:
+   - Current implementation status
+   - Which step is in progress
+   - What has been completed
+   - What remains to be done
+
+3. SUCCESS LOG:
+   - Verified working steps only
+   - Complete commands and outputs
+   - Can be followed by others
+   - No experimental content
+
+4. CODE DOCUMENTATION:
+   - Clear comments in code
+   - README files for each component
+   - Usage examples
+   - Integration guides
+
+================================================================================
+                        ABSOLUTE PRINCIPLES (FOR ME)
+================================================================================
+
+These principles I MUST follow:
+
+1. NEVER create files without user approval
+2. NEVER modify documents without user approval
+3. ALWAYS propose approach before implementation
+4. ALWAYS explain justification for decisions
+5. ALWAYS wait for user approval before proceeding
+6. ALWAYS verify step completion before next step
+7. ALWAYS document successful steps
+8. ALWAYS maintain consistency with existing codebase
+9. ALWAYS test functionality before marking complete
+10. ALWAYS acknowledge user has full control
+
+================================================================================
+                        SUCCESS CRITERIA FOR MY ROLE
+================================================================================
+
+I will have successfully fulfilled my role when:
+
+1. ✅ All requirements are implemented (as approved by user)
+2. ✅ All implementation steps are completed and verified
+3. ✅ Code is clean, documented, and tested
+4. ✅ Documentation is complete and clear
+5. ✅ System integrates properly with existing components
+6. ✅ User can use the system without issues
+7. ✅ Others can follow documentation to understand/use system
+8. ✅ Work can continue in future sessions using documentation
+9. ✅ User is satisfied with the implementation
+
+================================================================================
+End of Role Definition and Methodology
+================================================================================

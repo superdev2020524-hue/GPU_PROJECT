@@ -1,0 +1,449 @@
+================================================================================
+                    DESIGN UPDATE: POOL MANAGEMENT (NOT GPU SCANNING)
+                    Based on User Clarification
+================================================================================
+
+Date: January 11, 2026
+Purpose: Replace GPU scanning with pool management
+
+================================================================================
+                        USER CLARIFICATION
+================================================================================
+
+Key Points:
+-----------
+1. vGPU-STUB device allows creating arbitrary pools (logical entities)
+2. Pools are NOT tied to physical GPUs
+3. Single physical GPU (H100) serves all pools via mediation daemon
+4. Want to explicitly manage pools (Pool A, Pool B, potentially more)
+5. Pool management = "GPU search" equivalent (logical pools, not physical GPUs)
+
+Architecture Understanding:
+---------------------------
+Physical GPU (H100) → Mediation Daemon → Multiple Logical Pools (A, B, ...) → VMs
+
+The mediation daemon:
+- Maintains separate queues for each pool
+- Processes requests from Pool A and Pool B independently
+- Single physical GPU serves all pools (time-sliced by daemon)
+
+================================================================================
+                        REVISED DESIGN: POOL MANAGEMENT
+================================================================================
+
+REMOVE:
+-------
+❌ GPU scanning (scan-gpus command)
+❌ GPU database table
+❌ GPU-to-Pool mapping
+❌ Physical GPU identification
+
+ADD:
+----
+✅ Pool database table (logical pools)
+✅ Pool management commands
+✅ Pool creation and configuration
+✅ Pool listing and status
+
+================================================================================
+                        UPDATED DATABASE SCHEMA
+================================================================================
+
+ADD: Pools Table
+-----------------
+```sql
+CREATE TABLE pools (
+    pool_id CHAR(1) PRIMARY KEY,        -- 'A', 'B', 'C', etc.
+    pool_name TEXT,                     -- Human-readable name (optional)
+    description TEXT,                    -- Pool description (optional)
+    enabled INTEGER DEFAULT 1,          -- 1=enabled, 0=disabled
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Why This Schema:
+1. pool_id: Single character identifier ('A', 'B', etc.)
+2. pool_name: Optional human-readable name ("Production Pool", "Development Pool")
+3. enabled: Can disable pools without deleting them
+4. Simple: Pools are logical, no need for complex GPU mapping
+
+UPDATE: VMs Table (unchanged)
+------------------------------
+Table: vms
+  - vm_id INTEGER NOT NULL UNIQUE
+  - vm_uuid TEXT UNIQUE NOT NULL
+  - vm_name TEXT
+  - pool_id CHAR(1) NOT NULL CHECK(pool_id IN (SELECT pool_id FROM pools WHERE enabled=1))
+  - priority INTEGER NOT NULL CHECK(priority IN (0, 1, 2))
+  - created_at TIMESTAMP
+  - updated_at TIMESTAMP
+
+Foreign Key Relationship:
+- vms.pool_id → pools.pool_id (VMs must be assigned to existing, enabled pool)
+
+Why This Relationship:
+1. Data Integrity: Can't assign VM to non-existent pool
+2. Validation: Database enforces pool existence
+3. Flexibility: Can disable pools (VMs in disabled pools won't be processed)
+
+================================================================================
+                        NEW POOL MANAGEMENT COMMANDS
+================================================================================
+
+Command 1: create-pool
+-----------------------
+vgpu-admin create-pool --pool-id=<A|B|C|...> [--pool-name=<name>] [--description=<desc>]
+
+What It Does:
+- Creates a new logical pool
+- Validates pool_id is unique
+- Sets pool as enabled by default
+
+Example:
+$ vgpu-admin create-pool --pool-id=A --pool-name="Production Pool"
+$ vgpu-admin create-pool --pool-id=B --pool-name="Development Pool"
+
+Why This Command:
+1. Explicit Pool Creation: Administrator explicitly creates pools
+2. Flexibility: Can create Pool A, B, C, D, etc. (arbitrary pools)
+3. Documentation: pool_name and description help document purpose
+
+---
+
+Command 2: list-pools
+---------------------
+vgpu-admin list-pools [--enabled-only]
+
+What It Does:
+- Lists all pools in database
+- Shows: pool_id, pool_name, enabled status, VM count
+- Optionally filter to show only enabled pools
+
+Output Example:
+```
+=== Pools (2) ===
+Pool A: "Production Pool" | Enabled | VMs: 7 (3 high, 2 medium, 2 low)
+Pool B: "Development Pool" | Enabled | VMs: 13 (5 high, 6 medium, 2 low)
+```
+
+Why This Command:
+1. Visibility: See all available pools
+2. Statistics: See how many VMs in each pool
+3. Status: See which pools are enabled/disabled
+
+---
+
+Command 3: show-pool
+--------------------
+vgpu-admin show-pool --pool-id=<A|B|...>
+
+What It Does:
+- Shows detailed information about a specific pool
+- Lists all VMs in that pool
+- Shows priority distribution
+
+Output Example:
+```
+=== Pool A: Production Pool ===
+Status: Enabled
+Created: 2026-01-11 10:00:00
+VMs: 7
+
+VM List:
+  VM-1 (UUID: abc123...) | Priority: high | VM ID: 1
+  VM-2 (UUID: def456...) | Priority: high | VM ID: 2
+  VM-3 (UUID: ghi789...) | Priority: high | VM ID: 3
+  VM-4 (UUID: jkl012...) | Priority: medium | VM ID: 4
+  VM-5 (UUID: mno345...) | Priority: medium | VM ID: 5
+  VM-6 (UUID: pqr678...) | Priority: low | VM ID: 6
+  VM-7 (UUID: stu901...) | Priority: low | VM ID: 7
+
+Priority Distribution:
+  High: 3 VMs
+  Medium: 2 VMs
+  Low: 2 VMs
+```
+
+Why This Command:
+1. Detailed View: See complete pool configuration
+2. VM Listing: See all VMs assigned to pool
+3. Planning: Helps administrator plan pool assignments
+
+---
+
+Command 4: enable-pool / disable-pool
+--------------------------------------
+vgpu-admin enable-pool --pool-id=<A|B|...>
+vgpu-admin disable-pool --pool-id=<A|B|...>
+
+What It Does:
+- Enable or disable a pool
+- Disabled pools: VMs can't be assigned, existing VMs won't be processed
+- Enabled pools: Normal operation
+
+Why This Command:
+1. Maintenance: Disable pool for maintenance without deleting
+2. Testing: Enable/disable pools for testing
+3. Gradual Rollout: Enable pools gradually
+
+---
+
+Command 5: delete-pool
+-----------------------
+vgpu-admin delete-pool --pool-id=<A|B|...> [--force]
+
+What It Does:
+- Deletes a pool from database
+- Validates no VMs are assigned to pool (unless --force)
+- If VMs exist: Shows error and lists VMs (must reassign first)
+
+Why This Command:
+1. Cleanup: Remove pools that are no longer needed
+2. Safety: Prevents accidental deletion if VMs are assigned
+3. Data Integrity: Ensures VMs are reassigned before pool deletion
+
+================================================================================
+                        UPDATED WORKFLOW
+================================================================================
+
+Initial Setup:
+--------------
+
+1. Create pools explicitly:
+   $ vgpu-admin create-pool --pool-id=A --pool-name="Production Pool"
+   $ vgpu-admin create-pool --pool-id=B --pool-name="Development Pool"
+
+2. Verify pools exist:
+   $ vgpu-admin list-pools
+   
+   Output:
+   Pool A: "Production Pool" | Enabled | VMs: 0
+   Pool B: "Development Pool" | Enabled | VMs: 0
+
+3. Scan for VMs:
+   $ vgpu-admin scan-vms
+   
+   Shows: Registered and unregistered VMs
+
+4. Register VMs to pools:
+   $ vgpu-admin register-vm --vm-uuid=abc123 --pool=A --priority=high --vm-id=1
+   $ vgpu-admin register-vm --vm-uuid=def456 --pool=A --priority=high --vm-id=2
+   # ... register VMs 1-7 to Pool A
+   $ vgpu-admin register-vm --vm-uuid=ghi789 --pool=B --priority=medium --vm-id=8
+   # ... register VMs 8-20 to Pool B
+
+5. View pool status:
+   $ vgpu-admin show-pool --pool-id=A
+   $ vgpu-admin list-pools
+
+================================================================================
+                        UPDATED COMMAND LIST
+================================================================================
+
+Pool Management:
+---------------
+vgpu-admin create-pool --pool-id=<A|B|C|...> [--pool-name=<name>] [--description=<desc>]
+vgpu-admin list-pools [--enabled-only]
+vgpu-admin show-pool --pool-id=<A|B|...>
+vgpu-admin enable-pool --pool-id=<A|B|...>
+vgpu-admin disable-pool --pool-id=<A|B|...>
+vgpu-admin delete-pool --pool-id=<A|B|...> [--force]
+
+VM Management:
+-------------
+vgpu-admin scan-vms                     # Scan VMs, show pool assignments
+vgpu-admin register-vm --vm-uuid=<uuid> [--vm-name=<name>] --pool=<A|B|...> --priority=<low|medium|high> [--vm-id=<id>]
+vgpu-admin show-vm --vm-uuid=<uuid>     # Show VM config (includes pool)
+vgpu-admin list-vms [--pool=<A|B|...>] [--priority=<low|medium|high>]
+vgpu-admin set-pool --vm-uuid=<uuid> --pool=<A|B|...>
+vgpu-admin set-priority --vm-uuid=<uuid> --priority=<low|medium|high>
+vgpu-admin set-vm-id --vm-uuid=<uuid> --vm-id=<id>
+vgpu-admin update-vm --vm-uuid=<uuid> [--pool=<A|B|...>] [--priority=<low|medium|high>] [--vm-id=<id>]
+vgpu-admin remove-vm --vm-uuid=<uuid>
+
+System Overview:
+---------------
+vgpu-admin status                       # Control panel view (Pools + VMs)
+
+================================================================================
+                        UPDATED DATABASE SCHEMA (COMPLETE)
+================================================================================
+
+Table: pools
+------------
+  - pool_id CHAR(1) PRIMARY KEY        -- 'A', 'B', 'C', etc.
+  - pool_name TEXT                     -- Human-readable name
+  - description TEXT                   -- Optional description
+  - enabled INTEGER DEFAULT 1          -- 1=enabled, 0=disabled
+  - created_at TIMESTAMP
+  - updated_at TIMESTAMP
+
+Table: vms
+----------
+  - vm_id INTEGER NOT NULL UNIQUE
+  - vm_uuid TEXT UNIQUE NOT NULL
+  - vm_name TEXT
+  - pool_id CHAR(1) NOT NULL           -- References pools.pool_id
+  - priority INTEGER NOT NULL CHECK(priority IN (0, 1, 2))
+  - created_at TIMESTAMP
+  - updated_at TIMESTAMP
+
+Foreign Key:
+  - vms.pool_id → pools.pool_id (with enabled=1 check)
+
+Indexes:
+  - idx_vm_uuid ON vms(vm_uuid)
+  - idx_vm_pool ON vms(pool_id)
+  - idx_vm_priority ON vms(priority)
+
+================================================================================
+                        IMPLEMENTATION UPDATES
+================================================================================
+
+STEP 1.2 UPDATE: Database Schema Design
+----------------------------------------
+Add pools table to schema design
+
+Why:
+- Pools must exist before VMs can be assigned
+- Database enforces pool existence
+- Enables pool management features
+
+---
+
+STEP 1.6 NEW: Pool Initialization
+-----------------------------------
+Create default pools (A and B) during database initialization
+
+Why:
+- System needs at least Pool A and Pool B to work
+- Can be created automatically or manually
+- Provides starting point for user
+
+Options:
+1. Auto-create Pool A and B in init script
+2. Require manual creation (more explicit)
+3. Hybrid: Auto-create if they don't exist
+
+Recommendation: Option 1 (auto-create) for convenience, but allow manual creation too
+
+---
+
+STEP 2.7 NEW: Pool Management Library Functions
+-------------------------------------------------
+Functions:
+- vgpu_create_pool(pool_id, pool_name, description)
+- vgpu_list_pools(enabled_only)
+- vgpu_show_pool(pool_id)
+- vgpu_enable_pool(pool_id)
+- vgpu_disable_pool(pool_id)
+- vgpu_delete_pool(pool_id, force)
+- vgpu_validate_pool_exists(pool_id)  // Check pool exists and is enabled
+
+Why:
+- Library provides pool management API
+- CLI commands use these functions
+- Can be used by other tools
+
+---
+
+STEP 3.16 NEW: Pool Management CLI Commands
+---------------------------------------------
+Implement all pool management commands:
+- create-pool
+- list-pools
+- show-pool
+- enable-pool
+- disable-pool
+- delete-pool
+
+Why:
+- Complete pool management interface
+- Matches user requirement for pool management
+- Provides control panel functionality
+
+---
+
+STEP 3.7 UPDATE: Enhanced list-vms and scan-vms
+------------------------------------------------
+Show pool information in VM listings:
+- Which pool VM is assigned to
+- Pool name (if set)
+- Pool status (enabled/disabled)
+
+Why:
+- Complete information in VM listings
+- Shows pool context for each VM
+
+---
+
+STEP 3.15 UPDATE: status/dashboard Command
+---------------------------------------------
+Show pools instead of GPUs:
+- List all pools and their status
+- Show VMs assigned to each pool
+- Show priority distribution per pool
+- System overview
+
+Why:
+- Matches pool-based architecture
+- Shows logical pools, not physical GPUs
+- Provides control panel view
+
+================================================================================
+                        KEY DESIGN DECISIONS
+================================================================================
+
+Decision 1: Pools are Logical Entities
+---------------------------------------
+- Pools are NOT tied to physical GPUs
+- Pools are logical groupings of VMs
+- Single physical GPU serves all pools via mediation daemon
+- Can create arbitrary number of pools (A, B, C, D, ...)
+
+Decision 2: Pool Creation is Explicit
+--------------------------------------
+- Administrator must explicitly create pools
+- Pools are stored in database
+- VMs can only be assigned to existing, enabled pools
+
+Decision 3: Start with Pool A and Pool B
+-----------------------------------------
+- System initializes with Pool A and Pool B
+- Can add more pools later (Pool C, D, etc.)
+- Mediation daemon currently supports A and B (can be extended)
+
+Decision 4: Pool Management = Control Panel
+--------------------------------------------
+- Managing pools is equivalent to "scanning hardware"
+- Pools are the logical equivalent of "GPU A" and "GPU B"
+- Control panel shows pools, not physical GPUs
+
+================================================================================
+                        ADVANTAGES OF THIS APPROACH
+================================================================================
+
+1. Matches Architecture:
+   - Pools are logical (vGPU-STUB based)
+   - No need for physical GPU scanning
+   - Aligns with existing mediator.c design
+
+2. Flexible:
+   - Can create arbitrary number of pools
+   - Not limited to physical GPU count
+   - Can add/remove pools dynamically
+
+3. Simple:
+   - No complex GPU hardware detection
+   - No GPU-to-Pool mapping needed
+   - Pools are just logical groupings
+
+4. Extensible:
+   - Can add Pool C, D, E, etc. later
+   - Mediation daemon can be extended to support more pools
+   - Database schema supports any number of pools
+
+================================================================================
+End of Design Update: Pool Management
+================================================================================

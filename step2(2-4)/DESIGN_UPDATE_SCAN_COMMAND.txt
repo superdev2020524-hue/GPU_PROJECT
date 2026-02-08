@@ -1,0 +1,230 @@
+================================================================================
+                    DESIGN UPDATE: SCAN COMMAND AND VM ID ASSIGNMENT
+                    Based on User Requirements
+================================================================================
+
+Date: January 11, 2026
+Purpose: Address user requirements for VM scanning and manual vm_id assignment
+
+================================================================================
+                        USER REQUIREMENTS
+================================================================================
+
+1. Scan command that shows:
+   - VMs that are NOT registered in database (no pool/priority set)
+   - VMs that ARE registered in database (have pool/priority)
+   - Current settings for registered VMs
+
+2. User can decide:
+   - Which VMs to register
+   - Which pool to assign
+   - Which priority to assign
+   - Which vm_id to assign (manual assignment)
+
+3. vm_id should be user-assignable (not just auto-increment)
+
+================================================================================
+                        DATABASE SCHEMA UPDATE
+================================================================================
+
+Current Schema (needs update):
+-----------------------------
+vm_id INTEGER PRIMARY KEY AUTOINCREMENT  ❌ (auto-increment only)
+
+Updated Schema:
+---------------
+vm_id INTEGER NOT NULL                   ✅ (user-assignable, must be unique)
+vm_uuid TEXT UNIQUE NOT NULL
+vm_name TEXT
+pool_id CHAR(1) NOT NULL CHECK(pool_id IN ('A', 'B'))
+priority INTEGER NOT NULL CHECK(priority IN (0, 1, 2))
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+Changes:
+1. Remove AUTOINCREMENT from vm_id
+2. Add UNIQUE constraint on vm_id (must be unique)
+3. vm_id becomes user-assignable parameter
+
+Why This Change:
+- User wants to manually assign vm_id (e.g., vm_id=1, vm_id=100, vm_id=200)
+- vm_id is used in vGPU stub device (device-model-args: vm_id=100)
+- Allows user to use meaningful IDs (1-7 for Pool A, 8-20 for Pool B, etc.)
+
+================================================================================
+                        NEW CLI COMMAND: scan-vms
+================================================================================
+
+Command: vgpu-admin scan-vms [--format=<table|json>]
+
+What It Does:
+-------------
+1. Queries XCP-ng for all VMs (using: xe vm-list)
+2. Queries database for registered VMs
+3. Compares and shows:
+   - Registered VMs: Shows UUID, name, pool, priority, vm_id
+   - Unregistered VMs: Shows UUID, name, status (not configured)
+4. Shows current device-model-args if vGPU stub is attached
+
+Output Format:
+--------------
+Registered VMs:
+  UUID: abc123... | Name: VM-1 | Pool: A | Priority: high (2) | VM ID: 1 | Status: ✓ Configured
+  UUID: def456... | Name: VM-2 | Pool: B | Priority: medium (1) | VM ID: 200 | Status: ✓ Configured
+
+Unregistered VMs:
+  UUID: ghi789... | Name: VM-3 | Status: ⚠ Not registered | Action: Run 'vgpu-admin register-vm'
+  UUID: jkl012... | Name: VM-4 | Status: ⚠ Not registered | Action: Run 'vgpu-admin register-vm'
+
+Why This Command:
+1. Visibility: User can see all VMs and their status at a glance
+2. Decision Making: User can decide which VMs to register
+3. Audit: User can verify current configuration
+4. Discovery: Finds VMs that were manually created
+
+================================================================================
+                        UPDATED REGISTER COMMAND
+================================================================================
+
+Current Command:
+---------------
+vgpu-admin register-vm --vm-uuid=<uuid> [--vm-name=<name>] --pool=<A|B> --priority=<low|medium|high>
+
+Updated Command:
+----------------
+vgpu-admin register-vm --vm-uuid=<uuid> [--vm-name=<name>] --pool=<A|B> --priority=<low|medium|high> [--vm-id=<id>]
+
+Changes:
+- Added optional --vm-id parameter
+- If --vm-id not provided, system assigns next available ID
+- If --vm-id provided, must be unique (error if already used)
+
+Why This Change:
+- User wants to manually assign vm_id
+- Allows meaningful ID assignment (e.g., 1-7 for Pool A)
+- Still allows auto-assignment if user doesn't specify
+
+Example Usage:
+--------------
+# Manual ID assignment
+vgpu-admin register-vm --vm-uuid=abc123 --vm-name="VM-1" --pool=A --priority=high --vm-id=1
+
+# Auto ID assignment (system picks next available)
+vgpu-admin register-vm --vm-uuid=def456 --vm-name="VM-2" --pool=B --priority=medium
+
+================================================================================
+                        IMPLEMENTATION DETAILS
+================================================================================
+
+STEP 1: Update Database Schema
+-------------------------------
+1. Modify init_db.sql to remove AUTOINCREMENT
+2. Add UNIQUE constraint on vm_id
+3. Add function to find next available vm_id
+
+STEP 2: Update Library Functions
+---------------------------------
+1. vgpu_register_vm() - Add vm_id parameter (optional)
+2. vgpu_get_next_vm_id() - Find next available ID
+3. vgpu_validate_vm_id() - Check if ID is available
+
+STEP 3: Implement scan-vms Command
+-----------------------------------
+1. Query XCP-ng: xe vm-list params=uuid,name-label
+2. Query database: SELECT * FROM vms
+3. Compare lists to find registered vs unregistered
+4. Format and display results
+
+STEP 4: Update register-vm Command
+-----------------------------------
+1. Parse optional --vm-id argument
+2. If provided: validate uniqueness
+3. If not provided: auto-assign next available
+4. Register VM with specified or auto-assigned ID
+
+================================================================================
+                        WORKFLOW EXAMPLE
+================================================================================
+
+User Workflow:
+--------------
+
+1. User creates VMs manually in XCP-ng (or they already exist)
+
+2. User runs scan command:
+   $ vgpu-admin scan-vms
+   
+   Output:
+   === Registered VMs (2) ===
+   UUID: abc123... | Name: Test-1 | Pool: A | Priority: high | VM ID: 1
+   UUID: def456... | Name: Test-2 | Pool: B | Priority: high | VM ID: 200
+   
+   === Unregistered VMs (3) ===
+   UUID: ghi789... | Name: Test-3 | Status: Not registered
+   UUID: jkl012... | Name: Test-4 | Status: Not registered
+   UUID: mno345... | Name: Test-5 | Status: Not registered
+
+3. User decides to register Test-3, Test-4, Test-5:
+   $ vgpu-admin register-vm --vm-uuid=ghi789 --vm-name="Test-3" --pool=A --priority=medium --vm-id=3
+   $ vgpu-admin register-vm --vm-uuid=jkl012 --vm-name="Test-4" --pool=A --priority=low --vm-id=4
+   $ vgpu-admin register-vm --vm-uuid=mno345 --vm-name="Test-5" --pool=B --priority=high --vm-id=5
+
+4. User verifies with scan again:
+   $ vgpu-admin scan-vms
+   
+   Now shows all 5 VMs as registered
+
+================================================================================
+                        ADDITIONAL CONSIDERATIONS
+================================================================================
+
+Question: What if vm_id conflicts?
+----------------------------------
+Solution: 
+- Check uniqueness before registration
+- Return error: "VM ID 100 already in use by VM abc123..."
+- Suggest alternative ID or show current assignment
+
+Question: What if user wants to change vm_id?
+----------------------------------------------
+Solution:
+- Add command: vgpu-admin set-vm-id --vm-uuid=<uuid> --vm-id=<new-id>
+- Validate new ID is unique
+- Update database
+- Note: May require VM restart to apply new vm_id to device
+
+Question: Should scan show device-model-args?
+----------------------------------------------
+Solution:
+- Yes, show current device-model-args if vGPU stub is attached
+- Compare with database to detect mismatches
+- Show warning if database and device-model-args don't match
+
+================================================================================
+                        UPDATED COMMAND LIST
+================================================================================
+
+vgpu-admin scan-vms [--format=<table|json>]
+  - Scan all VMs and show registration status
+
+vgpu-admin register-vm --vm-uuid=<uuid> [--vm-name=<name>] --pool=<A|B> --priority=<low|medium|high> [--vm-id=<id>]
+  - Register VM with optional manual vm_id assignment
+
+vgpu-admin set-vm-id --vm-uuid=<uuid> --vm-id=<id>
+  - Change VM's vm_id (must be unique)
+
+vgpu-admin show-vm --vm-uuid=<uuid>
+  - Show complete VM configuration including vm_id
+
+vgpu-admin list-vms [--pool=<A|B>] [--priority=<low|medium|high>]
+  - List VMs with optional filters (includes vm_id)
+
+vgpu-admin set-pool --vm-uuid=<uuid> --pool=<A|B>
+vgpu-admin set-priority --vm-uuid=<uuid> --priority=<low|medium|high>
+vgpu-admin update-vm --vm-uuid=<uuid> [--pool=<A|B>] [--priority=<low|medium|high>] [--vm-id=<id>]
+vgpu-admin list-pools
+vgpu-admin remove-vm --vm-uuid=<uuid>
+
+================================================================================
+End of Design Update
+================================================================================

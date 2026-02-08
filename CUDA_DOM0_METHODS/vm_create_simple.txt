@@ -9,6 +9,11 @@ VM UUID: a30bbe3a-467c-695d-e0ab-ac92146a2269
 
 This means Test-3 VM was deleted or doesn't exist anymore.
 
+NOTE:
+-----
+This guide uses the ISO file from the VGS volume (iso_download), not the SMB
+network share. Make sure to run Step 1.5 first to register the ISO.
+
 
 STEP 1: Check What VMs Exist
 -----------------------------
@@ -21,10 +26,381 @@ echo "=== Searching for Test-3 ==="
 xe vm-list name-label="Test-3" params=uuid,name-label,power-state 2>/dev/null || echo "No VM named Test-3 found"
 
 
+STEP 1.5: Register ISO from VGS (MUST RUN THIS FIRST!)
+-------------------------------------------------------
+# Before creating the VM, register the ISO from VGS
+# This mounts the VGS volume and makes the ISO available in XCP-NG
+
+echo "=== Registering ISO from VGS ==="
+
+# Mount VGS volume
+LV_LINE=$(lvs --noheadings -o vg_name,lv_name 2>/dev/null | grep -i iso_download | head -1)
+
+if [ -z "$LV_LINE" ]; then
+    echo "ERROR: Could not find iso_download volume"
+    echo "Available volumes:"
+    lvs | grep -i iso || echo "No ISO volumes found"
+    exit 1
+fi
+
+VG_NAME=$(echo "$LV_LINE" | awk '{print $1}')
+echo "Found VG: $VG_NAME"
+
+LV_PATH="/dev/$VG_NAME/iso_download"
+MOUNT_POINT="/mnt/iso-storage"
+
+if [ ! -e "$LV_PATH" ]; then
+    echo "Activating logical volume..."
+    lvchange -ay "$VG_NAME/iso_download"
+    sleep 1
+fi
+
+mkdir -p $MOUNT_POINT
+if ! mountpoint -q $MOUNT_POINT; then
+    mount $LV_PATH $MOUNT_POINT
+    echo "✓ Mounted VGS volume"
+fi
+
+# Find ISO file
+ISO_FILE=$(find $MOUNT_POINT -name "*.iso" -type f 2>/dev/null | head -1)
+ISO_NAME=$(basename "$ISO_FILE")
+
+if [ -z "$ISO_FILE" ]; then
+    echo "ERROR: No ISO file found in VGS volume"
+    exit 1
+fi
+
+echo "✓ Found ISO: $ISO_NAME"
+
+# First, check if ISO is already registered in any SR (even if SR isn't currently accessible)
+echo "Checking if ISO is already registered..."
+ISO_VDI_UUID=""
+ISO_SR_UUID=""
+
+for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' '\n'); do
+    SR_TYPE=$(xe sr-list uuid=$SR_UUID params=type --minimal)
+    # Skip udev (physical DVD drives)
+    if [ "$SR_TYPE" = "udev" ]; then
+        continue
+    fi
+    
+    # Check if ISO is already registered in this SR
+    EXISTING_ISO=$(xe vdi-list sr-uuid=$SR_UUID name-label="$ISO_NAME" params=uuid --minimal 2>/dev/null | head -1)
+    if [ -n "$EXISTING_ISO" ]; then
+        ISO_VDI_UUID=$EXISTING_ISO
+        ISO_SR_UUID=$SR_UUID
+        SR_NAME=$(xe sr-list uuid=$ISO_SR_UUID params=name-label --minimal)
+        echo "✓ ISO already registered in SR: $SR_NAME ($ISO_SR_UUID)"
+        break
+    fi
+done
+
+# If ISO is already registered, we can use it directly
+if [ -n "$ISO_VDI_UUID" ] && [ -n "$ISO_SR_UUID" ]; then
+    echo "Using existing ISO registration"
+    export ISO_VDI_UUID
+    export ISO_SR_UUID
+    echo ""
+else
+    # ISO not registered yet - need to find an accessible SR to register it
+    echo "ISO not yet registered. Finding accessible ISO SR..."
+    
+    ISO_SR_UUID=""
+    LOCAL_SR_UUID=""
+    NETWORK_SR_UUID=""
+    
+    for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' '\n'); do
+        SR_TYPE=$(xe sr-list uuid=$SR_UUID params=type --minimal)
+        SR_SHARED=$(xe sr-list uuid=$SR_UUID params=shared --minimal)
+        
+        # Skip udev (physical DVD drives)
+        if [ "$SR_TYPE" = "udev" ]; then
+            continue
+        fi
+        
+        PBD_UUID=$(xe pbd-list sr-uuid=$SR_UUID params=uuid --minimal | head -1)
+        if [ -z "$PBD_UUID" ]; then
+            continue
+        fi
+        
+        # Check if SR mount is actually accessible
+        SR_MOUNT_TEST="/var/run/sr-mount/$SR_UUID"
+        PBD_ATTACHED=$(xe pbd-list uuid=$PBD_UUID params=currently-attached --minimal)
+        
+        # Try to plug if not attached
+        if [ "$PBD_ATTACHED" != "true" ]; then
+            echo "Attempting to plug PBD for SR: $SR_UUID"
+            xe pbd-plug uuid=$PBD_UUID 2>/dev/null || continue
+            sleep 3
+            # Re-check attachment status
+            PBD_ATTACHED=$(xe pbd-list uuid=$PBD_UUID params=currently-attached --minimal)
+        fi
+        
+        # Verify mount point exists and is accessible
+        if [ ! -d "$SR_MOUNT_TEST" ]; then
+            # If PBD is attached but mount doesn't exist, try unplugging and replugging
+            if [ "$PBD_ATTACHED" = "true" ]; then
+                echo "PBD attached but mount missing, trying to replug..."
+                xe pbd-unplug uuid=$PBD_UUID 2>/dev/null || true
+                sleep 2
+                xe pbd-plug uuid=$PBD_UUID 2>/dev/null || continue
+                sleep 3
+            fi
+            
+            # Check again
+            if [ ! -d "$SR_MOUNT_TEST" ]; then
+                continue
+            fi
+        fi
+        
+        # Additional check: verify we can actually read from the mount
+        if [ ! -r "$SR_MOUNT_TEST" ]; then
+            continue
+        fi
+        
+        # Prefer local (non-shared) SRs
+        if [ "$SR_SHARED" = "false" ]; then
+            LOCAL_SR_UUID=$SR_UUID
+        elif [ -z "$NETWORK_SR_UUID" ]; then
+            NETWORK_SR_UUID=$SR_UUID
+        fi
+    done
+
+    # Use local SR if available, otherwise network SR
+    if [ -n "$LOCAL_SR_UUID" ]; then
+        ISO_SR_UUID=$LOCAL_SR_UUID
+        echo "Using existing local ISO SR"
+    elif [ -n "$NETWORK_SR_UUID" ]; then
+        ISO_SR_UUID=$NETWORK_SR_UUID
+        echo "Using network ISO SR (will attempt to make accessible)"
+        
+        # Try to make network SR accessible
+        NETWORK_PBD=$(xe pbd-list sr-uuid=$NETWORK_SR_UUID params=uuid --minimal | head -1)
+        if [ -n "$NETWORK_PBD" ]; then
+            # Unplug and replug to force remount
+            xe pbd-unplug uuid=$NETWORK_PBD 2>/dev/null || true
+            sleep 2
+            xe pbd-plug uuid=$NETWORK_PBD 2>/dev/null || true
+            sleep 3
+        fi
+    else
+    echo "ERROR: No accessible ISO SR found"
+    echo "All ISO SRs are either udev type or not accessible"
+    echo ""
+    
+    # Diagnostic: Check SMB SR status
+    SMB_SR_UUID=$(xe sr-list content-type=iso type=smb params=uuid --minimal 2>/dev/null | head -1)
+    if [ -n "$SMB_SR_UUID" ]; then
+        echo "=== SMB SR Diagnostic ==="
+        SMB_PBD=$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)
+        if [ -n "$SMB_PBD" ]; then
+            PBD_ATTACHED=$(xe pbd-list uuid=$SMB_PBD params=currently-attached --minimal)
+            echo "SMB SR UUID: $SMB_SR_UUID"
+            echo "PBD Attached: $PBD_ATTACHED"
+            echo "Mount Point: /var/run/sr-mount/$SMB_SR_UUID"
+            if [ ! -d "/var/run/sr-mount/$SMB_SR_UUID" ]; then
+                echo "Status: Mount point does NOT exist (SMB connection failed)"
+            else
+                echo "Status: Mount point exists but may not be accessible"
+            fi
+            echo ""
+            echo "SMB SR cannot be mounted. Common causes:"
+            echo "  - SMB server is down or unreachable"
+            echo "  - Network connectivity issue"
+            echo "  - Incorrect SMB credentials"
+            echo "  - SMB share path changed"
+        fi
+        echo ""
+    fi
+    
+    echo "SOLUTION OPTIONS:"
+    echo "-----------------"
+    echo ""
+    echo "Option 1: Fix SMB SR (if you want to use SMB)"
+    echo "  Run diagnostic commands to check SMB connection:"
+    echo "    PBD_UUID=\$(xe pbd-list sr-uuid=$SMB_SR_UUID params=uuid --minimal | head -1)"
+    echo "    xe pbd-list uuid=\$PBD_UUID params=device-config,currently-attached"
+    echo "  Then check SMB server connectivity and credentials"
+    echo ""
+    echo "Option 2: Create local ISO SR via XCP-NG Center GUI (RECOMMENDED)"
+    echo "  1. Open XCP-NG Center"
+    echo "  2. Go to Storage > New Storage Repository"
+    echo "  3. Type: File System"
+    echo "  4. Location: $MOUNT_POINT"
+    echo "  5. Content Type: ISO"
+    echo "  6. Name: 'VGS ISO Storage'"
+    echo "  7. After creation, re-run this script"
+    echo ""
+    echo "The ISO file is ready at: $ISO_FILE"
+    echo ""
+    echo "NOTE: Cannot create file-based ISO SR via CLI (XCP-NG limitation)"
+    echo "      You must use XCP-NG Center GUI to create it."
+    exit 1
+fi
+
+    # Need to register ISO - get SR mount point
+    SR_MOUNT="/var/run/sr-mount/$ISO_SR_UUID"
+    PBD_UUID=$(xe pbd-list sr-uuid=$ISO_SR_UUID params=uuid --minimal | head -1)
+    
+    # Check if mount point exists (SR may not be accessible)
+    if [ ! -d "$SR_MOUNT" ]; then
+        echo "WARNING: SR mount point not accessible: $SR_MOUNT"
+        echo "Attempting to mount SR..."
+        if [ -n "$PBD_UUID" ]; then
+            xe pbd-plug uuid=$PBD_UUID 2>/dev/null || true
+            sleep 3
+        fi
+        
+        if [ ! -d "$SR_MOUNT" ]; then
+            echo "ERROR: Cannot access SR mount point: $SR_MOUNT"
+            echo "SR may not be properly mounted or SMB connection is down"
+            echo ""
+            echo "The ISO file is available at: $ISO_FILE"
+            echo "You may need to fix the SR connection or create a local ISO SR via XCP-NG Center GUI"
+            exit 1
+        fi
+    fi
+    
+    # Check if this SR points to our VGS mount (no need to copy)
+    SR_NAME=$(xe sr-list uuid=$ISO_SR_UUID params=name-label --minimal)
+    IS_VGS_SR=false
+    if [ "$SR_NAME" = "VGS ISO Storage" ]; then
+        IS_VGS_SR=true
+        echo "SR points directly to VGS mount - ISO already available, no copy needed"
+    fi
+    
+    # Copy ISO to SR if needed
+    if [ "$IS_VGS_SR" = "false" ]; then
+        echo "Copying ISO to SR..."
+        cp "$ISO_FILE" "$SR_MOUNT/$ISO_NAME"
+        echo "✓ ISO copied to SR"
+    fi
+    
+    # Scan SR to register ISO
+    echo "Scanning SR to register ISO..."
+    xe sr-scan uuid=$ISO_SR_UUID
+    sleep 2
+    
+    ISO_VDI_UUID=$(xe vdi-list sr-uuid=$ISO_SR_UUID name-label="$ISO_NAME" params=uuid --minimal | head -1)
+    
+    if [ -z "$ISO_VDI_UUID" ]; then
+        echo "WARNING: ISO not yet registered, scanning again..."
+        xe sr-scan uuid=$ISO_SR_UUID
+        sleep 2
+        ISO_VDI_UUID=$(xe vdi-list sr-uuid=$ISO_SR_UUID name-label="$ISO_NAME" params=uuid --minimal | head -1)
+    fi
+fi
+
+# Final check - we should have ISO_VDI_UUID and ISO_SR_UUID by now
+if [ -z "$ISO_VDI_UUID" ] || [ -z "$ISO_SR_UUID" ]; then
+    echo "ERROR: Failed to register or find ISO"
+    exit 1
+fi
+
+SR_NAME=$(xe sr-list uuid=$ISO_SR_UUID params=name-label --minimal)
+echo "ISO SR: $SR_NAME ($ISO_SR_UUID)"
+
+if [ -n "$ISO_VDI_UUID" ]; then
+    echo "✓ ISO registered: $ISO_NAME"
+    echo "ISO VDI UUID: $ISO_VDI_UUID"
+    echo "ISO SR UUID: $ISO_SR_UUID"
+    export ISO_VDI_UUID
+    export ISO_SR_UUID
+    export ISO_NAME
+    echo ""
+    echo "Variables exported for use in Step 2:"
+    echo "  ISO_VDI_UUID=$ISO_VDI_UUID"
+    echo "  ISO_SR_UUID=$ISO_SR_UUID"
+    echo "  ISO_NAME=$ISO_NAME"
+else
+    echo "ERROR: Failed to register ISO"
+    exit 1
+fi
+
+echo ""
+
+
 STEP 2: If Test-3 Doesn't Exist - Recreate It
 -----------------------------------------------
 # If Test-3 was deleted, you need to recreate it
 # Use the DELETE_AND_RECREATE_TEST3_TEST4.txt guide, or quick recreate:
+
+# Check if ISO is registered (from Step 1.5)
+if [ -z "$ISO_VDI_UUID" ] || [ -z "$ISO_SR_UUID" ]; then
+    echo "ISO variables not set. Running Step 1.5 to register ISO from VGS..."
+    echo ""
+    
+    # Run Step 1.5 inline
+    echo "=== Registering ISO from VGS ==="
+    
+    # Mount VGS volume
+    LV_LINE=$(lvs --noheadings -o vg_name,lv_name 2>/dev/null | grep -i iso_download | head -1)
+    
+    if [ -z "$LV_LINE" ]; then
+        echo "ERROR: Could not find iso_download volume"
+        echo "Available volumes:"
+        lvs | grep -i iso || echo "No ISO volumes found"
+        exit 1
+    fi
+    
+    VG_NAME=$(echo "$LV_LINE" | awk '{print $1}')
+    echo "Found VG: $VG_NAME"
+    
+    LV_PATH="/dev/$VG_NAME/iso_download"
+    MOUNT_POINT="/mnt/iso-storage"
+    
+    if [ ! -e "$LV_PATH" ]; then
+        echo "Activating logical volume..."
+        lvchange -ay "$VG_NAME/iso_download"
+        sleep 1
+    fi
+    
+    mkdir -p $MOUNT_POINT
+    if ! mountpoint -q $MOUNT_POINT; then
+        mount $LV_PATH $MOUNT_POINT
+        echo "✓ Mounted VGS volume"
+    fi
+    
+    # Find ISO file
+    ISO_FILE=$(find $MOUNT_POINT -name "*.iso" -type f 2>/dev/null | head -1)
+    ISO_NAME=$(basename "$ISO_FILE")
+    
+    if [ -z "$ISO_FILE" ]; then
+        echo "ERROR: No ISO file found in VGS volume"
+        exit 1
+    fi
+    
+    echo "✓ Found ISO: $ISO_NAME"
+    
+    # Check if ISO is already registered
+    ISO_VDI_UUID=""
+    ISO_SR_UUID=""
+    
+    for SR_UUID in $(xe sr-list content-type=iso params=uuid --minimal | tr ',' '\n'); do
+        SR_TYPE=$(xe sr-list uuid=$SR_UUID params=type --minimal)
+        if [ "$SR_TYPE" != "udev" ]; then
+            EXISTING_ISO=$(xe vdi-list sr-uuid=$SR_UUID name-label="$ISO_NAME" params=uuid --minimal 2>/dev/null | head -1)
+            if [ -n "$EXISTING_ISO" ]; then
+                ISO_VDI_UUID=$EXISTING_ISO
+                ISO_SR_UUID=$SR_UUID
+                SR_NAME=$(xe sr-list uuid=$ISO_SR_UUID params=name-label --minimal)
+                echo "✓ ISO already registered in SR: $SR_NAME ($ISO_SR_UUID)"
+                break
+            fi
+        fi
+    done
+    
+    if [ -z "$ISO_VDI_UUID" ] || [ -z "$ISO_SR_UUID" ]; then
+        echo "ERROR: ISO not registered. Please run Step 1.5 manually first."
+        exit 1
+    fi
+    
+    export ISO_VDI_UUID
+    export ISO_SR_UUID
+    export ISO_NAME
+    echo "✓ ISO variables set"
+    echo ""
+fi
 
 # Get required UUIDs
 LOCAL_SR_UUID=$(xe sr-list type=lvm content-type=user params=uuid --minimal | head -1)
@@ -55,6 +431,15 @@ VIF_UUID=$(xe vif-create vm-uuid=$VM_UUID network-uuid=$NET_UUID device=0)
 
 # Create CD drive
 CD_VBD=$(xe vbd-create vm-uuid=$VM_UUID device=3 type=CD mode=RO)
+
+# Insert ISO from VGS
+if [ -z "$ISO_VDI_UUID" ]; then
+    echo "ERROR: ISO_VDI_UUID not set. Step 1.5 should have set this automatically."
+    exit 1
+fi
+echo "Inserting ISO from VGS: $ISO_NAME"
+xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
+echo "✓ ISO inserted"
 
 # Configure boot order
 xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"
@@ -114,20 +499,22 @@ IF TEST-3 NEEDS TO BE RECREATED
 
 # Quick summary:
 # 1. Get UUIDs (SR, template, network) - already have these
+# 1.5. Register ISO from VGS (mount VGS, copy to SR, scan) - MUST RUN FIRST!
 # 2. Create VM from template
 # 3. Add disk, network, CD drive
-# 4. Configure boot order and vgpu-stub
-# 5. Insert ISO and start
+# 4. Insert ISO from VGS into CD drive (happens automatically in Step 2)
+# 5. Configure boot order and vgpu-stub
+# 6. Start VM
 
 ================================================================================
-VM_UUID="c1b31989-fa51-c29a-3720-6e5ba7970275"
-ISO_VDI_UUID="049254cd-4a70-484f-a543-cd4c29bba023"
+STEP 4: Start VM (if not already started)
+------------------------------------------
+# If you've completed Steps 1.5 and 2, the VM is ready to start
 
-# Insert ISO
-CD_VBD=$(xe vbd-list vm-uuid=$VM_UUID type=CD params=uuid --minimal | head -1)
-echo "Inserting Ubuntu 22.04 ISO..."
-xe vbd-insert uuid=$CD_VBD vdi-uuid=$ISO_VDI_UUID
-echo "ISO inserted"
+# Get VM UUID if not already set
+if [ -z "$VM_UUID" ]; then
+    VM_UUID=$(xe vm-list name-label="Test-3" params=uuid --minimal | head -1)
+fi
 
 # Verify boot order
 xe vm-param-set uuid=$VM_UUID HVM-boot-policy="BIOS order"

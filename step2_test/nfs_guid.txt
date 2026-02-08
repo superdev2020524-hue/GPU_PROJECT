@@ -1,0 +1,112 @@
+================================================================================
+                    NFS SETUP QUICK GUIDE
+================================================================================
+
+VM MAPPING:
+-----------
+vm1/ → Test-1 (Pool A, VM ID: 1)
+vm2/ → Test-2 (Pool A, VM ID: 2)
+vm3/ → Test-3 (Pool A, VM ID: 3)
+vm4/ → Test-4 (Pool B, VM ID: 4)
+vm5/ → Test-5 (Pool B, VM ID: 5)
+vm6/ → Test-6 (Pool B, VM ID: 6)
+vm7/ → Test-7 (Any Pool, VM ID: 7)
+
+================================================================================
+                    DOM0 (HOST) SETUP
+================================================================================
+
+1. Install NFS packages:
+   yum install -y nfs-utils rpcbind
+
+2. Create directories for each VM:
+   mkdir -p /var/vgpu && chmod 777 /var/vgpu
+   for i in {1..7}; do
+       mkdir -p /var/vgpu/vm$i
+       chmod 777 /var/vgpu/vm$i
+       echo "0:Ready" > /var/vgpu/vm$i/response.txt
+       chmod 666 /var/vgpu/vm$i/response.txt
+   done
+
+3. Configure NFS export:
+   echo '/var/vgpu *(rw,sync,no_root_squash,no_subtree_check,fsid=1,insecure)' >> /etc/exports
+
+4. Start NFS services:
+   systemctl enable rpcbind nfs-server
+   systemctl start rpcbind nfs-server
+   exportfs -rav
+
+5. Verify:
+   exportfs -v
+   ls -la /var/vgpu/
+
+================================================================================
+                    VM (GUEST) SETUP
+================================================================================
+
+1. Install NFS client:
+   # Ubuntu/Debian:
+   apt-get install -y nfs-common
+   
+   # RHEL/CentOS:
+   yum install -y nfs-utils
+
+2. Find Dom0 IP (usually gateway):
+   ip route | grep default
+   # Example: default via 10.25.33.10 dev eth0
+   # Dom0 IP = 10.25.33.10
+
+3. Test NFS connection:
+   showmount -e 10.25.33.10
+   # Should show: /var/vgpu *
+
+4. Create mount point:
+   mkdir -p /mnt/vgpu
+
+5. Mount NFS:
+   mount -t nfs 10.25.33.10:/var/vgpu /mnt/vgpu
+
+6. Verify:
+   mount | grep vgpu
+   ls -la /mnt/vgpu/vm<your-vm-id>/
+   # Example: Test-1 should check /mnt/vgpu/vm1/
+
+7. (Optional) Auto-mount on boot:
+   echo "10.25.33.10:/var/vgpu  /mnt/vgpu  nfs  defaults,_netdev  0  0" >> /etc/fstab
+
+================================================================================
+                    VERIFICATION
+================================================================================
+
+On Dom0:
+--------
+exportfs -v                    # Should show /var/vgpu export
+ls -la /var/vgpu/vm*/          # Should show vm1-vm7 directories
+systemctl status nfs-server    # Should be active
+
+On VM:
+------
+mount | grep vgpu              # Should show mounted
+ls /mnt/vgpu/                  # Should show vm1-vm7 directories
+echo "test" > /mnt/vgpu/vm<id>/test.txt  # Should work (replace <id> with your VM number)
+
+================================================================================
+                    TROUBLESHOOTING
+================================================================================
+
+"mount.nfs: access denied"
+  → Check /etc/exports on Dom0
+  → Check firewall: systemctl status firewalld
+  → Restart NFS: systemctl restart nfs-server
+
+"Connection refused"
+  → Start services: systemctl start rpcbind nfs-server
+  → Check: rpcinfo -p localhost
+
+"Permission denied"
+  → Fix permissions: chmod 777 /var/vgpu/vm*
+  → Check no_root_squash in /etc/exports
+
+================================================================================
+For detailed instructions, see: NFS_SETUP_GUIDE.md
+================================================================================

@@ -1,0 +1,1064 @@
+================================================================================
+                    DETAILED IMPLEMENTATION STEPS
+                    Configuration & Management Interface (Step 2-4)
+================================================================================
+
+Date Created: January 11, 2026
+Purpose: Break down implementation into granular steps with justifications
+
+================================================================================
+                    STEP 1: DATABASE FOUNDATION
+================================================================================
+
+STEP 1.1: Create Database Directory Structure
+-----------------------------------------------
+What: Create /etc/vgpu/ directory with proper permissions
+
+Why This Step:
+1. Foundation First: Database and all files need a home directory
+2. Permissions: Must be accessible by root (for CLI tool) but secure
+3. Organization: Keeps all vGPU configuration files together
+4. Standard Location: /etc/ is standard for configuration files
+
+Implementation:
+- mkdir -p /etc/vgpu
+- chmod 755 /etc/vgpu
+- chown root:root /etc/vgpu
+
+Verification:
+- Directory exists and has correct permissions
+- Can create files in directory
+
+Why Before Database: Directory must exist before creating database file
+
+---
+
+STEP 1.2: Design Database Schema
+----------------------------------
+What: Create SQL schema definition for vms table
+
+Why This Step:
+1. Lock Schema Early: Database schema affects everything else
+2. Clear Data Model: Defines exactly what data we store
+3. Validation: CHECK constraints enforce data integrity at DB level
+4. Indexes: Plan indexes for efficient queries
+
+Schema Design:
+```sql
+CREATE TABLE vms (
+    vm_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vm_uuid TEXT UNIQUE NOT NULL,
+    vm_name TEXT,
+    pool_id CHAR(1) NOT NULL CHECK(pool_id IN ('A', 'B')),
+    priority INTEGER NOT NULL CHECK(priority IN (0, 1, 2)),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_vm_uuid ON vms(vm_uuid);
+CREATE INDEX idx_pool ON vms(pool_id);
+CREATE INDEX idx_priority ON vms(priority);
+```
+
+Why This Schema:
+1. vm_id: Auto-incrementing primary key (efficient, simple)
+2. vm_uuid: Unique identifier from XCP-ng (what we actually use for lookups)
+3. vm_name: Optional human-readable name (for convenience)
+4. pool_id: Single character 'A' or 'B' (matches vGPU stub property)
+5. priority: Integer 0/1/2 (matches mediator.c priority values)
+6. Timestamps: Audit trail (when created/updated)
+7. Indexes: Fast lookups by UUID (most common), pool, and priority
+
+Why Before Implementation: Schema must be finalized before writing code
+
+---
+
+STEP 1.3: Create Database Initialization Script
+------------------------------------------------
+What: SQL script that creates database and schema
+
+Why This Step:
+1. Reproducible: Can recreate database from scratch if needed
+2. Version Control: Schema changes tracked in script
+3. Documentation: Script documents exact schema
+4. Automation: Can be run automatically during setup
+
+Implementation:
+- File: /etc/vgpu/init_db.sql
+- Contains: CREATE TABLE and CREATE INDEX statements
+- Can be run with: sqlite3 /etc/vgpu/vgpu_config.db < /etc/vgpu/init_db.sql
+
+Why This Approach:
+1. SQL Script: Standard way to initialize databases
+2. Separate File: Easy to review and modify
+3. Idempotent: Can add IF NOT EXISTS to make safe to run multiple times
+
+Why Before Library: Library needs to know exact schema structure
+
+---
+
+STEP 1.4: Initialize Database File
+------------------------------------
+What: Run initialization script to create actual database file
+
+Why This Step:
+1. Verify Schema: Ensures schema is correct before writing code
+2. Test Early: Can test with sqlite3 command-line tool
+3. Foundation Ready: Database exists for library to connect to
+
+Implementation:
+- Run: sqlite3 /etc/vgpu/vgpu_config.db < /etc/vgpu/init_db.sql
+- Verify: sqlite3 /etc/vgpu/vgpu_config.db ".schema"
+
+Verification:
+- Database file exists
+- Schema matches design
+- Can insert test record manually
+
+Why Before Library: Library needs database to exist to test against
+
+---
+
+STEP 1.5: Create Schema Validation Queries
+-------------------------------------------
+What: SQL queries to verify schema is correct
+
+Why This Step:
+1. Testing: Can verify database structure programmatically
+2. Documentation: Shows how to query the database
+3. Debugging: Helps identify schema issues early
+
+Queries:
+- Check table exists: SELECT name FROM sqlite_master WHERE type='table' AND name='vms';
+- Check columns: PRAGMA table_info(vms);
+- Check indexes: SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='vms';
+
+Why This Approach:
+1. Standard SQL: Uses SQLite system tables
+2. Reusable: Can be used in library code for validation
+3. Self-Documenting: Shows database structure
+
+Why Before Library: Library can use these for validation
+
+================================================================================
+                    STEP 2: CORE LIBRARY
+================================================================================
+
+STEP 2.1: Create Library Header File (vgpu_config.h)
+------------------------------------------------------
+What: Define function prototypes, data structures, constants
+
+Why This Step:
+1. Interface First: Defines API before implementation
+2. Documentation: Header documents what library provides
+3. Compilation: Other code can include header to use library
+4. Contract: Establishes contract between library and users
+
+Key Definitions:
+- Error codes (VGPU_OK, VGPU_ERROR, etc.)
+- VM config structure (vm_uuid, pool_id, priority)
+- Function prototypes (init, get_vm_config, set_vm_config, list_vms, etc.)
+
+Why This Approach:
+1. Standard C Practice: Header defines interface, .c implements
+2. Separation: Clear separation between interface and implementation
+3. Reusability: Other programs can include header to use library
+
+Why Before Implementation: Implementation file needs header for structure definitions
+
+---
+
+STEP 2.2: Implement Database Connection Management
+---------------------------------------------------
+What: Functions to open/close database connection
+
+Why This Step:
+1. Foundation: All other operations need database connection
+2. Resource Management: Properly open/close connections
+3. Error Handling: Handle connection failures gracefully
+
+Functions:
+- vgpu_db_init(): Open database connection, return handle
+- vgpu_db_close(): Close connection, free resources
+- vgpu_db_check(): Verify database schema is correct
+
+Why This Approach:
+1. Single Connection: Library manages one connection (simpler)
+2. Explicit Open/Close: Clear resource management
+3. Error Codes: Return error codes for caller to handle
+
+Why First in Library: Everything else depends on database connection
+
+---
+
+STEP 2.3: Implement VM Registration Function
+--------------------------------------------
+What: Function to register new VM in database
+
+Why This Step:
+1. Core Operation: Adding VMs is primary use case
+2. Validation: Must validate pool_id and priority before inserting
+3. Error Handling: Handle duplicate UUIDs, invalid values
+
+Function: vgpu_register_vm(vm_uuid, vm_name, pool_id, priority)
+
+Why This Approach:
+1. Single Function: One function does complete registration
+2. Validation: Check inputs before database insert
+3. Transaction: Use SQL transaction for atomicity
+
+Why Before Other CRUD: Registration is most common operation, test early
+
+---
+
+STEP 2.4: Implement VM Configuration Retrieval
+------------------------------------------------
+What: Function to get VM's pool and priority from database
+
+Why This Step:
+1. Core Operation: Reading config is needed for VM startup
+2. Lookup: Fast lookup by UUID (most common operation)
+3. Error Handling: Handle VM not found gracefully
+
+Function: vgpu_get_vm_config(vm_uuid, &pool_id, &priority)
+
+Why This Approach:
+1. Simple Interface: Returns values via pointers
+2. Error Code: Returns error if VM not found
+3. Efficient: Uses UUID index for fast lookup
+
+Why After Registration: Need to be able to read what we write
+
+---
+
+STEP 2.5: Implement VM Configuration Update Functions
+------------------------------------------------------
+What: Functions to update pool and priority separately
+
+Why This Step:
+1. Flexibility: Allow updating pool or priority independently
+2. Common Operations: Users will change these frequently
+3. Validation: Must validate new values
+
+Functions:
+- vgpu_set_pool(vm_uuid, pool_id)
+- vgpu_set_priority(vm_uuid, priority)
+- vgpu_update_vm(vm_uuid, pool_id, priority)  // Update both
+
+Why This Approach:
+1. Separate Functions: More flexible, can update one or both
+2. Combined Function: Convenience function for updating both
+3. Update Timestamp: Automatically update updated_at field
+
+Why After Retrieval: Update operations need to verify VM exists first
+
+---
+
+STEP 2.6: Implement VM Listing Functions
+-----------------------------------------
+What: Functions to list VMs with optional filters
+
+Why This Step:
+1. Query Operations: Users need to see which VMs are configured
+2. Filtering: Filter by pool or priority (common queries)
+3. Statistics: Get counts for pool statistics
+
+Functions:
+- vgpu_list_vms(filter_pool, filter_priority, callback)
+- vgpu_count_vms_by_pool(pool_id)
+- vgpu_count_vms_by_priority(priority)
+
+Why This Approach:
+1. Callback Pattern: Efficient for large result sets
+2. Filters: Optional parameters for filtering
+3. Count Functions: Fast statistics without full listing
+
+Why After CRUD: Listing uses same database operations, test after basics work
+
+---
+
+STEP 2.7: Implement VM Removal Function
+---------------------------------------
+What: Function to remove VM from database
+
+Why This Step:
+1. Complete CRUD: Need delete operation for full CRUD
+2. Cleanup: Remove VMs that are deleted in XCP-ng
+3. Error Handling: Handle VM not found
+
+Function: vgpu_remove_vm(vm_uuid)
+
+Why This Approach:
+1. Simple: Delete by UUID (primary lookup method)
+2. Atomic: Single SQL DELETE statement
+3. Error Code: Returns error if VM doesn't exist
+
+Why After Other Operations: Less common operation, implement after basics
+
+---
+
+STEP 2.8: Create Makefile for Library
+---------------------------------------
+What: Build configuration for compiling library
+
+Why This Step:
+1. Build System: Need way to compile library
+2. Dependencies: Specify SQLite library dependency
+3. Installation: Define how to install library
+
+Makefile:
+- Compile vgpu_config.c to vgpu_config.o
+- Link with libsqlite3
+- Create static or shared library
+
+Why This Approach:
+1. Standard: Makefile is standard build tool
+2. Simple: Straightforward for C library
+3. Portable: Works on any system with make
+
+Why After Implementation: Need to compile and test library
+
+---
+
+STEP 2.9: Test Library Functions
+---------------------------------
+What: Create test program to verify all library functions work
+
+Why This Step:
+1. Verification: Ensure library works before building CLI
+2. Debugging: Find issues early, before integration
+3. Documentation: Test program shows how to use library
+
+Test Program:
+- Test each function individually
+- Test error cases (invalid UUID, invalid pool, etc.)
+- Verify database operations work correctly
+
+Why This Approach:
+1. Isolated Testing: Test library independently
+2. Comprehensive: Test all functions and error cases
+3. Reusable: Test program can be run anytime to verify library
+
+Why Before CLI: CLI depends on library, must verify library works first
+
+================================================================================
+                    STEP 3: CLI TOOL
+================================================================================
+
+STEP 3.1: Design CLI Command Structure
+---------------------------------------
+What: Define exact command syntax and options
+
+Why This Step:
+1. User Interface: Defines how users interact with system
+2. Consistency: Ensures consistent command structure
+3. Documentation: Command structure is part of user documentation
+
+Commands:
+- vgpu-admin register-vm --vm-uuid=<uuid> [--vm-name=<name>] --pool=<A|B> --priority=<low|medium|high>
+- vgpu-admin set-pool --vm-uuid=<uuid> --pool=<A|B>
+- vgpu-admin set-priority --vm-uuid=<uuid> --priority=<low|medium|high>
+- vgpu-admin update-vm --vm-uuid=<uuid> [--pool=<A|B>] [--priority=<low|medium|high>]
+- vgpu-admin show-vm --vm-uuid=<uuid>
+- vgpu-admin list-vms [--pool=<A|B>] [--priority=<low|medium|high>]
+- vgpu-admin list-pools
+- vgpu-admin remove-vm --vm-uuid=<uuid>
+
+Why This Structure:
+1. Subcommands: Clear, self-documenting (register-vm is obvious)
+2. Long Options: --vm-uuid is clearer than -u
+3. Optional Parameters: [brackets] show optional args
+4. Consistent: All commands follow same pattern
+
+Why Before Implementation: Need to know exact syntax before coding
+
+---
+
+STEP 3.2: Implement Command-Line Argument Parsing
+--------------------------------------------------
+What: Parse command-line arguments and validate inputs
+
+Why This Step:
+1. User Input: Must handle all command variations
+2. Validation: Validate arguments before calling library
+3. Error Messages: Provide clear error messages for invalid input
+
+Implementation:
+- Use getopt_long() for argument parsing
+- Validate UUID format
+- Validate pool_id ('A' or 'B')
+- Validate priority (low/medium/high or 0/1/2)
+- Convert string priority to integer
+
+Why This Approach:
+1. Standard Library: getopt_long() is standard C function
+2. Robust: Handles all argument variations
+3. User-Friendly: Clear error messages for invalid input
+
+Why First in CLI: All commands need argument parsing
+
+---
+
+STEP 3.3: Implement register-vm Command
+----------------------------------------
+What: Command to register new VM
+
+Why This Step:
+1. Primary Operation: Most common operation
+2. Foundation: Other operations depend on VMs being registered
+3. Validation: Must validate all inputs
+
+Implementation:
+- Parse arguments (vm-uuid, vm-name, pool, priority)
+- Convert priority string to integer
+- Call vgpu_register_vm() from library
+- Print success/error message
+
+Why This Approach:
+1. Thin Wrapper: CLI just parses args and calls library
+2. User Feedback: Print clear success/error messages
+3. Exit Codes: Return appropriate exit code for scripts
+
+Why First Command: Most fundamental operation
+
+---
+
+STEP 3.4: Implement show-vm Command
+------------------------------------
+What: Command to display VM configuration
+
+Why This Step:
+1. Verification: Users need to see VM configuration
+2. Simple: Good first query operation to implement
+3. Testing: Easy to test (register then show)
+
+Implementation:
+- Parse vm-uuid argument
+- Call vgpu_get_vm_config() from library
+- Format and print output (human-readable)
+
+Why This Approach:
+1. Simple: Single lookup, straightforward output
+2. User-Friendly: Formatted output is easy to read
+3. Verification: Users can verify registration worked
+
+Why After Register: Need to verify registration works
+
+---
+
+STEP 3.5: Implement set-pool and set-priority Commands
+-------------------------------------------------------
+What: Commands to update VM pool or priority
+
+Why This Step:
+1. Common Operations: Users will change these frequently
+2. Similar Logic: Both follow same pattern
+3. Flexibility: Allow updating one property at a time
+
+Implementation:
+- Parse arguments (vm-uuid, pool or priority)
+- Call vgpu_set_pool() or vgpu_set_priority()
+- Print success/error message
+
+Why This Approach:
+1. Separate Commands: Clear, focused commands
+2. Simple: Each command does one thing
+3. Consistent: Same pattern as register-vm
+
+Why After Show: Update operations need to verify VM exists
+
+---
+
+STEP 3.6: Implement update-vm Command
+-------------------------------------
+What: Command to update both pool and priority at once
+
+Why This Step:
+1. Convenience: Users may want to update both at once
+2. Efficiency: Single command instead of two
+3. Completeness: Provides all update options
+
+Implementation:
+- Parse optional pool and priority arguments
+- Call vgpu_update_vm() with provided values
+- Print success/error message
+
+Why This Approach:
+1. Optional Args: Both pool and priority are optional
+2. Flexible: Can update one or both
+3. Convenient: Single command for common case
+
+Why After Separate Commands: Convenience command, implement after basics
+
+---
+
+STEP 3.7: Implement list-vms Command
+--------------------------------------
+What: Command to list VMs with optional filters
+
+Why This Step:
+1. Query Operation: Users need to see all VMs
+2. Filtering: Filter by pool or priority (common queries)
+3. Formatting: Present results in readable format
+
+Implementation:
+- Parse optional --pool and --priority filters
+- Call vgpu_list_vms() with filters
+- Format output as table or list
+- Show VM UUID, name, pool, priority
+
+Why This Approach:
+1. Flexible: Optional filters for common queries
+2. Readable: Formatted output is easy to scan
+3. Complete: Shows all relevant information
+
+Why After Update: Query operations after write operations
+
+---
+
+STEP 3.8: Implement list-pools Command
+---------------------------------------
+What: Command to show pool statistics
+
+Why This Step:
+1. Overview: Users need system-wide view
+2. Statistics: Show counts per pool and priority
+3. Summary: Quick way to see system state
+
+Implementation:
+- Call vgpu_count_vms_by_pool() for each pool
+- Call vgpu_count_vms_by_priority() for each priority
+- Format as summary statistics
+- Show: Pool A: X VMs (Y high, Z medium, W low)
+
+Why This Approach:
+1. Summary View: High-level overview
+2. Statistics: Useful for capacity planning
+3. Readable: Clear, formatted output
+
+Why After List: Statistics command, implement after basic listing
+
+---
+
+STEP 3.9: Implement remove-vm Command
+--------------------------------------
+What: Command to remove VM from database
+
+Why This Step:
+1. Complete CRUD: Need delete operation
+2. Cleanup: Remove VMs that are deleted
+3. Confirmation: May want confirmation for safety
+
+Implementation:
+- Parse vm-uuid argument
+- Optionally ask for confirmation
+- Call vgpu_remove_vm()
+- Print success/error message
+
+Why This Approach:
+1. Simple: Straightforward delete operation
+2. Safe: Optional confirmation prevents accidents
+3. Complete: Full CRUD operations
+
+Why Last Command: Less common operation, implement after common ones
+
+---
+
+STEP 3.10: Implement Help and Error Handling
+----------------------------------------------
+What: Help text and comprehensive error handling
+
+Why This Step:
+1. Usability: Users need help text
+2. Error Messages: Clear errors help users fix problems
+3. Completeness: Professional CLI tools have good help
+
+Implementation:
+- --help flag shows usage for each command
+- Clear error messages for all error cases
+- Suggest fixes for common errors
+- Exit codes: 0=success, 1=error, 2=usage error
+
+Why This Approach:
+1. Standard: Follows CLI tool conventions
+2. Helpful: Good error messages reduce support burden
+3. Professional: Polished tool is easier to use
+
+Why Last: Polish after functionality is complete
+
+---
+
+STEP 3.11: Create Makefile for CLI Tool
+----------------------------------------
+What: Build configuration for compiling CLI tool
+
+Why This Step:
+1. Build System: Need way to compile CLI
+2. Dependencies: Link with library and SQLite
+3. Installation: Define installation process
+
+Makefile:
+- Compile vgpu-admin.c
+- Link with vgpu_config library
+- Link with libsqlite3
+- Install to /usr/local/bin or /etc/vgpu
+
+Why This Approach:
+1. Standard: Makefile is standard build tool
+2. Dependencies: Clearly specify library dependencies
+3. Installation: Easy installation process
+
+Why After Implementation: Need to compile and test CLI
+
+---
+
+STEP 3.12: Test CLI Tool
+-------------------------
+What: Test all commands with various inputs
+
+Why This Step:
+1. Verification: Ensure all commands work
+2. Error Cases: Test invalid inputs
+3. Integration: Verify CLI works with library
+
+Testing:
+- Test each command with valid inputs
+- Test error cases (invalid UUID, invalid pool, etc.)
+- Test edge cases (empty database, duplicate UUID, etc.)
+- Verify output formatting
+
+Why This Approach:
+1. Comprehensive: Test all functionality
+2. Systematic: Test each command individually
+3. Realistic: Test with real-world scenarios
+
+Why Before Integration: Must verify CLI works before integrating with VM startup
+
+================================================================================
+                    STEP 4: VM STARTUP INTEGRATION
+================================================================================
+
+STEP 4.1: Design VM Startup Script
+-----------------------------------
+What: Plan how script will read DB and set device-model-args
+
+Why This Step:
+1. Architecture: Define how integration works
+2. Flow: Understand when script runs in VM lifecycle
+3. Dependencies: Identify what script needs (xe command, database access)
+
+Script Flow:
+1. Get VM UUID (from XCP-ng or script argument)
+2. Query database for VM's pool and priority
+3. If found: Construct device-model-args string
+4. Set device-model-args using xe vm-param-set
+5. If not found: Use defaults or error
+
+Why This Approach:
+1. Automatic: Runs automatically when VM starts
+2. Database-Driven: Single source of truth (database)
+3. Backward Compatible: Doesn't break existing manually configured VMs
+
+Why Before Implementation: Need to understand integration points
+
+---
+
+STEP 4.2: Implement Database Query in Script
+---------------------------------------------
+What: Script code to query SQLite database
+
+Why This Step:
+1. Core Functionality: Script must read from database
+2. Error Handling: Handle VM not found in database
+3. Data Extraction: Get pool_id and priority values
+
+Implementation:
+- Use sqlite3 command-line tool or C library
+- Query: SELECT pool_id, priority FROM vms WHERE vm_uuid = ?
+- Parse results
+- Handle not found case
+
+Why This Approach:
+1. Simple: sqlite3 command is available on all systems
+2. Reliable: Standard tool, well-tested
+3. Flexible: Can use C library if needed for better integration
+
+Why First in Script: Core functionality, everything else depends on this
+
+---
+
+STEP 4.3: Implement device-model-args Construction
+---------------------------------------------------
+What: Build QEMU device string from pool and priority
+
+Why This Step:
+1. Format: Must match existing vGPU stub device format
+2. Conversion: Convert priority integer to string (0→low, 1→medium, 2→high)
+3. Validation: Ensure values are valid before constructing string
+
+Format:
+"-device vgpu-stub,pool_id=<A|B>,priority=<low|medium|high>,vm_id=<uuid_hash>"
+
+Why This Format:
+1. Existing Format: Matches current manual configuration
+2. Compatible: Works with existing vGPU stub device
+3. Complete: Includes all required properties
+
+Why After Query: Need pool/priority values to construct string
+
+---
+
+STEP 4.4: Implement xe Command Execution
+------------------------------------------
+What: Execute xe vm-param-set to set device-model-args
+
+Why This Step:
+1. Integration: Must use XCP-ng's xe command
+2. VM UUID: Need VM UUID to set parameters
+3. Error Handling: Handle xe command failures
+
+Implementation:
+- Construct xe command: xe vm-param-set uuid=$VM_UUID platform:device-model-args="..."
+- Execute command
+- Check exit code
+- Handle errors
+
+Why This Approach:
+1. Standard: Uses existing XCP-ng mechanism
+2. Reliable: xe command is standard way to configure VMs
+3. No Changes: Doesn't require modifying XCP-ng
+
+Why After Construction: Need device string before setting it
+
+---
+
+STEP 4.5: Add Error Handling and Logging
+-----------------------------------------
+What: Handle errors and log operations
+
+Why This Step:
+1. Reliability: Script must handle failures gracefully
+2. Debugging: Logs help diagnose issues
+3. User Feedback: Users need to know if configuration was applied
+
+Implementation:
+- Log to /var/log/vgpu-vm-startup.log
+- Handle: VM not in database, xe command failure, invalid values
+- Exit codes: 0=success, 1=error
+
+Why This Approach:
+1. Standard: Log file is standard practice
+2. Debuggable: Logs help troubleshoot issues
+3. Professional: Proper error handling is essential
+
+Why After Core: Polish after basic functionality works
+
+---
+
+STEP 4.6: Test Script Manually
+-------------------------------
+What: Test script with real VM UUID
+
+Why This Step:
+1. Verification: Ensure script works before automation
+2. Integration: Verify xe command works correctly
+3. End-to-End: Test complete flow (DB → script → XCP-ng)
+
+Testing:
+- Register VM in database
+- Run script manually with VM UUID
+- Verify device-model-args is set correctly
+- Check VM can start with configuration
+
+Why This Approach:
+1. Manual First: Test manually before automation
+2. Real VM: Test with actual XCP-ng VM
+3. Verification: Confirm end-to-end flow works
+
+Why Before Automation: Must verify script works before automating
+
+---
+
+STEP 4.7: Integrate with XCP-ng VM Lifecycle
+----------------------------------------------
+What: Hook script into VM startup process
+
+Why This Step:
+1. Automation: Script should run automatically
+2. Integration: Must work with XCP-ng's VM lifecycle
+3. Timing: Must run at right time (before VM starts)
+
+Integration Options:
+1. XCP-ng Hook: Use XCP-ng's hook system (if available)
+2. xe Event: Monitor xe events for VM start
+3. Manual: Document manual execution (simpler, less integrated)
+
+Why This Approach:
+1. Flexible: Multiple integration options
+2. Incremental: Can start with manual, add automation later
+3. Reliable: Manual execution is most reliable
+
+Why After Testing: Only automate after manual testing works
+
+================================================================================
+                    STEP 5: TESTING AND VALIDATION
+================================================================================
+
+STEP 5.1: Create Test Scripts
+------------------------------
+What: Automated test scripts for all operations
+
+Why This Step:
+1. Automation: Automated tests are repeatable
+2. Coverage: Test all operations systematically
+3. Regression: Catch regressions if code changes
+
+Test Scripts:
+- test_database.sh: Test database operations
+- test_library.sh: Test library functions
+- test_cli.sh: Test CLI commands
+- test_integration.sh: Test end-to-end flow
+
+Why This Approach:
+1. Systematic: Test each component
+2. Automated: Can run anytime to verify system
+3. Comprehensive: Cover all operations
+
+Why After Implementation: Need complete system to test
+
+---
+
+STEP 5.2: Test Database Operations
+-----------------------------------
+What: Verify all database operations work correctly
+
+Why This Step:
+1. Foundation: Database is foundation, must work perfectly
+2. Data Integrity: Verify constraints work (pool_id, priority)
+3. Performance: Verify indexes work (fast lookups)
+
+Testing:
+- Insert, query, update, delete operations
+- Test constraints (invalid pool_id, invalid priority)
+- Test unique constraint (duplicate UUID)
+- Verify indexes speed up queries
+
+Why This Approach:
+1. Comprehensive: Test all CRUD operations
+2. Constraints: Verify data integrity
+3. Performance: Ensure queries are fast
+
+Why First in Testing: Database is foundation
+
+---
+
+STEP 5.3: Test Library Functions
+----------------------------------
+What: Verify all library functions work correctly
+
+Why This Step:
+1. API: Library is API, must work correctly
+2. Error Handling: Verify error handling works
+3. Integration: Library is used by CLI, must be reliable
+
+Testing:
+- Test each function with valid inputs
+- Test error cases (VM not found, invalid values)
+- Test edge cases (empty database, NULL pointers)
+- Verify return codes and error messages
+
+Why This Approach:
+1. Unit Testing: Test each function independently
+2. Error Cases: Verify error handling
+3. Robustness: Test edge cases
+
+Why After Database: Library uses database, test after DB works
+
+---
+
+STEP 5.4: Test CLI Commands
+----------------------------
+What: Verify all CLI commands work correctly
+
+Why This Step:
+1. User Interface: CLI is what users see, must work perfectly
+2. Integration: CLI uses library, verify integration works
+3. User Experience: Verify output is clear and helpful
+
+Testing:
+- Test each command with valid inputs
+- Test error cases (invalid arguments, missing args)
+- Test help text
+- Verify output formatting
+
+Why This Approach:
+1. User-Focused: Test from user's perspective
+2. Comprehensive: Test all commands
+3. Usability: Verify user experience is good
+
+Why After Library: CLI depends on library
+
+---
+
+STEP 5.5: Test VM Startup Integration
+--------------------------------------
+What: Verify VM startup script works end-to-end
+
+Why This Step:
+1. Integration: Most complex part, must work correctly
+2. Real-World: Test with actual VMs
+3. Automation: Verify automatic configuration works
+
+Testing:
+- Register VM in database
+- Start VM (script should run automatically or manually)
+- Verify device-model-args is set correctly
+- Verify VM can read pool/priority from vGPU stub device
+
+Why This Approach:
+1. End-to-End: Test complete flow
+2. Real VMs: Test with actual XCP-ng VMs
+3. Verification: Confirm configuration is applied
+
+Why After CLI: Integration uses CLI/library, test after they work
+
+---
+
+STEP 5.6: Performance and Stress Testing
+-----------------------------------------
+What: Test with many VMs and frequent operations
+
+Why This Step:
+1. Scalability: System must work with many VMs
+2. Performance: Queries must be fast
+3. Reliability: System must be stable under load
+
+Testing:
+- Register 50+ VMs
+- Query operations with many VMs
+- Update operations frequently
+- Verify performance is acceptable
+
+Why This Approach:
+1. Realistic: Test with realistic number of VMs
+2. Performance: Verify system scales
+3. Stability: Verify system is stable
+
+Why After Basic Testing: Test performance after functionality works
+
+================================================================================
+                    STEP 6: DOCUMENTATION
+================================================================================
+
+STEP 6.1: Create User Guide for vgpu-admin
+--------------------------------------------
+What: Complete guide for using CLI tool
+
+Why This Step:
+1. Usability: Users need documentation to use tool
+2. Examples: Show how to use each command
+3. Reference: Complete command reference
+
+Content:
+- Overview of system
+- Installation instructions
+- Command reference (all commands with examples)
+- Common workflows
+- Troubleshooting
+
+Why This Approach:
+1. User-Focused: Written for end users
+2. Complete: Covers all commands
+3. Practical: Includes real examples
+
+Why After Testing: Document what actually works
+
+---
+
+STEP 6.2: Create Integration Guide
+-----------------------------------
+What: Guide for integrating with VM management
+
+Why This Step:
+1. Integration: Administrators need to integrate with XCP-ng
+2. Automation: Show how to automate VM configuration
+3. Best Practices: Document recommended practices
+
+Content:
+- How VM startup integration works
+- How to set up automation
+- How to migrate existing VMs
+- Best practices for VM management
+
+Why This Approach:
+1. Practical: Focus on real-world usage
+2. Integration: Show how to integrate with XCP-ng
+3. Migration: Help users migrate existing setup
+
+Why After Integration: Document integration after it's implemented
+
+---
+
+STEP 6.3: Create Example Workflows
+-----------------------------------
+What: Step-by-step examples of common tasks
+
+Why This Step:
+1. Learning: Examples help users learn system
+2. Common Tasks: Show how to do common operations
+3. Copy-Paste: Users can copy examples
+
+Examples:
+- Initial setup (register VMs 1-7 to Pool A)
+- Changing VM priority
+- Moving VM between pools
+- System audit (list all VMs)
+
+Why This Approach:
+1. Practical: Real-world examples
+2. Complete: Show full workflows
+3. Usable: Can copy and modify
+
+Why After User Guide: Examples supplement main guide
+
+---
+
+STEP 6.4: Create Troubleshooting Guide
+---------------------------------------
+What: Common problems and solutions
+
+Why This Step:
+1. Support: Help users solve problems
+2. Common Issues: Document known issues
+3. Solutions: Provide solutions for common problems
+
+Content:
+- Common error messages and solutions
+- Database issues
+- Integration issues
+- How to verify system is working
+
+Why This Approach:
+1. Problem-Solving: Focus on solving problems
+2. Common Issues: Document issues users will encounter
+3. Solutions: Provide clear solutions
+
+Why Last: Document issues found during testing
+
+================================================================================
+                    IMPLEMENTATION ORDER SUMMARY
+================================================================================
+
+The steps are ordered to:
+1. Build foundation first (database)
+2. Build on foundation (library)
+3. Build user interface (CLI)
+4. Integrate with system (VM startup)
+5. Verify everything works (testing)
+6. Document for users (documentation)
+
+Each step depends on previous steps, so order is critical.
+
+================================================================================
+End of Detailed Implementation Steps
+================================================================================

@@ -1,0 +1,42 @@
+================================================================================
+                    BUILD INSTRUCTIONS - Fixing Compilation Errors
+================================================================================
+
+ERROR: sqlite3.h: No such file or directory
+--------------------------------------------
+
+This error occurs because the SQLite development headers are not installed.
+
+SOLUTION: Install SQLite Development Package
+--------------------------------------------
+
+On XCP-ng / CentOS / RHEL:
+---------------------------
+sudo yum install sqlite-devel gcc make
+
+On Debian / Ubuntu:
+-------------------
+sudo apt-get update
+sudo apt-get install libsqlite3-dev build-essential
+
+On Fedora:
+----------
+sudo dnf install sqlite-devel gcc make
+
+After installing, try building again:
+--------------------------------------
+cd step2(2-4)
+make clean
+make
+
+If you still get errors, verify SQLite is installed:
+---------------------------------------------------
+# Check if headers exist
+ls -la /usr/include/sqlite3.h
+# or
+ls -la /usr/local/include/sqlite3.h
+
+# Check SQLite version
+sqlite3 --version
+
+================================================================================
