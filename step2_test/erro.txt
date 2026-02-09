@@ -1,0 +1,19 @@
+ERROR: gcc: No such file or directory
+
+SOLUTION:
+The GCC compiler is not installed on the VM. Install it using one of these methods:
+
+For Debian/Ubuntu-based systems:
+  sudo apt-get update
+  sudo apt-get install -y build-essential
+
+For CentOS/RHEL/Fedora-based systems:
+  sudo yum install -y gcc gcc-c++ make
+  # OR for newer versions:
+  sudo dnf install -y gcc gcc-c++ make
+
+After installation, verify gcc is available:
+  gcc --version
+
+Then retry the build:
+  make vm

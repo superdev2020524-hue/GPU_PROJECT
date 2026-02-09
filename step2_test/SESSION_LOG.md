@@ -369,4 +369,83 @@
 - No configuration needed
 - Better error messages if device not found
 
+**Follow-up Issue (Test-3):**
+- Device exists at `00:05.0` but auto-detection not finding it
+- User question: "Do I have to go through this error every time for every VM?"
+
+**Root Cause Analysis:**
+- Class check might be too strict or failing silently
+- Access check for resource0 might fail without proper permissions
+- Need more robust error handling
+
+**Improved Implementation:**
+- Made class check optional (vendor+device match is sufficient)
+- Changed `access(..., R_OK)` to `access(..., F_OK)` (check existence, not read permission)
+- Added better error messages and debugging output
+- Added fallback handling for permission issues
+
+**Files Modified:**
+- `vm_client_vector.c`: Improved `find_vgpu_device()` with better error handling
+
+**Created Documentation:**
+- `PCI_DETECTION_TROUBLESHOOTING.md`: Comprehensive troubleshooting guide
+
+**Expected Result:**
+- Should now work on all VMs including Test-3
+- Better error messages help diagnose issues
+- No need to configure per-VM
+
+---
+
+## 2024-12-XX: Test MEDIATOR Client Implementation
+
+**User Request:**
+- Create a test MEDIATOR client for testing and visualization
+- Should perform same function as vm_client_vector.c but with testing capabilities
+- Show CUDA progress and response to simultaneous requests
+- Show scheduling behavior when VMs arrive sequentially
+- Keep client-side modifications and NFS files as before
+- Won't run simultaneously with vm_client_vector.c
+
+**Design Phase:**
+- Created TEST_MEDIATOR_DESIGN.md with comprehensive design proposal
+- Discussed implementation approaches (threading vs sequential)
+- Proposed display system with timeline and queue visualization
+- Defined test scenarios (simultaneous, sequential, mixed)
+
+**Implementation:**
+- Created `test_mediator_client.c`:
+  - Reuses NFS communication code from vm_client_vector.c
+  - Implements threading for simultaneous request simulation
+  - Real-time display system with timeline visualization
+  - Queue state inference based on priority and FIFO rules
+  - Statistics calculation and display
+  - Support for simultaneous, sequential, and preset test scenarios
+- Updated Makefile to build test client (builds with `make vm`)
+- Created TEST_CLIENT_USAGE.md with usage guide
+
+**Features:**
+- Simultaneous requests: All VMs send requests at same time
+- Sequential requests: VMs send requests with configurable delay
+- Preset scenarios: Predefined test configurations
+- Real-time display: Updates every 0.5 seconds
+- Timeline visualization: Shows request submission, processing, completion
+- Queue state: Inferred from priority and FIFO rules
+- Statistics: Response times, priority distribution, pool distribution
+
+**Files Created:**
+- `test_mediator_client.c`: Main implementation
+- `TEST_MEDIATOR_DESIGN.md`: Design document
+- `TEST_CLIENT_USAGE.md`: Usage guide
+
+**Files Modified:**
+- `Makefile`: Added test client build target
+
+**Expected Result:**
+- User can test scheduling behavior visually
+- See how priority and FIFO ordering works
+- Measure performance and response times
+- Debug queue management issues
+- Demonstrate system behavior
+
 ---

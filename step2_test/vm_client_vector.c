@@ -136,7 +136,7 @@ static char* find_vgpu_device(void) {
             continue;
         }
         
-        // Found it! Check if resource0 exists
+        // Found it! Check if resource0 exists and is readable
         len = snprintf(device_path, sizeof(device_path), "%s/resource0", pci_path);
         if (len < 0 || len >= (int)sizeof(device_path)) continue;
         

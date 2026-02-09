@@ -1,0 +1,185 @@
+================================================================================
+        FIX: SSH "Password Incorrect" for Test-3 and Test-4
+================================================================================
+
+PROBLEM:
+--------
+Test-3 and Test-4 show "password incorrect" errors, but Test-5, Test-6, and
+Test-7 connect fine. You remember Test-3 and Test-4 having "previous history"
+or you deleted SSH keys.
+
+ROOT CAUSE:
+-----------
+Test-3 and Test-4 were deleted and recreated. When VMs are recreated, they
+get NEW SSH host keys. Your desktop/laptop still has the OLD host keys stored
+in ~/.ssh/known_hosts.
+
+SSH detects the mismatch and rejects the connection BEFORE asking for a password.
+Some SSH clients incorrectly report this as "password incorrect."
+
+
+================================================================================
+SOLUTION: Remove Old Host Keys
+================================================================================
+
+STEP 1: Find the IP Addresses
+-------------------------------
+If you're not sure what IPs Test-3 and Test-4 are using, check from Dom0:
+
+# List all VMs and their IPs (if configured)
+xe vm-list params=name-label,networks
+
+# Or check ARP table for MAC addresses
+# First get VM MAC addresses:
+VM3_UUID=$(xe vm-list name-label=Test-3 params=uuid --minimal)
+VM4_UUID=$(xe vm-list name-label=Test-4 params=uuid --minimal)
+
+VIF3=$(xe vif-list vm-uuid=$VM3_UUID params=uuid --minimal | head -1)
+VIF4=$(xe vif-list vm-uuid=$VM4_UUID params=uuid --minimal | head -1)
+
+MAC3=$(xe vif-param-get uuid=$VIF3 param-name=MAC)
+MAC4=$(xe vif-param-get uuid=$VIF4 param-name=MAC)
+
+echo "Test-3 MAC: $MAC3"
+echo "Test-4 MAC: $MAC4"
+
+# Then check ARP table (from Dom0 or your desktop):
+arp -a | grep -i "$MAC3"
+arp -a | grep -i "$MAC4"
+
+# Or ping scan to find them:
+for i in {13..20}; do
+    ping -c 1 -W 1 10.25.33.$i >/dev/null 2>&1 && echo "10.25.33.$i is responding"
+done
+
+
+STEP 2: Remove Old Host Keys (On Your Desktop/Laptop)
+-------------------------------------------------------
+⚠️ IMPORTANT: Run these commands on your desktop/laptop, NOT on Dom0!
+
+# Method 1: Remove by IP address (recommended)
+# Replace with actual IPs if different:
+ssh-keygen -R 10.25.33.13  # For Test-3
+ssh-keygen -R 10.25.33.14  # For Test-4
+
+# Method 2: Remove by hostname (if you use hostnames)
+ssh-keygen -R test-3
+ssh-keygen -R test-4
+
+# Method 3: Manual removal (if above doesn't work)
+# Edit ~/.ssh/known_hosts and remove lines containing:
+# - 10.25.33.13
+# - 10.25.33.14
+# - test-3
+# - test-4
+nano ~/.ssh/known_hosts
+# Or use your preferred editor
+
+
+STEP 3: Verify Old Keys Are Removed
+------------------------------------
+# Check if the IPs are still in known_hosts:
+grep "10.25.33.13" ~/.ssh/known_hosts
+grep "10.25.33.14" ~/.ssh/known_hosts
+
+# If nothing is printed, the keys are removed ✓
+
+
+STEP 4: Connect Again
+---------------------
+# Now try connecting - SSH will ask to accept the new host key:
+ssh david@10.25.33.13  # For Test-3
+# You'll see: "Are you sure you want to continue connecting (yes/no/[fingerprint])?"
+# Type: yes
+
+ssh david@10.25.33.14  # For Test-4
+# Same prompt - type: yes
+
+# After accepting, enter your password normally.
+
+
+================================================================================
+VERIFICATION: Confirm This Was The Issue
+================================================================================
+
+If you see this error when connecting, it confirms the host key issue:
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!    @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
+Someone could be eavesdropping on you right now (man-in-the-middle attack)!
+It is also possible that a host key has just been changed.
+The fingerprint for the ECDSA key sent by the remote host is
+...
+Please contact your system administrator.
+Add correct host key in ~/.ssh/known_hosts to get rid of this message.
+Offending ECDSA key in ~/.ssh/known_hosts: <line number>
+...
+
+This is the exact error that causes the "password incorrect" problem.
+Remove the old key as shown in Step 2 above.
+
+
+================================================================================
+WHY TEST-5, TEST-6, TEST-7 WORK
+================================================================================
+
+Test-5, Test-6, and Test-7 were created fresh and you connected to them for
+the first time. SSH stored their host keys correctly in known_hosts.
+
+Test-3 and Test-4 had previous connections with different host keys, so SSH
+detects the mismatch and blocks the connection.
+
+
+================================================================================
+PREVENTION: For Future VM Recreations
+================================================================================
+
+If you need to delete and recreate VMs in the future:
+
+1. Before deleting, remove the host key:
+   ssh-keygen -R <vm-ip-address>
+
+2. Or use SSH with StrictHostKeyChecking=no (NOT recommended for security):
+   ssh -o StrictHostKeyChecking=no david@<vm-ip>
+
+3. Better: Always remove old keys after recreating VMs:
+   ssh-keygen -R <vm-ip-address>
+
+
+================================================================================
+ALTERNATIVE: If Password Really Is Wrong
+================================================================================
+
+If removing host keys doesn't fix it, the password might actually be wrong:
+
+1. Check if you're using the correct username:
+   - Ubuntu disables root SSH by default
+   - Use: ssh david@10.25.33.13 (not ssh root@...)
+
+2. Reset password via VNC console:
+   # Connect to VM via VNC, then:
+   sudo passwd david
+   # Enter new password
+
+3. Verify SSH service is running in VM:
+   sudo systemctl status ssh
+   sudo systemctl start ssh  # If not running
+
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
+# Remove old host keys:
+ssh-keygen -R 10.25.33.13
+ssh-keygen -R 10.25.33.14
+
+# Connect again:
+ssh david@10.25.33.13
+ssh david@10.25.33.14
+
+# If you see "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED" - that's the issue!
+
+================================================================================

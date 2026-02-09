@@ -29,11 +29,13 @@ INSTALL_DIR = /usr/local
 CUDA_SRC = cuda_vector_add.c
 MEDIATOR_SRC = mediator_async.c
 VM_CLIENT_SRC = vm_client_vector.c
+TEST_CLIENT_SRC = test_mediator_client.c
 
 # Executables
 CUDA_EXEC = $(DOM0_BUILD_DIR)/cuda_vector_add
 MEDIATOR_EXEC = $(DOM0_BUILD_DIR)/mediator_async
 VM_CLIENT_EXEC = $(VM_BUILD_DIR)/vm_client_vector
+TEST_CLIENT_EXEC = $(VM_BUILD_DIR)/test_mediator_client
 
 # Default target (shows help)
 all: help
@@ -78,11 +80,12 @@ $(MEDIATOR_EXEC): $(MEDIATOR_SRC) $(CUDA_SRC) | $(DOM0_BUILD_DIR)
 # ============================================================================
 
 # Build VM client (no CUDA dependencies)
-vm: $(VM_BUILD_DIR) $(VM_CLIENT_EXEC)
+vm: $(VM_BUILD_DIR) $(VM_CLIENT_EXEC) $(TEST_CLIENT_EXEC)
 	@echo ""
 	@echo "=========================================="
 	@echo "VM build complete!"
 	@echo "  VM Client: $(VM_CLIENT_EXEC)"
+	@echo "  Test Client: $(TEST_CLIENT_EXEC)"
 	@echo "=========================================="
 
 # Create VM build directory
@@ -93,6 +96,12 @@ $(VM_BUILD_DIR):
 $(VM_CLIENT_EXEC): $(VM_CLIENT_SRC) | $(VM_BUILD_DIR)
 	@echo "Building VM client (VM/guest)..."
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	@echo "Built: $@"
+
+# Test MEDIATOR client (for VM/guest - testing tool)
+$(TEST_CLIENT_EXEC): $(TEST_CLIENT_SRC) | $(VM_BUILD_DIR)
+	@echo "Building test MEDIATOR client (VM/guest)..."
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -lm
 	@echo "Built: $@"
 
 # Clean build artifacts
@@ -150,6 +159,7 @@ help:
 	@echo "Build Outputs:"
 	@echo "  Dom0: $(MEDIATOR_EXEC)"
 	@echo "  VM:   $(VM_CLIENT_EXEC)"
+	@echo "  Test: $(TEST_CLIENT_EXEC)"
 	@echo ""
 	@echo "=================================================================================="
 

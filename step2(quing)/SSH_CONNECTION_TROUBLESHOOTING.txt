@@ -2,7 +2,63 @@
         TROUBLESHOOTING: Cannot SSH to VM (ssh root@10.25.33.11)
 ================================================================================
 
-PROBLEM IDENTIFIED:
+================================================================================
+SPECIAL CASE: Test-3 and Test-4 "Password Incorrect" Error
+================================================================================
+
+If you're getting "password incorrect" errors ONLY for Test-3 and Test-4,
+but Test-5, Test-6, and Test-7 work fine, this is likely an SSH host key
+verification issue, NOT a password problem.
+
+WHY THIS HAPPENS:
+-----------------
+Test-3 and Test-4 were deleted and recreated. When VMs are recreated, they
+get NEW SSH host keys. However, SSH on your desktop/laptop still has the
+OLD host keys stored in ~/.ssh/known_hosts.
+
+When you try to connect, SSH detects the host key mismatch and rejects the
+connection BEFORE even asking for a password. Some SSH clients show this as
+"password incorrect" which is misleading.
+
+SOLUTION: Remove Old Host Keys from known_hosts
+------------------------------------------------
+Run these commands on your desktop/laptop (where you're trying to SSH from):
+
+# Remove old host keys for Test-3 (assuming IP 10.25.33.13)
+ssh-keygen -R 10.25.33.13
+
+# Remove old host keys for Test-4 (assuming IP 10.25.33.14)
+ssh-keygen -R 10.25.33.14
+
+# Alternative: If you don't know the exact IPs, remove by hostname
+ssh-keygen -R test-3
+ssh-keygen -R test-4
+
+# Or manually edit ~/.ssh/known_hosts and remove lines containing:
+# - 10.25.33.13
+# - 10.25.33.14
+# - test-3
+# - test-4
+
+After removing the old keys, try connecting again:
+ssh david@10.25.33.13  # For Test-3
+ssh david@10.25.33.14  # For Test-4
+
+SSH will ask you to accept the new host key (type "yes"), then prompt for
+password normally.
+
+VERIFY THE ISSUE:
+-----------------
+If you see an error like this when connecting, it confirms the host key issue:
+  @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!    @
+  IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
+  ...
+  Offending key in ~/.ssh/known_hosts: <line number>
+
+This confirms the host key mismatch. Remove the old key as shown above.
+
+================================================================================
+GENERAL PROBLEM IDENTIFIED:
 -------------------
 Looking at your network configuration dialog, there are several issues:
 
