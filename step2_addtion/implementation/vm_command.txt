@@ -1,0 +1,3 @@
+gcc -O2 -Wall -o vm_client_enhanced vm_client_enhanced.c
+
+sudo ./vm_client_enhanced 100 200

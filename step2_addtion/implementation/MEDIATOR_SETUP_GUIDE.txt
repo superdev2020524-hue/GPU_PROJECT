@@ -1,0 +1,271 @@
+================================================================
+  Host Mediator & CUDA Setup Guide
+================================================================
+
+This guide explains how to build and run the enhanced mediator
+daemon on the host (Dom0) with CUDA support.
+
+================================================================
+  PREREQUISITES
+================================================================
+
+1. **CUDA Toolkit** installed on Dom0
+   - Check: nvidia-smi (should show GPU)
+   - Check: ls /usr/local/cuda (or wherever CUDA is installed)
+
+2. **CUDA source file** from step2_test
+   - File: step2_test/cuda_vector_add.c
+   - File: step2_test/cuda_vector_add.h (if exists)
+
+3. **Build tools**
+   - gcc compiler
+   - make
+   - pthread library (usually included)
+
+================================================================
+  OPTION 1: Quick Build (If CUDA is Standard Location)
+================================================================
+
+If CUDA is installed at /usr/local/cuda:
+
+  cd /home/david/Downloads/gpu/step2_addtion/implementation
+  
+  # Copy CUDA source if not already there
+  cp ../../step2_test/cuda_vector_add.c .
+  cp ../../step2_test/cuda_vector_add.h . 2>/dev/null || true
+  
+  # Build mediator
+  make mediator_enhanced
+
+If this works, skip to "Running the Mediator" section.
+
+================================================================
+  OPTION 2: Manual Build (Custom CUDA Location)
+================================================================
+
+If CUDA is installed elsewhere, or you need to customize:
+
+1. **Find your CUDA installation:**
+   which nvcc
+   # Usually shows: /usr/local/cuda/bin/nvcc
+   # So CUDA_PATH = /usr/local/cuda
+
+2. **Set CUDA path and build:**
+   export CUDA_PATH=/usr/local/cuda  # or your CUDA location
+   cd /home/david/Downloads/gpu/step2_addtion/implementation
+   cp ../../step2_test/cuda_vector_add.c .
+   make mediator_enhanced
+
+3. **Or edit Makefile:**
+   Edit Makefile and change:
+     CUDA_PATH ?= /usr/local/cuda
+   To your CUDA location, then:
+     make mediator_enhanced
+
+================================================================
+  OPTION 3: Build Without CUDA (Testing Only)
+================================================================
+
+If you just want to test the socket communication without
+actual CUDA execution, you can create a dummy CUDA library.
+
+However, the mediator_enhanced.c is designed to work with
+real CUDA. For now, you need CUDA installed.
+
+================================================================
+  TROUBLESHOOTING BUILD
+================================================================
+
+Problem: "cuda_vector_add.c: No such file or directory"
+Solution:
+  cp /path/to/step2_test/cuda_vector_add.c .
+  # Make sure the path is correct
+
+Problem: "cuda.h: No such file or directory"
+Solution:
+  # Find CUDA include directory
+  find /usr -name "cuda.h" 2>/dev/null
+  # Then set CUDA_INCDIR in Makefile or export CUDA_PATH
+
+Problem: "cannot find -lcudart"
+Solution:
+  # Find CUDA library directory
+  find /usr -name "libcudart.so*" 2>/dev/null
+  # Then set CUDA_LIBDIR in Makefile or export CUDA_PATH
+
+Problem: "nvidia-smi: command not found"
+Solution:
+  # CUDA/NVIDIA drivers not installed
+  # You need to install NVIDIA drivers and CUDA toolkit
+  # This is a system-level installation, not just a library
+
+================================================================
+  VERIFY CUDA SETUP
+================================================================
+
+Before building mediator, verify CUDA works:
+
+1. **Check GPU:**
+   nvidia-smi
+   # Should show your GPU and driver version
+
+2. **Check CUDA compiler:**
+   nvcc --version
+   # Should show CUDA version
+
+3. **Check CUDA libraries:**
+   ls /usr/local/cuda/lib64/libcudart.so*
+   # Should exist
+
+4. **Test CUDA (optional):**
+   # If you have CUDA samples installed:
+   cd /usr/local/cuda/samples/1_Utilities/deviceQuery
+   make
+   ./deviceQuery
+   # Should show GPU information
+
+================================================================
+  BUILDING THE MEDIATOR
+================================================================
+
+Once CUDA is verified:
+
+  cd /home/david/Downloads/gpu/step2_addtion/implementation
+  
+  # Ensure CUDA source is present
+  ls cuda_vector_add.c
+  # If not found:
+  cp ../../step2_test/cuda_vector_add.c .
+  
+  # Build
+  make mediator_enhanced
+  
+  # Should produce: mediator_enhanced binary
+
+================================================================
+  RUNNING THE MEDIATOR
+================================================================
+
+1. **Start the mediator:**
+   sudo ./mediator_enhanced
+
+2. **Expected output:**
+   ================================================================================
+             MEDIATOR DAEMON v2 - MMIO/Socket Communication
+   ================================================================================
+   
+   [MEDIATOR] Initialized
+   [SOCKET] Listening on /tmp/vgpu-mediator.sock
+   [MEDIATOR] Starting main loop...
+   [MEDIATOR] Accepting connections on /tmp/vgpu-mediator.sock
+
+3. **Verify socket created:**
+   ls -la /tmp/vgpu-mediator.sock
+   # Should show the socket file
+
+4. **Keep it running:**
+   - Leave this terminal open
+   - Or run in background: sudo ./mediator_enhanced &
+   - Or use systemd service (see below)
+
+================================================================
+  TESTING THE MEDIATOR
+================================================================
+
+1. **Start mediator** (in one terminal):
+   sudo ./mediator_enhanced
+
+2. **In another terminal, test socket connection:**
+   # Check socket exists
+   ls -la /tmp/vgpu-mediator.sock
+   
+   # Test with netcat (optional):
+   nc -U /tmp/vgpu-mediator.sock
+   # (This won't work perfectly, but confirms socket is accessible)
+
+3. **Start a VM with vgpu-stub device**
+
+4. **Run VM client:**
+   sudo ./vm_client_enhanced 100 200
+
+5. **Check mediator output:**
+   Should show:
+   [ENQUEUE] Pool A: vm=1, req_id=..., prio=2, 100+200
+   [PROCESS] Pool A: vm=1, req_id=..., prio=2, 100+200
+   [RESULT] Pool A: vm=1, req_id=..., result=300
+   [RESPONSE] Sent to vm1 (req_id=...): 300
+
+================================================================
+  RUNNING AS A SERVICE (OPTIONAL)
+================================================================
+
+Create systemd service file: /etc/systemd/system/vgpu-mediator.service
+
+  [Unit]
+  Description=vGPU Mediator Daemon
+  After=network.target
+
+  [Service]
+  Type=simple
+  User=root
+  WorkingDirectory=/path/to/mediator
+  ExecStart=/path/to/mediator_enhanced
+  Restart=always
+  RestartSec=10
+
+  [Install]
+  WantedBy=multi-user.target
+
+Then:
+  sudo systemctl daemon-reload
+  sudo systemctl enable vgpu-mediator
+  sudo systemctl start vgpu-mediator
+  sudo systemctl status vgpu-mediator
+
+================================================================
+  WHAT IF I DON'T HAVE CUDA YET?
+================================================================
+
+If you don't have CUDA installed or working right now, you have
+two options:
+
+1. **Install CUDA** (recommended for full functionality):
+   - Follow NVIDIA's CUDA installation guide for your OS
+   - Requires NVIDIA GPU and drivers
+   - This is a system-level installation
+
+2. **Test without CUDA** (for development/testing):
+   - You can modify mediator_enhanced.c to skip CUDA calls
+   - Or create a stub CUDA library that returns dummy results
+   - This lets you test the socket communication path
+   - But won't actually execute GPU work
+
+For now, if CUDA isn't set up, you can:
+  - Focus on testing the VM client and vGPU stub communication
+  - The test_vgpu_enhanced program doesn't need CUDA
+  - The mediator can wait until CUDA is ready
+
+================================================================
+  QUICK START CHECKLIST
+================================================================
+
+□ CUDA toolkit installed (nvidia-smi works)
+□ CUDA source file copied (cuda_vector_add.c)
+□ Mediator built successfully (make mediator_enhanced)
+□ Socket created when mediator starts (/tmp/vgpu-mediator.sock)
+□ VM has vgpu-stub device attached
+□ VM client built (vm_client_enhanced)
+□ Test request works end-to-end
+
+================================================================
+  NEED HELP?
+================================================================
+
+Common issues:
+1. CUDA not installed → Install NVIDIA drivers + CUDA toolkit
+2. Wrong CUDA path → Find CUDA with: find /usr -name "cuda.h"
+3. Missing source file → Copy from step2_test/cuda_vector_add.c
+4. Permission denied → Run mediator with sudo
+5. Socket already exists → rm /tmp/vgpu-mediator.sock
+
+================================================================

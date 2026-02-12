@@ -1,0 +1,438 @@
+================================================================================
+           vGPU STUB MMIO COMMUNICATION - DIRECTORY STRUCTURE
+================================================================================
+
+Project Root: /home/david/Downloads/gpu/step2_addtion/
+
+================================================================================
+CURRENT STATE (Files that exist now)
+================================================================================
+
+step2_addtion/
+├── core.txt                           [EXISTS] Original plan document
+├── README.md                          [EXISTS] Project overview (start here)
+├── READY_TO_PROCEED.md                [EXISTS] Next steps and decision point
+├── IMPLEMENTATION_ROADMAP.md          [EXISTS] Complete project plan
+├── REGISTER_MAP_SPEC.md               [EXISTS] MMIO register specification
+├── VGPU_STUB_CHANGES.md               [EXISTS] Code changes needed
+└── DIRECTORY_STRUCTURE.txt            [EXISTS] This file
+
+Status: ✅ All planning documentation complete
+        ⏳ Waiting for implementation decision
+
+================================================================================
+PLANNED STRUCTURE (Will be created during implementation)
+================================================================================
+
+step2_addtion/
+│
+├── 📄 Documentation Files (EXISTING)
+│   ├── README.md                      ← Start here!
+│   ├── READY_TO_PROCEED.md            ← Decision point
+│   ├── IMPLEMENTATION_ROADMAP.md      ← Full project plan
+│   ├── REGISTER_MAP_SPEC.md           ← Technical spec
+│   ├── VGPU_STUB_CHANGES.md           ← Code changes
+│   ├── DIRECTORY_STRUCTURE.txt        ← This file
+│   └── core.txt                       ← Original plan
+│
+├── 🔧 vgpu_stub_enhanced/ [TO CREATE]
+│   │   Enhanced QEMU device source code
+│   │
+│   ├── vgpu-stub.c                    ← Enhanced device (main file)
+│   ├── vgpu-stub.h                    ← Header file
+│   ├── vgpu-protocol.h                ← Shared protocol definitions
+│   ├── vgpu-errors.h                  ← Error code definitions
+│   │
+│   ├── patches/
+│   │   ├── 0001-add-vgpu-stub.patch   ← Patch for QEMU tree
+│   │   ├── qemu-spec.patch            ← Patch for RPM spec
+│   │   └── apply-patches.sh           ← Script to apply patches
+│   │
+│   ├── build/
+│   │   ├── build.sh                   ← Build QEMU with device
+│   │   ├── install.sh                 ← Install RPM
+│   │   └── rollback.sh                ← Restore original QEMU
+│   │
+│   └── README.md                      ← Build instructions
+│
+├── 👥 guest_client/ [TO CREATE]
+│   │   Guest VM client library and utilities
+│   │
+│   ├── Library Source
+│   │   ├── vgpu_mmio_client.c         ← Main client library
+│   │   ├── vgpu_mmio_client.h         ← Public API header
+│   │   ├── vgpu_internal.h            ← Internal definitions
+│   │   └── vgpu_protocol.h            ← Protocol structs (symlink)
+│   │
+│   ├── Test Programs
+│   │   ├── test_registers.c           ← Test: read all registers
+│   │   ├── test_doorbell.c            ← Test: ring doorbell
+│   │   ├── test_request_response.c    ← Test: simple request/response
+│   │   ├── test_buffers.c             ← Test: buffer read/write
+│   │   ├── test_errors.c              ← Test: error handling
+│   │   └── test_stress.c              ← Test: stress/load testing
+│   │
+│   ├── Example Programs
+│   │   ├── example_nop.c              ← Example: NOP request
+│   │   ├── example_cuda_kernel.c      ← Example: CUDA execution
+│   │   ├── example_async.c            ← Example: async requests
+│   │   └── example_multi_request.c    ← Example: multiple requests
+│   │
+│   ├── Utilities
+│   │   ├── vgpu_info.c                ← Utility: show device info
+│   │   ├── vgpu_dump.c                ← Utility: dump registers
+│   │   ├── vgpu_bench.c               ← Utility: benchmark performance
+│   │   └── vgpu_monitor.c             ← Utility: monitor device activity
+│   │
+│   ├── Build System
+│   │   ├── Makefile                   ← Build all programs
+│   │   ├── Makefile.lib               ← Build library only
+│   │   └── install.sh                 ← Install to system
+│   │
+│   └── Documentation
+│       ├── README.md                  ← Client library guide
+│       ├── API_REFERENCE.md           ← API documentation
+│       ├── EXAMPLES.md                ← Example usage
+│       └── TROUBLESHOOTING.md         ← Common issues
+│
+├── 🖥️ host_mediator/ [TO CREATE]
+│   │   Host-side mediator integration
+│   │
+│   ├── Socket Interface
+│   │   ├── socket_server.py           ← Socket server implementation
+│   │   ├── socket_adapter.py          ← Adapter for existing mediator
+│   │   ├── connection_manager.py      ← Manage multiple VM connections
+│   │   └── protocol_parser.py         ← Binary protocol parser
+│   │
+│   ├── Protocol Handling
+│   │   ├── request_handler.py         ← Process incoming requests
+│   │   ├── response_builder.py        ← Build response packets
+│   │   ├── error_handler.py           ← Error handling
+│   │   └── validation.py              ← Input validation
+│   │
+│   ├── Integration
+│   │   ├── mediator_interface.py      ← Interface to existing mediator
+│   │   ├── cuda_executor.py           ← CUDA execution wrapper
+│   │   ├── priority_queue.py          ← Priority queue implementation
+│   │   └── pool_manager.py            ← GPU pool management
+│   │
+│   ├── Legacy Support
+│   │   ├── nfs_adapter.py             ← Old NFS interface (for reference)
+│   │   └── migration_bridge.py        ← Support both NFS and MMIO
+│   │
+│   ├── Configuration
+│   │   ├── config.yaml                ← Configuration file
+│   │   ├── pools.yaml                 ← Pool definitions
+│   │   └── logging.yaml               ← Logging configuration
+│   │
+│   ├── Scripts
+│   │   ├── start_mediator.sh          ← Start mediator service
+│   │   ├── stop_mediator.sh           ← Stop mediator service
+│   │   ├── status.sh                  ← Check mediator status
+│   │   └── monitor.sh                 ← Monitor mediator activity
+│   │
+│   └── Documentation
+│       ├── README.md                  ← Mediator integration guide
+│       ├── ARCHITECTURE.md            ← Architecture overview
+│       ├── PROTOCOL.md                ← Protocol details
+│       └── MIGRATION.md               ← Migration from NFS
+│
+├── 🧪 testing/ [TO CREATE]
+│   │   Comprehensive testing suite
+│   │
+│   ├── Unit Tests
+│   │   ├── test_unit_registers.sh     ← Test individual registers
+│   │   ├── test_unit_doorbell.sh      ← Test doorbell logic
+│   │   ├── test_unit_buffers.sh       ← Test buffer operations
+│   │   └── test_unit_protocol.sh      ← Test protocol parsing
+│   │
+│   ├── Integration Tests
+│   │   ├── test_integration_basic.sh  ← Basic end-to-end test
+│   │   ├── test_integration_cuda.sh   ← CUDA execution test
+│   │   ├── test_integration_errors.sh ← Error handling test
+│   │   └── test_integration_stress.sh ← Stress test
+│   │
+│   ├── System Tests
+│   │   ├── test_multi_vm.sh           ← Multiple VMs test
+│   │   ├── test_priority.sh           ← Priority scheduling test
+│   │   ├── test_pools.sh              ← Pool assignment test
+│   │   └── test_failover.sh           ← Failure recovery test
+│   │
+│   ├── Performance Tests
+│   │   ├── benchmark_latency.sh       ← Measure latency
+│   │   ├── benchmark_throughput.sh    ← Measure throughput
+│   │   ├── benchmark_vs_nfs.sh        ← Compare to NFS
+│   │   └── benchmark_scaling.sh       ← Scalability test
+│   │
+│   ├── Regression Tests
+│   │   ├── test_regression_all.sh     ← Run all regression tests
+│   │   └── test_cases/                ← Test case definitions
+│   │       ├── case001_basic.yaml
+│   │       ├── case002_errors.yaml
+│   │       └── ...
+│   │
+│   ├── Test Utilities
+│   │   ├── test_framework.sh          ← Common test functions
+│   │   ├── vm_manager.sh              ← VM lifecycle management
+│   │   ├── result_parser.py           ← Parse test results
+│   │   └── report_generator.py        ← Generate test reports
+│   │
+│   ├── Test Data
+│   │   ├── requests/                  ← Sample request files
+│   │   │   ├── nop_request.bin
+│   │   │   ├── cuda_kernel.bin
+│   │   │   └── ...
+│   │   └── responses/                 ← Expected response files
+│   │       ├── nop_response.bin
+│   │       ├── cuda_result.bin
+│   │       └── ...
+│   │
+│   └── Documentation
+│       ├── README.md                  ← Testing guide
+│       ├── TEST_PLAN.md               ← Complete test plan
+│       ├── TEST_RESULTS.md            ← Test results log
+│       └── CONTINUOUS_INTEGRATION.md  ← CI/CD integration
+│
+├── 📚 docs/ [TO CREATE]
+│   │   Additional documentation
+│   │
+│   ├── Technical Docs
+│   │   ├── PROTOCOL_SPEC.md           ← Binary protocol specification
+│   │   ├── REGISTER_REFERENCE.md      ← Register reference guide
+│   │   ├── ERROR_CODES.md             ← Error code reference
+│   │   └── STATE_MACHINE.md           ← Device state machine
+│   │
+│   ├── User Guides
+│   │   ├── USER_GUIDE.md              ← End-user guide
+│   │   ├── ADMIN_GUIDE.md             ← Administrator guide
+│   │   ├── DEVELOPER_GUIDE.md         ← Developer guide
+│   │   └── API_GUIDE.md               ← API programming guide
+│   │
+│   ├── Design Docs
+│   │   ├── ARCHITECTURE.md            ← System architecture
+│   │   ├── DESIGN_DECISIONS.md        ← Design rationale
+│   │   ├── PERFORMANCE.md             ← Performance analysis
+│   │   └── SECURITY.md                ← Security considerations
+│   │
+│   ├── Migration Docs
+│   │   ├── MIGRATION_GUIDE.md         ← NFS to MMIO migration
+│   │   ├── COMPATIBILITY.md           ← Backward compatibility
+│   │   └── ROLLBACK_PLAN.md           ← Rollback procedures
+│   │
+│   ├── Diagrams
+│   │   ├── architecture.png           ← Architecture diagram
+│   │   ├── register_map.png           ← Register layout diagram
+│   │   ├── sequence_diagram.png       ← Request/response flow
+│   │   └── state_machine.png          ← State machine diagram
+│   │
+│   └── Reference
+│       ├── CHANGELOG.md               ← Version change log
+│       ├── LICENSE.txt                ← License information
+│       ├── CONTRIBUTORS.md            ← Contributors list
+│       └── REFERENCES.md              ← External references
+│
+├── 🛠️ scripts/ [TO CREATE]
+│   │   Automation and utility scripts
+│   │
+│   ├── Build Scripts
+│   │   ├── build_all.sh               ← Build everything
+│   │   ├── build_qemu.sh              ← Build QEMU only
+│   │   ├── build_client.sh            ← Build client library
+│   │   └── build_tests.sh             ← Build test suite
+│   │
+│   ├── Deployment Scripts
+│   │   ├── deploy_host.sh             ← Deploy host components
+│   │   ├── deploy_guest.sh            ← Deploy guest components
+│   │   ├── deploy_all.sh              ← Deploy everything
+│   │   └── configure_vm.sh            ← Configure VM for vGPU
+│   │
+│   ├── Maintenance Scripts
+│   │   ├── backup.sh                  ← Backup configuration
+│   │   ├── restore.sh                 ← Restore from backup
+│   │   ├── cleanup.sh                 ← Clean up temporary files
+│   │   └── verify.sh                  ← Verify installation
+│   │
+│   ├── Monitoring Scripts
+│   │   ├── monitor_mediator.sh        ← Monitor mediator daemon
+│   │   ├── monitor_vms.sh             ← Monitor VM activity
+│   │   ├── log_collector.sh           ← Collect logs
+│   │   └── health_check.sh            ← System health check
+│   │
+│   └── Development Scripts
+│       ├── setup_dev_env.sh           ← Setup development environment
+│       ├── run_tests.sh               ← Run test suite
+│       ├── generate_docs.sh           ← Generate documentation
+│       └── code_format.sh             ← Format code
+│
+└── 📦 packages/ [TO CREATE]
+    │   Packaged releases
+    │
+    ├── RPMs
+    │   ├── qemu-vgpu-4.2.1-1.el8.x86_64.rpm
+    │   └── vgpu-guest-client-1.0-1.el8.x86_64.rpm
+    │
+    ├── DEBs
+    │   └── vgpu-guest-client_1.0-1_amd64.deb
+    │
+    ├── Source Tarballs
+    │   ├── vgpu-stub-enhanced-1.0.tar.gz
+    │   ├── vgpu-guest-client-1.0.tar.gz
+    │   └── vgpu-host-mediator-1.0.tar.gz
+    │
+    └── Checksums
+        └── SHA256SUMS
+
+================================================================================
+FILE COUNT ESTIMATES
+================================================================================
+
+Documentation:     13 files (✅ 7 complete, ⏳ 6 pending)
+vGPU Stub:        12 files (⏳ all pending)
+Guest Client:     25 files (⏳ all pending)
+Host Mediator:    20 files (⏳ all pending)
+Testing:          30 files (⏳ all pending)
+Additional Docs:  20 files (⏳ all pending)
+Scripts:          20 files (⏳ all pending)
+Packages:          5 files (⏳ all pending)
+
+TOTAL:           145 files
+STATUS:          ~5% complete (documentation only)
+
+================================================================================
+SIZE ESTIMATES
+================================================================================
+
+Component                LOC (Lines of Code)   Docs (Pages)
+-----------------------------------------------------------------
+vGPU Stub Enhanced        500 lines            5 pages
+Guest Client Library      800 lines            15 pages
+Test Programs             600 lines            10 pages
+Host Mediator Adapter     700 lines            12 pages
+Testing Suite             400 lines            8 pages
+Scripts                   500 lines            5 pages
+Documentation             N/A                  50 pages
+-----------------------------------------------------------------
+TOTAL                     3,500 lines          105 pages
+
+Current Status:           ~250 lines done      ~55 pages done
+                         (7%)                  (52%)
+
+================================================================================
+IMPLEMENTATION PHASES
+================================================================================
+
+Phase 1: vgpu_stub_enhanced/
+    Duration: 2 days
+    Output: 12 files, ~500 LOC
+    Dependencies: None
+    
+Phase 2: guest_client/
+    Duration: 3 days
+    Output: 25 files, ~1400 LOC
+    Dependencies: Phase 1
+    
+Phase 3: host_mediator/
+    Duration: 4 days
+    Output: 20 files, ~700 LOC
+    Dependencies: Mediator code provided
+    
+Phase 4: testing/
+    Duration: 3 days
+    Output: 30 files, ~400 LOC
+    Dependencies: Phases 1-3
+    
+Phase 5: docs/
+    Duration: 2 days
+    Output: 20 files, ~50 pages
+    Dependencies: Phases 1-4
+    
+Phase 6: scripts/ & packages/
+    Duration: 2 days
+    Output: 25 files, ~500 LOC
+    Dependencies: All above
+
+Total: 16 days, 145 files, ~3500 LOC, ~105 pages docs
+
+================================================================================
+QUICK NAVIGATION
+================================================================================
+
+Want to...                              Read this file
+------------------------------------------------------------------------
+Understand the project?                 → README.md
+Know next steps?                        → READY_TO_PROCEED.md
+See the full plan?                      → IMPLEMENTATION_ROADMAP.md
+Understand MMIO registers?              → REGISTER_MAP_SPEC.md
+See code changes needed?                → VGPU_STUB_CHANGES.md
+Understand directory structure?         → DIRECTORY_STRUCTURE.txt (here)
+Know what files exist?                  → ls -lR step2_addtion/
+
+Want to...                              Location
+------------------------------------------------------------------------
+Build QEMU with vGPU stub?              → vgpu_stub_enhanced/build/
+Write guest programs?                   → guest_client/
+Integrate with mediator?                → host_mediator/
+Run tests?                              → testing/
+Read API docs?                          → docs/
+Use helper scripts?                     → scripts/
+
+================================================================================
+LEGEND
+================================================================================
+
+[EXISTS]        File/directory currently exists
+[TO CREATE]     Will be created during implementation
+✅              Complete/done
+⏳              Pending/not started
+🟡              In progress
+🔴              Blocked
+📄              Documentation file
+🔧              Source code
+👥              Client/user-facing
+🖥️              Server/host-facing
+🧪              Testing
+📚              Documentation collection
+🛠️              Tools/utilities
+📦              Packaged releases
+
+================================================================================
+NOTES
+================================================================================
+
+1. All paths are relative to: /home/david/Downloads/gpu/step2_addtion/
+
+2. The structure is organized by component/concern:
+   - vgpu_stub_enhanced/  : QEMU device code
+   - guest_client/        : VM-side code
+   - host_mediator/       : Host-side code
+   - testing/             : All tests
+   - docs/                : Documentation
+   - scripts/             : Automation
+
+3. Each subdirectory will have its own README.md explaining its contents
+
+4. Build outputs (*.o, *.so, etc.) are not tracked, only source files
+
+5. The structure supports both development and deployment:
+   - Development: Use source files in place
+   - Deployment: Use packages/ directory
+
+6. Version control:
+   - Consider git repository for source code
+   - Tag releases for packages/
+
+7. Dependencies tracked per component:
+   - See IMPLEMENTATION_ROADMAP.md for details
+
+8. This structure is extensible:
+   - Easy to add new test cases
+   - Easy to add new utilities
+   - Easy to add new documentation
+
+================================================================================
+END OF DIRECTORY STRUCTURE
+================================================================================
+
+Last Updated: 2026-02-12
+Status: Planning complete, ready for implementation
+Next: Choose implementation option in READY_TO_PROCEED.md

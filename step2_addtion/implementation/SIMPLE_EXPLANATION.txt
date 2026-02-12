@@ -1,0 +1,100 @@
+================================================================
+  Simple Explanation: How MMIO System Separates VMs
+================================================================
+
+Q: In NFS, each VM had its own file. In MMIO, does each VM have
+   its own address?
+
+A: YES! But it works differently.
+
+================================================================
+  NFS System (Old)
+================================================================
+
+  VM1 → writes to → /var/vgpu/vm1/request.txt
+  VM2 → writes to → /var/vgpu/vm2/request.txt
+  VM3 → writes to → /var/vgpu/vm3/request.txt
+
+  Each VM has a DIFFERENT FILE (different path)
+
+================================================================
+  MMIO System (New)
+================================================================
+
+  VM1 → writes to → VM1's PCI Device → MMIO Buffer at 0x040
+  VM2 → writes to → VM2's PCI Device → MMIO Buffer at 0x040
+  VM3 → writes to → VM3's PCI Device → MMIO Buffer at 0x040
+
+  Each VM has a DIFFERENT PCI DEVICE
+  Each device has its OWN MMIO MEMORY
+  Even though the OFFSET is the same (0x040), it's DIFFERENT
+  physical memory because it's a DIFFERENT device!
+
+================================================================
+  Analogy
+================================================================
+
+  NFS System:
+    - Like each person has their own mailbox
+    - Person A → Mailbox A
+    - Person B → Mailbox B
+    - Person C → Mailbox C
+
+  MMIO System:
+    - Like each person has their own house
+    - Person A → House A → Room at address "0x040"
+    - Person B → House B → Room at address "0x040"
+    - Person C → House C → Room at address "0x040"
+    - Same room number, but DIFFERENT houses!
+
+================================================================
+  In Technical Terms
+================================================================
+
+  Each VM gets its own vGPU stub PCI device:
+    - VM1: PCI device 0000:00:08.0 → BAR0 at physical address X
+    - VM2: PCI device 0000:00:09.0 → BAR0 at physical address Y
+    - VM3: PCI device 0000:00:0A.0 → BAR0 at physical address Z
+
+  When VM1 writes to offset 0x040, it writes to address X+0x040
+  When VM2 writes to offset 0x040, it writes to address Y+0x040
+  When VM3 writes to offset 0x040, it writes to address Z+0x040
+
+  These are COMPLETELY DIFFERENT memory locations!
+
+================================================================
+  How Mediator Knows Which VM
+================================================================
+
+  When vGPU stub sends request to mediator:
+    - It includes vm_id in the message header
+    - Mediator reads: "This is from vm_id=1"
+    - Mediator processes request
+    - Mediator sends response back to the SAME connection
+    - vGPU stub receives it and writes to its OWN buffer
+
+  Each vGPU stub maintains its OWN socket connection:
+    - VM1's stub → Connection 1 → Mediator
+    - VM2's stub → Connection 2 → Mediator
+    - VM3's stub → Connection 3 → Mediator
+
+  Mediator sends response to Connection 1 → Only VM1's stub receives it
+  Mediator sends response to Connection 2 → Only VM2's stub receives it
+  Mediator sends response to Connection 3 → Only VM3's stub receives it
+
+================================================================
+  Summary
+================================================================
+
+  ✅ Each VM has its own PCI device
+  ✅ Each device has its own MMIO memory (4KB BAR0)
+  ✅ Each device has its own request buffer (offset 0x040)
+  ✅ Each device has its own response buffer (offset 0x440)
+  ✅ Each device has its own socket connection
+  ✅ Mediator uses vm_id to identify which VM sent the request
+  ✅ Mediator sends response to the correct connection
+
+  The separation is PHYSICAL (different devices) not LOGICAL
+  (different file paths).
+
+================================================================

@@ -1,0 +1,226 @@
+================================================================
+  vGPU Stub v2 (MMIO Communication) — Build & Deploy Guide
+================================================================
+
+This document explains how to build, install, and test the enhanced
+vGPU stub device.  It replaces the NFS file-based transport with
+direct MMIO register + buffer communication.
+
+================================================================
+  FILES IN THIS DIRECTORY
+================================================================
+
+  vgpu_protocol.h           Shared header — MMIO register map,
+                            buffer offsets, socket IPC definitions.
+                            Used by: vgpu-stub, mediator, guest client.
+
+  vgpu-stub-enhanced.c      Enhanced QEMU PCI device — full source.
+                            Replaces the v1 vgpu-stub.c.
+                            Adds: doorbell, status, error, request/response
+                            buffers, Unix socket to mediator daemon.
+
+  build_enhanced_qemu.sh    Automated build script for XCP-ng dom0.
+                            Copies files, patches spec, builds RPM,
+                            installs the custom QEMU.
+
+  test_vgpu_enhanced.c      Guest-side test program.
+                            Verifies all 16 MMIO registers + buffers.
+                            Runs standalone (no mediator needed for
+                            most tests).
+
+
+================================================================
+  WHAT CHANGED FROM v1 → v2
+================================================================
+
+  v1 (complete.txt)                 v2 (this implementation)
+  ─────────────────────────────     ──────────────────────────────
+  BAR0: 4 KB, 5 registers          BAR0: 4 KB, 16 registers + 2 buffers
+  Registers: cmd, status,           Registers: doorbell, status,
+    pool_id, priority, vm_id          pool_id, priority, vm_id,
+                                      error_code, req_len, resp_len,
+                                      protocol_ver, capabilities,
+                                      irq_ctrl, irq_status,
+                                      request_id, timestamp_lo/hi,
+                                      scratch
+
+  No data path — read-only         1 KB request buffer  (0x040-0x43F)
+  properties only                   1 KB response buffer (0x440-0x83F)
+
+  No host-side IPC                  Unix socket to mediator daemon
+                                    (/tmp/vgpu-mediator.sock)
+
+  Guest used NFS for data           Guest writes data via MMIO,
+                                    reads results via MMIO
+
+  PCI revision: 0x01               PCI revision: 0x02
+
+
+================================================================
+  REGISTER MAP (BAR0 — 4096 bytes)
+================================================================
+
+  Offset  Name             R/W   Description
+  ──────  ────────────     ────  ─────────────────────────────────
+  0x000   DOORBELL         WO    Write 1 to submit request
+  0x004   STATUS           RO    0=idle 1=busy 2=done 3=error
+  0x008   POOL_ID          RO    ASCII 'A'(0x41) or 'B'(0x42)
+  0x00C   PRIORITY         RO    0=low 1=medium 2=high
+  0x010   VM_ID            RO    Unsigned 32-bit VM identifier
+  0x014   ERROR_CODE       RO    Error detail when STATUS=3
+  0x018   REQUEST_LEN      RW    Guest sets request byte count
+  0x01C   RESPONSE_LEN     RO    Host sets response byte count
+  0x020   PROTOCOL_VER     RO    0x00010000 (v1.0)
+  0x024   CAPABILITIES     RO    Feature bits (bit 0 = basic)
+  0x028   IRQ_CTRL         RW    Interrupt enable (future)
+  0x02C   IRQ_STATUS       RW1C  Interrupt status (future)
+  0x030   REQUEST_ID       RW    Request tracking number
+  0x034   TIMESTAMP_LO     RO    Completion time low 32 bits
+  0x038   TIMESTAMP_HI     RO    Completion time high 32 bits
+  0x03C   SCRATCH          RW    R/W test register
+
+  0x040   REQUEST BUFFER   RW    1024 bytes for request payload
+  0x440   RESPONSE BUFFER  RO    1024 bytes for response data
+  0x840   RESERVED         --    1976 bytes (future use)
+
+
+================================================================
+  COMMUNICATION FLOW
+================================================================
+
+  ┌─────────────────────────────────────────────────────┐
+  │                    GUEST VM                          │
+  │                                                      │
+  │   1. Write request struct to buffer (0x040+)         │
+  │   2. Write length to REQUEST_LEN (0x018)             │
+  │   3. Write 1 to DOORBELL (0x000)                     │
+  │   4. Poll STATUS (0x004) until DONE or ERROR         │
+  │   5. Read response from buffer (0x440+)              │
+  └─────────────┬───────────────────────────┬────────────┘
+                │     PCI/MMIO              │
+  ┌─────────────▼───────────────────────────▼────────────┐
+  │                 QEMU (vgpu-stub)                     │
+  │                                                      │
+  │   DOORBELL handler:                                  │
+  │     - Validates request length                       │
+  │     - Sets STATUS = BUSY                             │
+  │     - Sends header+payload over Unix socket          │
+  │                                                      │
+  │   Socket read handler (QEMU event loop):             │
+  │     - Receives response from mediator                │
+  │     - Copies payload to response buffer              │
+  │     - Sets STATUS = DONE                             │
+  └─────────────┬───────────────────────────┬────────────┘
+                │  Unix Domain Socket       │
+                │  /tmp/vgpu-mediator.sock  │
+  ┌─────────────▼───────────────────────────▼────────────┐
+  │              MEDIATOR DAEMON                         │
+  │                                                      │
+  │   - Accepts connections from vgpu-stub instances     │
+  │   - Receives VGPUSocketHeader + payload              │
+  │   - Enqueues by priority                             │
+  │   - Executes CUDA kernel                             │
+  │   - Sends VGPUSocketHeader + response back           │
+  └──────────────────────────────────────────────────────┘
+
+
+================================================================
+  STEP-BY-STEP BUILD & DEPLOY
+================================================================
+
+  ─── On XCP-ng Dom0 ───
+
+  STEP 1: Transfer files to dom0
+
+    scp vgpu-stub-enhanced.c   root@xcpng:/root/vgpu-build/
+    scp vgpu_protocol.h        root@xcpng:/root/vgpu-build/
+    scp build_enhanced_qemu.sh root@xcpng:/root/vgpu-build/
+
+  STEP 2: Run the build script
+
+    ssh root@xcpng
+    cd ~/vgpu-build
+    chmod +x build_enhanced_qemu.sh
+    sudo ./build_enhanced_qemu.sh
+
+    This will:
+    a) Copy files into rpmbuild/SOURCES/
+    b) Patch the spec file to include vgpu_protocol.h
+    c) Build the QEMU RPM (~30 min)
+    d) Install the RPM
+
+  STEP 3: Configure a test VM
+
+    VM_UUID=$(xe vm-list name-label="test-vm" --minimal)
+    xe vm-param-set uuid=$VM_UUID \
+       platform:device-model-args="-device vgpu-stub,pool_id=B,priority=high,vm_id=200"
+
+  STEP 4: Start the VM
+
+    xe vm-start uuid=$VM_UUID
+
+  ─── Inside Guest VM ───
+
+  STEP 5: Transfer & build the test program
+
+    scp test_vgpu_enhanced.c user@guest-vm:~/
+    ssh user@guest-vm
+    gcc -O2 -Wall -o test_vgpu_enhanced test_vgpu_enhanced.c
+
+  STEP 6: Run the test
+
+    sudo ./test_vgpu_enhanced
+
+    Expected output (without mediator running):
+      - Tests 1-8: ALL PASS
+      - Test 9 (zero-length doorbell): PASS (ERROR + INVALID_LENGTH)
+      - Test 10 (valid doorbell): PASS (ERROR + MEDIATOR_UNAVAILABLE)
+      - Test 11: PASS
+
+    All 15+ checks should pass with 0 failures.
+
+
+================================================================
+  NEXT STEPS (after vGPU stub works)
+================================================================
+
+  Once the test program passes, proceed with:
+
+  1. Enhanced mediator daemon
+     - Replace NFS polling with Unix socket server
+     - Accept connections from vgpu-stub instances
+     - Same priority queue and CUDA logic, new transport
+
+  2. Enhanced VM client
+     - Replace NFS file I/O with MMIO register writes
+     - Use the binary request/response protocol
+     - Same vector-add workload, new transport
+
+  3. End-to-end test
+     - Start mediator daemon
+     - Start VM with vgpu-stub
+     - Run client → MMIO → vgpu-stub → socket → mediator → CUDA
+     - Verify results via MMIO response buffer
+
+
+================================================================
+  TROUBLESHOOTING
+================================================================
+
+  Problem: "vgpu-stub device not found" in guest
+  Solution: Check VM has device-model-args set:
+            xe vm-param-get uuid=<UUID> param-name=platform
+            Also check QEMU log: /var/log/xen/qemu-dm-<UUID>.log
+
+  Problem: Build fails with "undeclared identifier"
+  Solution: Ensure vgpu_protocol.h is copied to hw/misc/ in spec.
+            Check: grep "vgpu_protocol" ~/vgpu-build/rpmbuild/SPECS/qemu.spec
+
+  Problem: Doorbell gives unexpected status
+  Solution: Check /var/log/xen/qemu-dm-<UUID>.log for [vgpu-stub]
+            debug messages.
+
+  Problem: "sendmsg failed"
+  Solution: Mediator daemon is not running or socket path wrong.
+            Start mediator: sudo ./mediator_enhanced
+            Check: ls -la /tmp/vgpu-mediator.sock

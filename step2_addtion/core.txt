@@ -1,0 +1,13 @@
+Thanks a lot for the detailed feedback and for spelling out the direction you’d like us to take. I agree with your point: keeping the communication path file-based (over NFS) is fine for a prototype, but a proper PCI/MMIO path between the virtual GPU device in the VM and the host-side mediator is the right design for this system.
+Right now, the pieces look like this:
+The vGPU stub is already a proper PCI device in the guest, with a 4KB BAR and MMIO registers that expose pool_id, priority, and vm_id.
+The guest code reads those values from the vGPU stub, but then sends requests via NFS files.
+The mediator daemon runs on the host, reads those files, and drives the existing priority queue and CUDA execution.
+So the “front” of the system (PCI device + MMIO) already looks like a real device/driver boundary, but the “back” half is still using the NFS transport as a shortcut.
+I’ll move away from that and make the vGPU stub itself the communication channel. Concretely, the plan is:
+Extend the vGPU stub’s BAR layout so it has a small request/response area and a couple of control registers (doorbell, status, maybe an error code).
+Change the VM-side client so that instead of writing to /mnt/vgpu/..., it writes its request into that MMIO area and rings the doorbell register, then polls the status (or later uses an interrupt) and reads the result back from MMIO.
+Update the host-side vGPU stub implementation so that the MMIO write handler pushes the request into the existing mediator queue instead of dropping it on the filesystem. The mediator’s scheduling and CUDA path can stay as they are; only the input/output side changes.
+Once that’s in place, remove the NFS dependency from this path and keep NFS only where it still makes sense (if at all).
+This keeps your overall model exactly as you described: the VM talks to a PCI device using registers/memory, the mediator sits behind that device and schedules work on the physical GPU, and pool/priority/VM ID all travel through that PCI channel instead of through files.
+I’ll start from this plan and adjust the implementation details as needed, but the goal is clear: treat the vGPU stub as the real communication endpoint and retire the file-based protocol.
