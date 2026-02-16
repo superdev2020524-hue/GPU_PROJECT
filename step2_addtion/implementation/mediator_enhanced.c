@@ -20,9 +20,12 @@
 // VGPU_SOCKET_PATH is defined in vgpu_protocol.h
 #define MAX_CONNECTIONS 32
 #define SOCKET_BACKLOG 10
+#define MAX_SERVER_SOCKETS 16
 
-/* Actual socket path on the host filesystem (set at startup) */
-static char g_socket_path[512] = "";
+/* Multiple server sockets — one per QEMU chroot */
+static int    g_server_fds[MAX_SERVER_SOCKETS];
+static char   g_socket_paths[MAX_SERVER_SOCKETS][512];
+static int    g_num_servers = 0;
 
 /*
  * Request Structure
@@ -50,7 +53,6 @@ typedef struct {
     int running;            // Control flag
     int cuda_busy;          // CUDA processing flag
     Request *current_request; // Currently processing request
-    int server_fd;          // Unix socket server file descriptor
     uint64_t total_processed;
     uint64_t pool_a_processed;
     uint64_t pool_b_processed;
@@ -83,7 +85,6 @@ static void init_mediator(MediatorState *state) {
     state->running = 1;
     state->cuda_busy = 0;
     state->current_request = NULL;
-    state->server_fd = -1;
     state->total_processed = 0;
     state->pool_a_processed = 0;
     state->pool_b_processed = 0;
@@ -473,23 +474,23 @@ static void handle_client_connection(int client_fd) {
 }
 
 /*
- * Auto-discover QEMU chroot directory by scanning /proc for vgpu-stub processes.
- * Returns the chroot path (e.g. "/var/xen/qemu/root-72") or NULL if not found.
- * Caller must free() the returned string.
+ * Auto-discover ALL QEMU chroot directories by scanning /proc for vgpu-stub processes.
+ * Populates chroots[] array and returns the count found.
+ * Each entry in chroots[] is malloc'd — caller must free().
  */
-static char *discover_qemu_chroot(void) {
+static int discover_all_qemu_chroots(char *chroots[], int max_chroots) {
     DIR *proc_dir;
     struct dirent *entry;
     char cmdline_path[256];
     char cmdline[4096];
-    char *chroot_path = NULL;
+    int count = 0;
 
     proc_dir = opendir("/proc");
     if (!proc_dir) {
-        return NULL;
+        return 0;
     }
 
-    while ((entry = readdir(proc_dir)) != NULL) {
+    while ((entry = readdir(proc_dir)) != NULL && count < max_chroots) {
         // Only look at numeric directories (PIDs)
         if (entry->d_name[0] < '0' || entry->d_name[0] > '9') {
             continue;
@@ -505,38 +506,46 @@ static char *discover_qemu_chroot(void) {
         if (len == 0) continue;
         cmdline[len] = '\0';
 
-        // Check if this process has "vgpu-stub" in its command line
-        int has_vgpu = 0;
+        // Replace NULs with spaces so strstr works
         for (size_t i = 0; i < len; i++) {
-            if (cmdline[i] == '\0') cmdline[i] = ' ';  // replace NULs with spaces
+            if (cmdline[i] == '\0') cmdline[i] = ' ';
         }
+
+        // Check if this process has "vgpu-stub" in its command line
         if (strstr(cmdline, "vgpu-stub") == NULL) {
             continue;
         }
-        has_vgpu = 1;
 
         // Found a QEMU process with vgpu-stub — look for -chroot argument
-        if (has_vgpu) {
-            char *chroot_arg = strstr(cmdline, "-chroot ");
-            if (chroot_arg) {
-                chroot_arg += strlen("-chroot ");
-                // Skip leading spaces
-                while (*chroot_arg == ' ') chroot_arg++;
-                // Extract the path (until next space or end)
-                char *end = strchr(chroot_arg, ' ');
-                size_t path_len = end ? (size_t)(end - chroot_arg) : strlen(chroot_arg);
-                chroot_path = malloc(path_len + 1);
-                if (chroot_path) {
-                    memcpy(chroot_path, chroot_arg, path_len);
-                    chroot_path[path_len] = '\0';
+        char *chroot_arg = strstr(cmdline, "-chroot ");
+        if (chroot_arg) {
+            chroot_arg += strlen("-chroot ");
+            while (*chroot_arg == ' ') chroot_arg++;
+            char *end = strchr(chroot_arg, ' ');
+            size_t path_len = end ? (size_t)(end - chroot_arg) : strlen(chroot_arg);
+
+            // Check for duplicates
+            int duplicate = 0;
+            for (int i = 0; i < count; i++) {
+                if (strlen(chroots[i]) == path_len &&
+                    memcmp(chroots[i], chroot_arg, path_len) == 0) {
+                    duplicate = 1;
+                    break;
                 }
-                break;
+            }
+            if (duplicate) continue;
+
+            chroots[count] = malloc(path_len + 1);
+            if (chroots[count]) {
+                memcpy(chroots[count], chroot_arg, path_len);
+                chroots[count][path_len] = '\0';
+                count++;
             }
         }
     }
 
     closedir(proc_dir);
-    return chroot_path;
+    return count;
 }
 
 /*
@@ -645,13 +654,18 @@ static void run_mediator(MediatorState *state) {
     struct timeval timeout;
 
     printf("[MEDIATOR] Starting main loop...\n");
-    printf("[MEDIATOR] Accepting connections on %s\n", g_socket_path);
+    printf("[MEDIATOR] Listening on %d socket(s) for VM connections\n", g_num_servers);
 
     while (state->running && !g_shutdown) {
-        // Setup select() for socket
+        // Setup select() for ALL server sockets
         FD_ZERO(&read_fds);
-        FD_SET(state->server_fd, &read_fds);
-        max_fd = state->server_fd;
+        max_fd = -1;
+        for (int i = 0; i < g_num_servers; i++) {
+            FD_SET(g_server_fds[i], &read_fds);
+            if (g_server_fds[i] > max_fd) {
+                max_fd = g_server_fds[i];
+            }
+        }
 
         timeout.tv_sec = 1;
         timeout.tv_usec = 0;
@@ -665,18 +679,23 @@ static void run_mediator(MediatorState *state) {
             break;
         }
 
-        // Accept new connections
-        if (FD_ISSET(state->server_fd, &read_fds)) {
-            struct sockaddr_un client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            int client_fd = accept(state->server_fd, (struct sockaddr *)&client_addr, &client_len);
-            if (client_fd >= 0) {
-                // Make client socket non-blocking
-                int flags = fcntl(client_fd, F_GETFL, 0);
-                if (flags >= 0) {
-                    fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+        // Accept new connections on ANY server socket
+        for (int i = 0; i < g_num_servers; i++) {
+            if (FD_ISSET(g_server_fds[i], &read_fds)) {
+                struct sockaddr_un client_addr;
+                socklen_t client_len = sizeof(client_addr);
+                int client_fd = accept(g_server_fds[i],
+                                       (struct sockaddr *)&client_addr, &client_len);
+                if (client_fd >= 0) {
+                    // Make client socket non-blocking
+                    int flags = fcntl(client_fd, F_GETFL, 0);
+                    if (flags >= 0) {
+                        fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+                    }
+                    printf("[SOCKET] New connection on %s (fd=%d)\n",
+                           g_socket_paths[i], client_fd);
+                    handle_client_connection(client_fd);
                 }
-                handle_client_connection(client_fd);
             }
         }
 
@@ -708,11 +727,11 @@ static void run_mediator(MediatorState *state) {
         free(req);
     }
 
-    // Close server socket and remove socket file
-    if (state->server_fd >= 0) {
-        close(state->server_fd);
-        if (g_socket_path[0]) {
-            unlink(g_socket_path);
+    // Close all server sockets and remove socket files
+    for (int i = 0; i < g_num_servers; i++) {
+        close(g_server_fds[i]);
+        if (g_socket_paths[i][0]) {
+            unlink(g_socket_paths[i]);
         }
     }
 }
@@ -754,33 +773,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Determine socket path
-    if (override_path) {
-        // User provided explicit path
-        snprintf(g_socket_path, sizeof(g_socket_path), "%s", override_path);
-        printf("[CONFIG] Using user-specified socket path: %s\n", g_socket_path);
-    } else {
-        // Auto-discover QEMU chroot
-        char *chroot = discover_qemu_chroot();
-        if (chroot) {
-            // Create /tmp inside the chroot if it doesn't exist
-            char tmp_dir[512];
-            snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", chroot);
-            mkdir(tmp_dir, 0755);
-
-            // Socket path = <chroot>/tmp/vgpu-mediator.sock
-            snprintf(g_socket_path, sizeof(g_socket_path), "%s%s", chroot, VGPU_SOCKET_PATH);
-            printf("[CONFIG] Found QEMU chroot: %s\n", chroot);
-            printf("[CONFIG] Socket path: %s\n", g_socket_path);
-            printf("[CONFIG] (QEMU sees this as %s)\n", VGPU_SOCKET_PATH);
-            free(chroot);
-        } else {
-            // Fallback: no QEMU found, use default path
-            snprintf(g_socket_path, sizeof(g_socket_path), "%s", VGPU_SOCKET_PATH);
-            printf("[CONFIG] No QEMU chroot found, using fallback: %s\n", g_socket_path);
-        }
-    }
-
     // Setup signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -794,10 +786,61 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Setup socket server
-    g_state.server_fd = setup_socket_server(g_socket_path);
-    if (g_state.server_fd < 0) {
-        fprintf(stderr, "[ERROR] Failed to setup socket server\n");
+    // Determine socket paths and create server sockets
+    g_num_servers = 0;
+
+    if (override_path) {
+        // User provided explicit path — single socket
+        snprintf(g_socket_paths[0], sizeof(g_socket_paths[0]), "%s", override_path);
+        g_server_fds[0] = setup_socket_server(g_socket_paths[0]);
+        if (g_server_fds[0] < 0) {
+            fprintf(stderr, "[ERROR] Failed to setup socket at %s\n", override_path);
+            cuda_cleanup();
+            return 1;
+        }
+        g_num_servers = 1;
+        printf("[CONFIG] Using user-specified socket: %s\n", g_socket_paths[0]);
+    } else {
+        // Auto-discover ALL QEMU chroots
+        char *chroots[MAX_SERVER_SOCKETS];
+        int num_chroots = discover_all_qemu_chroots(chroots, MAX_SERVER_SOCKETS);
+
+        if (num_chroots > 0) {
+            printf("[CONFIG] Found %d QEMU VM(s) with vgpu-stub:\n", num_chroots);
+            for (int i = 0; i < num_chroots; i++) {
+                // Create /tmp inside the chroot if needed
+                char tmp_dir[512];
+                snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", chroots[i]);
+                mkdir(tmp_dir, 0755);
+
+                // Socket path = <chroot>/tmp/vgpu-mediator.sock
+                snprintf(g_socket_paths[g_num_servers],
+                         sizeof(g_socket_paths[g_num_servers]),
+                         "%s%s", chroots[i], VGPU_SOCKET_PATH);
+
+                g_server_fds[g_num_servers] = setup_socket_server(g_socket_paths[g_num_servers]);
+                if (g_server_fds[g_num_servers] >= 0) {
+                    printf("  [%d] %s -> %s\n", g_num_servers + 1, chroots[i],
+                           g_socket_paths[g_num_servers]);
+                    g_num_servers++;
+                } else {
+                    fprintf(stderr, "[WARN] Failed to setup socket in %s\n", chroots[i]);
+                }
+                free(chroots[i]);
+            }
+        } else {
+            // Fallback: no QEMU found, use default path
+            snprintf(g_socket_paths[0], sizeof(g_socket_paths[0]), "%s", VGPU_SOCKET_PATH);
+            g_server_fds[0] = setup_socket_server(g_socket_paths[0]);
+            if (g_server_fds[0] >= 0) {
+                g_num_servers = 1;
+            }
+            printf("[CONFIG] No QEMU chroot found, using fallback: %s\n", g_socket_paths[0]);
+        }
+    }
+
+    if (g_num_servers == 0) {
+        fprintf(stderr, "[ERROR] No server sockets created\n");
         cuda_cleanup();
         return 1;
     }

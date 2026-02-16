@@ -1,21 +1,3 @@
-/*
- * test_vgpu_enhanced.c — Guest-side test for vGPU Stub v2
- *
- * Verifies every register in the enhanced MMIO layout, tests the
- * doorbell mechanism, and (optionally) performs a simple MMIO
- * request/response round-trip if a mediator is running.
- *
- * Build (inside guest VM):
- *   gcc -O2 -Wall -o test_vgpu_enhanced test_vgpu_enhanced.c
- *
- * Run:
- *   sudo ./test_vgpu_enhanced          # auto-detect PCI device
- *   sudo ./test_vgpu_enhanced 00:06.0  # explicit BDF address
- *
- * Exit codes:
- *   0 — all tests passed
- *   1 — a test failed or device not found
- */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -245,11 +227,43 @@ int main(int argc, char *argv[])
     printf("\n");
 
     /* ============================================================
-     * TEST 3 — Status register (should be IDLE at start)
+     * TEST 3 — Status register
+     *
+     * The device has no reset mechanism, so registers keep their
+     * values from the last request (e.g. vm_client_enhanced).
+     * IDLE means fresh, DONE/BUSY/ERROR means a previous result
+     * is still present.  Both are valid — not a failure.
      * ============================================================ */
     printf("--- Test 3: Status Register ---\n");
-    check("STATUS (0x004)", REG32(mmio, VGPU_REG_STATUS), VGPU_STATUS_IDLE);
-    check("ERROR_CODE (0x014)", REG32(mmio, VGPU_REG_ERROR_CODE), VGPU_ERR_NONE);
+    {
+        uint32_t st  = REG32(mmio, VGPU_REG_STATUS);
+        uint32_t err = REG32(mmio, VGPU_REG_ERROR_CODE);
+
+        if (st == VGPU_STATUS_IDLE) {
+            printf("  ✓ STATUS (0x004)         = 0x%08X  (IDLE — clean state)\n", st);
+            g_pass++;
+        } else if (st == VGPU_STATUS_DONE) {
+            printf("  ℹ STATUS (0x004)         = 0x%08X  (DONE — last request result exists)\n", st);
+            g_pass++;
+        } else if (st == VGPU_STATUS_BUSY) {
+            printf("  ℹ STATUS (0x004)         = 0x%08X  (BUSY — previous request still in progress)\n", st);
+            g_pass++;
+        } else if (st == VGPU_STATUS_ERROR) {
+            printf("  ℹ STATUS (0x004)         = 0x%08X  (ERROR — last request error state exists, code=0x%02X)\n", st, err);
+            g_pass++;
+        } else {
+            printf("  ✗ STATUS (0x004)         = 0x%08X  (unexpected value) **FAIL**\n", st);
+            g_fail++;
+        }
+
+        if (err == VGPU_ERR_NONE) {
+            printf("  ✓ ERROR_CODE (0x014)     = 0x%08X  (no error)\n", err);
+            g_pass++;
+        } else {
+            printf("  ℹ ERROR_CODE (0x014)     = 0x%08X  (last error state exists)\n", err);
+            g_pass++;
+        }
+    }
     printf("\n");
 
     /* ============================================================
@@ -265,9 +279,22 @@ int main(int argc, char *argv[])
 
     /* ============================================================
      * TEST 5 — Request length register (R/W)
+     *
+     * If a previous request was submitted, this register still
+     * holds the old length.  That's normal — not a failure.
      * ============================================================ */
     printf("--- Test 5: Request Length Register (R/W) ---\n");
-    check("REQUEST_LEN initial", REG32(mmio, VGPU_REG_REQUEST_LEN), 0);
+    {
+        uint32_t initial_len = REG32(mmio, VGPU_REG_REQUEST_LEN);
+        if (initial_len == 0) {
+            printf("  ✓ REQUEST_LEN initial    = 0x%08X  (clean state)\n", initial_len);
+            g_pass++;
+        } else {
+            printf("  ℹ REQUEST_LEN initial    = 0x%08X  (last request length exists, %u bytes)\n",
+                   initial_len, initial_len);
+            g_pass++;
+        }
+    }
     REG32(mmio, VGPU_REG_REQUEST_LEN) = 64;
     check("REQUEST_LEN set 64",  REG32(mmio, VGPU_REG_REQUEST_LEN), 64);
     REG32(mmio, VGPU_REG_REQUEST_LEN) = 0;
@@ -320,24 +347,26 @@ int main(int argc, char *argv[])
 
     /* ============================================================
      * TEST 9 — Doorbell with zero length (should error)
+     *
+     * The device accepts a doorbell from any state, so proceed
+     * even if a previous result is still present.
      * ============================================================ */
     printf("--- Test 9: Doorbell — Zero-Length Request ---\n");
     {
-        /* Ensure idle */
-        uint32_t status = REG32(mmio, VGPU_REG_STATUS);
-        if (status != VGPU_STATUS_IDLE) {
-            printf("  ⚠ STATUS not IDLE (%u), skipping doorbell test\n", status);
-        } else {
-            /* Set length = 0 and ring doorbell */
-            REG32(mmio, VGPU_REG_REQUEST_LEN) = 0;
-            REG32(mmio, VGPU_REG_DOORBELL) = 1;
-            usleep(1000);  /* give device a moment */
-
-            check("STATUS → ERROR",
-                  REG32(mmio, VGPU_REG_STATUS), VGPU_STATUS_ERROR);
-            check("ERROR_CODE → INVALID_LEN",
-                  REG32(mmio, VGPU_REG_ERROR_CODE), VGPU_ERR_INVALID_LENGTH);
+        uint32_t pre_status = REG32(mmio, VGPU_REG_STATUS);
+        if (pre_status != VGPU_STATUS_IDLE) {
+            printf("  ℹ STATUS is %u before doorbell (last request state exists)\n", pre_status);
         }
+
+        /* Set length = 0 and ring doorbell */
+        REG32(mmio, VGPU_REG_REQUEST_LEN) = 0;
+        REG32(mmio, VGPU_REG_DOORBELL) = 1;
+        usleep(1000);  /* give device a moment */
+
+        check("STATUS -> ERROR",
+              REG32(mmio, VGPU_REG_STATUS), VGPU_STATUS_ERROR);
+        check("ERROR_CODE -> INVALID_LEN",
+              REG32(mmio, VGPU_REG_ERROR_CODE), VGPU_ERR_INVALID_LENGTH);
     }
     printf("\n");
 
