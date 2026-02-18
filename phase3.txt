@@ -1,0 +1,38 @@
+Phase 3 Plan
+Advanced Scheduling, Isolation & Operational Controls
+Executive Overview
+Phase 3 builds on the validated foundation established in Phases 1 and 2. Phase 1 proved
+feasibility (VM → mediator → CUDA execution). Phase 2 introduced structured scheduling and
+PCI/MMIO-based communication. Phase 3 focuses on evolving the system into a policy-driven
+GPU virtualization layer suitable for multi-tenant environments.
+1. Architectural Continuity
+The PCI/MMIO communication model, mediator-managed execution path, queue-based
+scheduling architecture, CLI interface, and database configuration layer remain intact. Phase 3
+enhances enforcement and control without altering the transport layer.
+2. Priority-Aware Scheduling
+Introduces weighted priority scheduling (High / Medium / Low tiers) with FIFO ordering
+within equal priority. Aging mechanisms prevent starvation. Scheduling weights configurable
+via CLI.
+3. Resource Isolation & Protection Controls
+Implements token bucket rate limiting, queue depth limits, execution watchdog monitoring, and
+quarantine mode to prevent monopolization and ensure system stability.
+4. Pool-Based Resource Segmentation
+Logical VM grouping into independent pools (e.g., Pool A → GPU A, Pool B → GPU B). Each pool
+maintains independent scheduling queues and isolation boundaries.
+5. Observability & Runtime Metrics
+Per-VM metrics include GPU utilization, queue depth, latency (avg / p95 / p99), context
+switches, and error rates. Metrics are exposed via CLI and structured logging, with optional
+Prometheus integration.
+6. Administrative Control Layer (CLI Expansion)
+Extends vgpu-admin CLI for VM registration, pool assignment, priority configuration, rate
+limiting, and scheduler tuning. Enables centralized operational control.
+7. Validation & Testing Plan
+Validation includes 7–10 concurrent VMs, mixed priority workloads, AI inference validation,
+stress testing, isolation checks, and sustained load testing.
+8. Production Readiness Position
+Upon completion, the system will be suitable for controlled production deployment with fair
+scheduling, isolation controls, administrative governance, and operational transparency.
+Conclusion
+Phase 3 transitions the project from a validated prototype into a scalable, policy-driven GPU
+virtualization layer, establishing a strong foundation for long-term GPU infrastructure
+management

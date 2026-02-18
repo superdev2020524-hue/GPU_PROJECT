@@ -53,12 +53,12 @@
 │                                                                     │
 │  vm_client_enhanced                                                 │
 │       │                                                             │
-│       ├── mmap("/sys/bus/pci/.../resource0")   ← PCI BAR0          │
-│       ├── Read pool_id, priority, vm_id        ← MMIO registers    │
-│       ├── Write num1, num2 to request buffer   ← MMIO buffer       │
-│       ├── Write to DOORBELL register           ← Triggers handler  │
-│       ├── Poll STATUS register                 ← Wait for result   │
-│       └── Read result from response buffer     ← MMIO buffer       │
+│       ├── mmap("/sys/bus/pci/.../resource0")   ← PCI BAR0           │
+│       ├── Read pool_id, priority, vm_id        ← MMIO registers     │
+│       ├── Write num1, num2 to request buffer   ← MMIO buffer        │
+│       ├── Write to DOORBELL register           ← Triggers handler   │
+│       ├── Poll STATUS register                 ← Wait for result    │
+│       └── Read result from response buffer     ← MMIO buffer        │
 │                                                                     │
 │  No NFS. No files. No network. Pure PCI/MMIO.                       │
 └─────────────────────┬───────────────────────────────────────────────┘

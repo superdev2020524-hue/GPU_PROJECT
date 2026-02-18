@@ -99,7 +99,7 @@ static uint64_t vgpu_mmio_read(void *opaque, hwaddr addr, unsigned size)
         switch (addr) {
 
         case VGPU_REG_DOORBELL:
-            /* Doorbell reads as 0 — write-only semantics */
+            /* Doorbell reads as 0 - write-only semantics */
             val = 0;
             break;
 
@@ -170,7 +170,7 @@ static uint64_t vgpu_mmio_read(void *opaque, hwaddr addr, unsigned size)
         }
     }
 
-    /* --- Request buffer (0x040-0x43F) — guest may read back --- */
+    /* --- Request buffer (0x040-0x43F) - guest may read back --- */
     else if (addr >= VGPU_REQ_BUFFER_OFFSET &&
              addr < VGPU_REQ_BUFFER_OFFSET + VGPU_REQ_BUFFER_SIZE) {
         uint32_t off = addr - VGPU_REQ_BUFFER_OFFSET;
@@ -179,7 +179,7 @@ static uint64_t vgpu_mmio_read(void *opaque, hwaddr addr, unsigned size)
         }
     }
 
-    /* --- Response buffer (0x440-0x83F) — guest reads result --- */
+    /* --- Response buffer (0x440-0x83F) - guest reads result --- */
     else if (addr >= VGPU_RESP_BUFFER_OFFSET &&
              addr < VGPU_RESP_BUFFER_OFFSET + VGPU_RESP_BUFFER_SIZE) {
         uint32_t off = addr - VGPU_RESP_BUFFER_OFFSET;
@@ -238,7 +238,7 @@ static void vgpu_mmio_write(void *opaque, hwaddr addr,
         }
     }
 
-    /* --- Request buffer (0x040-0x43F) — guest writes request -- */
+    /* --- Request buffer (0x040-0x43F) - guest writes request -- */
     else if (addr >= VGPU_REQ_BUFFER_OFFSET &&
              addr < VGPU_REQ_BUFFER_OFFSET + VGPU_REQ_BUFFER_SIZE) {
         uint32_t off = addr - VGPU_REQ_BUFFER_OFFSET;
@@ -330,7 +330,7 @@ static void vgpu_process_doorbell(VGPUStubState *s)
     sent = sendmsg(s->mediator_fd, &msg, MSG_NOSIGNAL);
     if (sent < 0) {
         fprintf(stderr, "[vgpu-stub] sendmsg failed: %s\n", strerror(errno));
-        /* Socket broken — close and mark error */
+        /* Socket broken - close and mark error */
         qemu_set_fd_handler(s->mediator_fd, NULL, NULL, NULL);
         close(s->mediator_fd);
         s->mediator_fd = -1;
@@ -370,7 +370,7 @@ static void vgpu_try_connect_mediator(VGPUStubState *s)
     strncpy(addr.sun_path, VGPU_SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        /* Not an error during startup — mediator might not be running yet */
+        /* Not an error during startup - mediator might not be running yet */
         close(fd);
         return;
     }
@@ -468,15 +468,37 @@ static void vgpu_socket_read_handler(void *opaque)
         s->timestamp_lo = (uint32_t)(now_us & 0xFFFFFFFF);
         s->timestamp_hi = (uint32_t)((uint64_t)now_us >> 32);
 
-        /* Check response status */
+        /* Check response status - map mediator error codes to MMIO codes */
         if (copy_len >= VGPU_RESPONSE_HEADER_SIZE) {
             VGPUResponse *resp = (VGPUResponse *)s->resp_buf;
-            if (resp->status != 0) {
-                s->status_reg = VGPU_STATUS_ERROR;
-                s->error_code = VGPU_ERR_CUDA_ERROR;
-            } else {
+            if (resp->status == 0) {
                 s->status_reg = VGPU_STATUS_DONE;
                 s->error_code = VGPU_ERR_NONE;
+            } else if (resp->status == VGPU_ERR_RATE_LIMITED) {
+                /* Phase 3: back-pressure - VM exceeded its rate limit */
+                s->status_reg = VGPU_STATUS_ERROR;
+                s->error_code = VGPU_ERR_RATE_LIMITED;
+                fprintf(stderr,
+                        "[vgpu-stub] vm%u req%u: rate-limited by mediator\n",
+                        s->vm_id, s->request_id);
+            } else if (resp->status == VGPU_ERR_VM_QUARANTINED) {
+                /* Phase 3: VM quarantined due to excessive faults */
+                s->status_reg = VGPU_STATUS_ERROR;
+                s->error_code = VGPU_ERR_VM_QUARANTINED;
+                fprintf(stderr,
+                        "[vgpu-stub] vm%u req%u: VM quarantined\n",
+                        s->vm_id, s->request_id);
+            } else if (resp->status == VGPU_ERR_QUEUE_FULL) {
+                /* Queue depth exceeded */
+                s->status_reg = VGPU_STATUS_ERROR;
+                s->error_code = VGPU_ERR_QUEUE_FULL;
+                fprintf(stderr,
+                        "[vgpu-stub] vm%u req%u: queue full\n",
+                        s->vm_id, s->request_id);
+            } else {
+                /* Generic CUDA or other error */
+                s->status_reg = VGPU_STATUS_ERROR;
+                s->error_code = VGPU_ERR_CUDA_ERROR;
             }
         } else {
             s->status_reg = VGPU_STATUS_DONE;
@@ -486,8 +508,28 @@ static void vgpu_socket_read_handler(void *opaque)
         /* If interrupt enabled, raise it (future enhancement) */
         /* For now we just rely on guest polling STATUS. */
     }
+    else if (hdr->msg_type == VGPU_MSG_BUSY) {
+        /* Phase 3: mediator signals rate-limit rejection as a distinct
+         * message type (no payload).  Map to MMIO error code. */
+        s->status_reg = VGPU_STATUS_ERROR;
+        s->error_code = VGPU_ERR_RATE_LIMITED;
+        s->response_len = 0;
+        fprintf(stderr,
+                "[vgpu-stub] vm%u req%u: BUSY (rate-limited)\n",
+                s->vm_id, s->request_id);
+    }
+    else if (hdr->msg_type == VGPU_MSG_QUARANTINED) {
+        /* Phase 3: mediator signals VM quarantine as a distinct
+         * message type (no payload).  Map to MMIO error code. */
+        s->status_reg = VGPU_STATUS_ERROR;
+        s->error_code = VGPU_ERR_VM_QUARANTINED;
+        s->response_len = 0;
+        fprintf(stderr,
+                "[vgpu-stub] vm%u req%u: VM QUARANTINED\n",
+                s->vm_id, s->request_id);
+    }
     else if (hdr->msg_type == VGPU_MSG_PING) {
-        /* Reply with PONG — keeps connection alive */
+        /* Reply with PONG - keeps connection alive */
         VGPUSocketHeader pong;
         ssize_t sent;
         memset(&pong, 0, sizeof(pong));
@@ -524,7 +566,7 @@ static void vgpu_realize(PCIDevice *pci_dev, Error **errp)
     /* Interrupt pin A (for future MSI support) */
     pci_dev->config[PCI_INTERRUPT_PIN] = 1;
 
-    /* Register BAR0 — 4 KB MMIO */
+    /* Register BAR0 - 4 KB MMIO */
     memory_region_init_io(&s->mmio, OBJECT(s), &vgpu_mmio_ops, s,
                           "vgpu-stub-mmio", VGPU_BAR_SIZE);
     pci_register_bar(pci_dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
@@ -634,10 +676,10 @@ static void vgpu_class_init(ObjectClass *klass, void *data)
     k->vendor_id = VGPU_VENDOR_ID;
     k->device_id = VGPU_DEVICE_ID;
     k->revision  = VGPU_REVISION;
-    k->class_id  = VGPU_CLASS_ID;   /* Processing Accelerator — NOT VGA */
+    k->class_id  = VGPU_CLASS_ID;   /* Processing Accelerator - NOT VGA */
 
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
-    dc->desc  = "vGPU Stub v2 (MMIO Communication)";
+    dc->desc  = "vGPU Stub v2 (MMIO + Phase 3 Isolation)";
     dc->props = vgpu_properties;
 }
 

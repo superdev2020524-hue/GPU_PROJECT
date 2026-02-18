@@ -58,6 +58,9 @@
 #define VGPU_ERR_QUEUE_FULL           0x07  /* Request queue full               */
 #define VGPU_ERR_UNSUPPORTED_OP       0x08  /* Operation not supported          */
 #define VGPU_ERR_INVALID_LENGTH       0x09  /* Request length is 0              */
+/* Phase 3: Isolation error codes */
+#define VGPU_ERR_RATE_LIMITED         0x0A  /* VM hit rate limit (back-pressure)*/
+#define VGPU_ERR_VM_QUARANTINED       0x0B  /* VM quarantined (too many faults) */
 
 /* ================================================================
  * CAPABILITIES Register Bits (offset 0x024)
@@ -148,6 +151,9 @@ typedef struct __attribute__((packed)) VGPUResponse {
 #define VGPU_MSG_RESPONSE   0x02   /* mediator → vgpu-stub: result ready      */
 #define VGPU_MSG_PING       0x03   /* Either direction: keepalive             */
 #define VGPU_MSG_PONG       0x04   /* Reply to PING                           */
+/* Phase 3: Back-pressure and quarantine notifications */
+#define VGPU_MSG_BUSY       0x05   /* mediator → vgpu-stub: rate-limited      */
+#define VGPU_MSG_QUARANTINED 0x06  /* mediator → vgpu-stub: VM quarantined    */
 
 typedef struct __attribute__((packed)) VGPUSocketHeader {
     uint32_t magic;          /* 0x56475055 = "VGPU"                            */
@@ -164,6 +170,35 @@ typedef struct __attribute__((packed)) VGPUSocketHeader {
 
 /* Maximum payload size */
 #define VGPU_SOCKET_MAX_PAYLOAD  VGPU_REQ_BUFFER_SIZE  /* 1024 bytes          */
+
+/* ================================================================
+ * Phase 3: Admin Socket (for vgpu-admin CLI → mediator)
+ * ================================================================ */
+
+/* Admin socket path (separate from QEMU chroot sockets) */
+#define VGPU_ADMIN_SOCKET_PATH  "/var/vgpu/admin.sock"
+
+/* Admin command codes (sent over admin socket) */
+#define VGPU_ADMIN_SHOW_METRICS      0x10
+#define VGPU_ADMIN_SHOW_HEALTH       0x11
+#define VGPU_ADMIN_RELOAD_CONFIG     0x12
+#define VGPU_ADMIN_QUARANTINE_VM     0x13
+#define VGPU_ADMIN_UNQUARANTINE_VM   0x14
+
+/* Admin request header */
+typedef struct __attribute__((packed)) VGPUAdminRequest {
+    uint32_t magic;          /* VGPU_SOCKET_MAGIC                              */
+    uint32_t command;        /* VGPU_ADMIN_* code                              */
+    uint32_t param1;         /* Command-specific parameter                     */
+    uint32_t param2;         /* Command-specific parameter                     */
+} VGPUAdminRequest;
+
+/* Admin response: variable-length text follows this header */
+typedef struct __attribute__((packed)) VGPUAdminResponse {
+    uint32_t magic;          /* VGPU_SOCKET_MAGIC                              */
+    uint32_t status;         /* 0 = success, non-zero = error                  */
+    uint32_t data_len;       /* Length of text payload that follows             */
+} VGPUAdminResponse;
 
 /* ================================================================
  * PCI Device Identification

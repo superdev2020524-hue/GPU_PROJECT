@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS vms (
     vm_name TEXT,
     pool_id CHAR(1) NOT NULL DEFAULT 'A' CHECK(pool_id IN ('A', 'B')),
     priority INTEGER NOT NULL DEFAULT 1 CHECK(priority IN (0, 1, 2)),
+    /* Phase 3: Scheduler weight and isolation controls */
+    weight REAL NOT NULL DEFAULT 1.0,
+    max_jobs_per_sec INTEGER NOT NULL DEFAULT 0,
+    max_queue_depth INTEGER NOT NULL DEFAULT 0,
+    quarantined INTEGER NOT NULL DEFAULT 0 CHECK(quarantined IN (0, 1)),
+    error_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (pool_id) REFERENCES pools(pool_id)

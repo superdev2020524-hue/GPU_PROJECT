@@ -1,0 +1,390 @@
+================================================================================
+  Phase 3 — Implementation Guide
+  Scheduler Upgrade & Isolation Controls
+================================================================================
+
+Target: NVIDIA H100 80GB PCIe on XCP-ng (Xen), shared across multiple VMs
+         via MMIO vGPU-stub (QEMU) + Unix domain socket mediator daemon.
+
+Last updated: 2026-02-17
+
+================================================================================
+  1. DIRECTORY LAYOUT
+================================================================================
+
+  phase3/
+  ├── include/                  All headers (Phase 2 extended + Phase 3 new)
+  │   ├── vgpu_protocol.h        MMIO register map, socket IPC, admin protocol
+  │   ├── vgpu_config.h          DB library (vms, pools, Phase 3 columns)
+  │   ├── cuda_vector_add.h      Async CUDA interface
+  │   ├── scheduler_wfq.h        Weighted Fair Queuing scheduler
+  │   ├── rate_limiter.h         Per-VM token-bucket rate limiter
+  │   ├── metrics.h              Metrics collector (p50/p95/p99, Prometheus)
+  │   ├── watchdog.h             Job timeout + auto-quarantine
+  │   └── nvml_monitor.h         NVML GPU health (dlopen, graceful fallback)
+  │
+  ├── src/                      All source files
+  │   ├── mediator_phase3.c      Main daemon — integrates all Phase 3 modules
+  │   ├── scheduler_wfq.c        WFQ urgency-based scheduling
+  │   ├── rate_limiter.c         Token-bucket per-VM enforcement
+  │   ├── metrics.c              Latency histograms, context-switch counters
+  │   ├── watchdog.c             Background thread, fault tracking
+  │   ├── nvml_monitor.c         GPU temp, utilisation, ECC, power
+  │   ├── vgpu_config.c          SQLite library (Phase 2 + Phase 3 columns)
+  │   ├── vgpu-admin.c           CLI tool (register/set-weight/quarantine/etc.)
+  │   ├── vgpu-stub-enhanced.c   QEMU PCI device (MMIO BAR0 + socket client)
+  │   ├── vm_client_enhanced.c   Guest-side MMIO client (retry logic)
+  │   └── cuda_vector_add.c      CUDA kernel (nvcc, vector add)
+  │
+  ├── schema/
+  │   ├── init_db.sql             Full schema (fresh install, includes Phase 3)
+  │   └── migrate_phase3.sql      ALTER TABLE migration for existing databases
+  │
+  ├── tests/
+  │   └── stress_test.sh          5-scenario validation script
+  │
+  ├── Makefile                    Self-contained build (no cross-dir deps)
+  ├── IMPLEMENTATION_GUIDE.txt    This file
+  └── IMPLEMENTATION_PLAN.txt     Customer-facing delivery plan
+
+
+================================================================================
+  2. COMMUNICATION ARCHITECTURE
+================================================================================
+
+  Guest VM                     Host
+  ─────────                    ─────────────────────────────────────
+  vm_client_enhanced           QEMU (vgpu-stub)    mediator_phase3
+      │                            │                     │
+      │  MMIO BAR0 write           │                     │
+      │  (doorbell register)       │                     │
+      ├───────────────────────────>│                     │
+      │                            │  Unix socket IPC    │
+      │                            │  (VGPUSocketHeader  │
+      │                            │   + payload)        │
+      │                            ├────────────────────>│
+      │                            │                     │ WFQ enqueue
+      │                            │                     │ rate-limit check
+      │                            │                     │ quarantine check
+      │                            │                     │ CUDA dispatch
+      │                            │                     │
+      │                            │<────────────────────┤ response
+      │<───────────────────────────│                     │
+      │  MMIO read (STATUS=DONE)   │                     │
+      │  MMIO read (response buf)  │                     │
+
+  Admin CLI (vgpu-admin) connects to the mediator via a separate
+  admin socket at /var/vgpu/admin.sock — never through the QEMU path.
+
+  Key point: VM↔Host communication is MMIO + Unix socket.
+  There is NO NFS, NO shared filesystem in the data path.
+
+
+================================================================================
+  3. PHASE 3 MODULES (NEW)
+================================================================================
+
+  3.1  Weighted Fair Queuing Scheduler (scheduler_wfq.c/h)
+  ─────────────────────────────────────────────────────────
+  Replaces the Phase 2 priority-sorted linked list.
+
+  Urgency formula:
+    base_mult   = {4.0 if high, 2.0 if medium, 1.0 if low}
+    weight_mult = vm_weight / 50.0       (range 1–100, default 50)
+    pressure    = vm_queue_depth / 10.0
+    wait_bonus  = elapsed_sec / 10.0
+    urgency     = base_mult * weight_mult * (1 + pressure) * (1 + wait_bonus)
+
+  Highest urgency is dequeued first; ties broken by arrival order (FIFO).
+  Queue is an array (max 1024 entries); selection sort at dequeue time —
+  efficient for expected sizes (tens to low hundreds).
+
+  Per-VM statistics tracked:
+    - current_queue_depth, recent_submit_rate (EMA), avg_exec_time_us
+    - total_submitted, total_completed
+    - context_switches (counted when the dequeued VM differs from the last)
+
+  API:
+    wfq_init(), wfq_destroy()
+    wfq_enqueue(), wfq_dequeue()
+    wfq_complete() — updates rolling execution stats
+    wfq_vm_queue_depth(), wfq_queue_len()
+    wfq_context_switches(), wfq_get_vm_stats()
+
+
+  3.2  Rate Limiter (rate_limiter.c/h)
+  ─────────────────────────────────────
+  Token-bucket algorithm, per VM.
+
+  Each VM slot holds:
+    - tokens (float), max_tokens, refill_rate (tokens/sec)
+    - max_queue_depth
+    - last_refill timestamp
+
+  rl_check(vm_id, current_queue_depth) returns:
+    RL_ALLOW          — token consumed, proceed
+    RL_DENY_RATE      — rate exceeded, reject immediately
+    RL_DENY_QUEUE     — queue depth exceeded
+
+  Configuration is pushed from the SQLite database via
+  rl_configure_vm(vm_id, max_jobs_per_sec, max_queue_depth).
+  A value of 0 means "unlimited" for either parameter.
+
+
+  3.3  Metrics Collector (metrics.c/h)
+  ────────────────────────────────────
+  Tracks per-VM and global latency histograms:
+    - p50 / p95 / p99 latency (reservoir sampling, 4096-sample window)
+    - total_jobs, total_errors, total_rejections
+    - context_switch_count, gpu_reset_count
+
+  Export formats:
+    - metrics_export_summary()    — human-readable text
+    - metrics_export_prometheus() — Prometheus exposition format
+
+  The mediator calls metrics_record_job(), metrics_record_error(),
+  metrics_record_rejection(), metrics_record_context_switch(),
+  metrics_record_gpu_reset() at the appropriate points.
+
+
+  3.4  Watchdog (watchdog.c/h)
+  ────────────────────────────
+  Background pthread that runs every second.
+
+  Per-job tracking:
+    - wd_job_started(vm_id, request_id) — records start time
+    - wd_job_completed(vm_id, request_id) — clears tracking
+    - wd_job_failed(vm_id, request_id) — increments fault counter
+
+  If a job exceeds job_timeout_sec (default 30s), the watchdog logs a
+  timeout warning.  If a VM accumulates more than fault_threshold
+  (default 5) failures, it is auto-quarantined.
+
+  Quarantined VMs are rejected at intake (mediator sends VGPU_MSG_QUARANTINED).
+  An admin can lift quarantine via:
+    vgpu-admin clear-quarantine --vm-uuid=<uuid>
+
+
+  3.5  NVML Monitor (nvml_monitor.c/h)
+  ─────────────────────────────────────
+  Uses dlopen("libnvidia-ml.so") for runtime loading — no hard link-time
+  dependency.  Falls back gracefully if NVML is unavailable.
+
+  Polled fields (nvml_health_t):
+    temperature_c, gpu_utilization, memory_utilization,
+    memory_used_mb, memory_total_mb, power_watts,
+    ecc_errors, needs_reset
+
+  Called periodically by the mediator stats loop and on-demand by
+  "vgpu-admin show-health".
+
+
+================================================================================
+  4. MODIFIED PHASE 2 FILES
+================================================================================
+
+  4.1  vgpu_protocol.h
+  ────────────────────
+  Added:
+    - VGPU_ERR_RATE_LIMITED   (0x0A) — MMIO error code for back-pressure
+    - VGPU_ERR_VM_QUARANTINED (0x0B) — MMIO error code for quarantine
+    - VGPU_MSG_BUSY           (0x05) — socket message type: rate-limited
+    - VGPU_MSG_QUARANTINED    (0x06) — socket message type: quarantined
+    - VGPU_ADMIN_SOCKET_PATH  ("/var/vgpu/admin.sock")
+    - VGPUAdminRequest / VGPUAdminResponse structs
+    - VGPU_ADMIN_QUARANTINE_VM / VGPU_ADMIN_UNQUARANTINE_VM codes
+
+
+  4.2  vgpu_config.h / vgpu_config.c
+  ──────────────────────────────────
+  vgpu_vm_config_t extended with:
+    int weight, max_jobs_per_sec, max_queue_depth, quarantined, error_count
+
+  New functions:
+    vgpu_set_vm_weight(), vgpu_set_vm_rate_limit(),
+    vgpu_quarantine_vm(), vgpu_unquarantine_vm(),
+    vgpu_increment_error_count(), vgpu_reset_error_count(),
+    vgpu_get_vm_config_by_id()
+
+  vgpu_db_init_schema() now auto-migrates: checks for 'weight' column
+  and runs ALTER TABLE if missing, so the mediator can start on both
+  fresh and pre-existing databases without manual migration.
+
+
+  4.3  init_db.sql
+  ────────────────
+  The vms table now includes weight, max_jobs_per_sec, max_queue_depth,
+  quarantined, and error_count columns in the CREATE TABLE statement
+  (for fresh installations).
+
+
+  4.4  vgpu-stub-enhanced.c  (QEMU device)
+  ─────────────────────────────────────────
+  Socket read handler extended to interpret:
+    - VGPU_MSG_BUSY       → sets STATUS=ERROR, ERROR_CODE=RATE_LIMITED
+    - VGPU_MSG_QUARANTINED → sets STATUS=ERROR, ERROR_CODE=VM_QUARANTINED
+    - VGPUResponse.status with RATE_LIMITED / QUARANTINED / QUEUE_FULL
+
+  Note: This file is compiled inside the QEMU source tree, not by our
+  Makefile.  It is included here for reference and deployment.
+
+
+  4.5  vm_client_enhanced.c  (Guest client)
+  ─────────────────────────────────────────
+  Added:
+    - Retry loop with exponential backoff for RATE_LIMITED / QUEUE_FULL
+      (up to 5 retries, starting at 100ms, capped at 5s)
+    - Immediate abort for VM_QUARANTINED (non-retryable)
+    - wait_for_mmio_response() returns -2 for retryable, -3 for quarantine
+
+
+  4.6  vgpu-admin.c  (CLI tool)
+  ─────────────────────────────
+  New commands (all accept --vm-uuid or --vm-name):
+    set-weight        --weight=<1-100>
+    show-weights
+    set-rate-limit    --rate=<jobs/sec> [--queue-depth=<max>]
+    show-rate-limits
+    quarantine-vm
+    clear-quarantine
+    show-metrics      [--prometheus]
+    show-health
+    reload-config
+
+  Quarantine/unquarantine update the SQLite DB directly, then send
+  VGPU_ADMIN_RELOAD_CONFIG to the mediator via the admin socket so the
+  rate limiter picks up the change immediately.
+
+
+================================================================================
+  5. DATABASE SCHEMA
+================================================================================
+
+  For fresh installations, use schema/init_db.sql:
+    sqlite3 /etc/vgpu/vgpu_config.db < schema/init_db.sql
+
+  For existing Phase 2 databases, run the migration:
+    sqlite3 /etc/vgpu/vgpu_config.db < schema/migrate_phase3.sql
+
+  The mediator's vgpu_db_init_schema() also handles auto-migration
+  at startup, so in practice you only need the SQL scripts for manual
+  or scripted provisioning.
+
+  Phase 3 columns on the vms table:
+    weight           REAL    DEFAULT 1.0   (scheduler weight, range 1-100)
+    max_jobs_per_sec INTEGER DEFAULT 0     (0 = unlimited)
+    max_queue_depth  INTEGER DEFAULT 0     (0 = unlimited)
+    quarantined      INTEGER DEFAULT 0     (0/1)
+    error_count      INTEGER DEFAULT 0
+
+
+================================================================================
+  6. BUILD INSTRUCTIONS
+================================================================================
+
+  Prerequisites (host):
+    - GCC with C11 support
+    - CUDA Toolkit (nvcc, libcudart, libcuda) — typically /usr/local/cuda
+    - SQLite3 development headers and library (libsqlite3-dev)
+    - pthreads, libdl, libm (standard on Linux)
+
+  Build host binaries (mediator + admin CLI):
+    cd phase3
+    make
+
+  Build guest client only (no CUDA, no SQLite needed):
+    cd phase3
+    make client
+
+  Install to system paths:
+    sudo make install
+    # Binaries → /usr/local/bin/mediator_phase3, /usr/local/bin/vgpu-admin
+    # Schema  → /etc/vgpu/init_db.sql, /etc/vgpu/migrate_phase3.sql
+
+  Run database migration:
+    make migrate
+    # or: sqlite3 /etc/vgpu/vgpu_config.db < schema/migrate_phase3.sql
+
+  QEMU vgpu-stub (vgpu-stub-enhanced.c):
+    Copy src/vgpu-stub-enhanced.c and include/vgpu_protocol.h into the
+    QEMU source tree under hw/misc/ and rebuild QEMU.  The QEMU build
+    system handles compilation — our Makefile does not build this file.
+
+
+================================================================================
+  7. RUNNING THE SYSTEM
+================================================================================
+
+  1. Start the mediator daemon on the host:
+       sudo ./mediator_phase3
+       # or with options:
+       sudo ./mediator_phase3 --no-nvml       # skip NVML if no GPU driver
+       sudo ./mediator_phase3 --no-db         # skip database
+
+  2. The mediator auto-discovers running QEMU instances with vgpu-stub
+     and creates a Unix socket in each chroot directory.  If no QEMU is
+     running, it falls back to /tmp/vgpu-mediator.sock.
+
+  3. Register VMs:
+       vgpu-admin register-vm --vm-name=myvm --pool=A --priority=high
+
+  4. Configure Phase 3 features:
+       vgpu-admin set-weight --vm-name=myvm --weight=80
+       vgpu-admin set-rate-limit --vm-name=myvm --rate=100 --queue-depth=50
+       vgpu-admin show-weights
+       vgpu-admin show-rate-limits
+
+  5. Inside the guest, run the client:
+       sudo ./vm_client_enhanced 100 200
+       # Sends a vector-add request via MMIO; retries automatically on
+       # rate-limit errors.
+
+  6. Monitor:
+       vgpu-admin show-metrics
+       vgpu-admin show-metrics --prometheus
+       vgpu-admin show-health
+
+  7. Quarantine management:
+       vgpu-admin quarantine-vm --vm-uuid=abc-123-...
+       vgpu-admin clear-quarantine --vm-uuid=abc-123-...
+
+
+================================================================================
+  8. TESTING
+================================================================================
+
+  The stress_test.sh script (tests/stress_test.sh) runs five scenarios:
+
+    Scenario 1: Baseline throughput — single VM, 50 sequential requests
+    Scenario 2: Multi-VM fairness — 4 VMs with different weights
+    Scenario 3: Rate limiting — set a low rate, flood requests, count rejections
+    Scenario 4: Back-pressure — set low queue depth, burst requests
+    Scenario 5: Quarantine — trigger quarantine, verify rejection, clear it
+
+  Run:
+    chmod +x tests/stress_test.sh
+    sudo tests/stress_test.sh
+
+  The script expects mediator_phase3 to be running and at least one VM
+  with a vgpu-stub device to be registered in the database.
+
+
+================================================================================
+  9. KNOWN CONSTRAINTS & FUTURE WORK
+================================================================================
+
+  - Single-GPU: The mediator serialises CUDA jobs (one at a time).  With
+    multi-GPU support, the dispatch loop would maintain a per-GPU busy flag.
+
+  - vgpu-stub-enhanced.c must be rebuilt inside the QEMU source tree.
+    A QEMU patch file would be cleaner for deployment.
+
+  - NVML monitoring is best-effort (dlopen).  If libnvidia-ml.so is not
+    present at runtime, monitoring is silently disabled.
+
+  - The WFQ queue is a flat array with O(n) dequeue.  For deployments
+    with hundreds of concurrent requests, a heap would be more efficient.
+
+  - Shared memory + ioeventfd (zero-copy IPC between QEMU and mediator)
+    is a potential future optimisation, replacing the current Unix socket.
+    The MMIO path to the guest would remain unchanged.

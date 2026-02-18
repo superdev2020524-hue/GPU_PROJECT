@@ -31,8 +31,13 @@
 #define VGPU_STATUS_DONE         0x02
 #define VGPU_STATUS_ERROR        0x03
 
-#define VGPU_ERR_NONE            0x00
-#define VGPU_ERR_MEDIATOR_UNAVAIL 0x03
+#define VGPU_ERR_NONE              0x00
+#define VGPU_ERR_MEDIATOR_UNAVAIL  0x03
+#define VGPU_ERR_TIMEOUT           0x04
+#define VGPU_ERR_QUEUE_FULL        0x07
+/* Phase 3: Isolation error codes */
+#define VGPU_ERR_RATE_LIMITED      0x0A
+#define VGPU_ERR_VM_QUARANTINED    0x0B
 
 #define VGPU_PROTOCOL_VERSION    0x00010000
 #define VGPU_OP_CUDA_KERNEL      0x0001
@@ -46,8 +51,13 @@
 #define VGPU_CLASS_MASK 0xffff00
 #define VGPU_CLASS 0x120000
 
-#define RESPONSE_TIMEOUT 30  // seconds
-#define POLL_INTERVAL 10000  // microseconds (10ms)
+#define RESPONSE_TIMEOUT 30    // seconds
+#define POLL_INTERVAL 10000    // microseconds (10ms)
+
+/* Phase 3: Retry logic for back-pressure / rate-limit */
+#define MAX_RETRIES       5    // Maximum retry attempts for BUSY/RATE_LIMITED
+#define INITIAL_BACKOFF_MS 100 // Initial backoff in milliseconds
+#define MAX_BACKOFF_MS   5000  // Maximum backoff in milliseconds
 
 /* Helper macro for register access */
 #define REG32(base, off)  (*(volatile uint32_t *)((volatile char *)(base) + (off)))
@@ -312,11 +322,25 @@ static int wait_for_mmio_response(volatile void *mmio, int *result) {
         
         if (status == VGPU_STATUS_ERROR) {
             error_code = REG32(mmio, VGPU_REG_ERROR_CODE);
-            fprintf(stderr, "[ERROR] Device error: code=%u\n", error_code);
+            fprintf(stderr, "[ERROR] Device error: code=0x%02x\n", error_code);
             
             if (error_code == VGPU_ERR_MEDIATOR_UNAVAIL) {
                 fprintf(stderr, "         Mediator daemon is not running or not accessible\n");
-                fprintf(stderr, "         Start mediator: sudo ./mediator_enhanced\n");
+                fprintf(stderr, "         Start mediator: sudo ./mediator_phase3\n");
+            } else if (error_code == VGPU_ERR_RATE_LIMITED) {
+                fprintf(stderr, "         VM is rate-limited (too many requests/sec)\n");
+                fprintf(stderr, "         This request can be retried after a short delay\n");
+                return -2;  /* Retryable error */
+            } else if (error_code == VGPU_ERR_QUEUE_FULL) {
+                fprintf(stderr, "         Queue is full (back-pressure active)\n");
+                fprintf(stderr, "         This request can be retried after a short delay\n");
+                return -2;  /* Retryable error */
+            } else if (error_code == VGPU_ERR_VM_QUARANTINED) {
+                fprintf(stderr, "         VM is quarantined due to too many errors\n");
+                fprintf(stderr, "         Contact admin: vgpu-admin clear-quarantine --vm-uuid=<uuid>\n");
+                return -3;  /* Non-retryable error */
+            } else if (error_code == VGPU_ERR_TIMEOUT) {
+                fprintf(stderr, "         Request timed out on the host side\n");
             }
             
             return -1;
@@ -428,19 +452,52 @@ int main(int argc, char *argv[]) {
     /* Generate request ID */
     request_id = (uint32_t)time(NULL);
     
-    /* Send request via MMIO */
-    if (send_mmio_request(mmio, &props, num1, num2, request_id) != 0) {
-        fprintf(stderr, "ERROR: Failed to send request\n");
-        munmap((void *)mmio, VGPU_BAR_SIZE);
-        close(fd);
-        return 1;
+    /* Phase 3: Retry loop with exponential backoff for BUSY/RATE_LIMITED */
+    int rc;
+    int retries = 0;
+    int backoff_ms = INITIAL_BACKOFF_MS;
+
+    while (retries <= MAX_RETRIES) {
+        /* Send request via MMIO */
+        if (send_mmio_request(mmio, &props, num1, num2, request_id) != 0) {
+            fprintf(stderr, "ERROR: Failed to send request\n");
+            munmap((void *)mmio, VGPU_BAR_SIZE);
+            close(fd);
+            return 1;
+        }
+
+        printf("\n");
+
+        /* Wait for response */
+        rc = wait_for_mmio_response(mmio, &result);
+        if (rc == 0) {
+            break;  /* Success */
+        } else if (rc == -2 && retries < MAX_RETRIES) {
+            /* Retryable error (rate-limited or queue full) */
+            retries++;
+            printf("[RETRY] Attempt %d/%d — backing off %d ms...\n",
+                   retries, MAX_RETRIES, backoff_ms);
+            usleep(backoff_ms * 1000);
+            backoff_ms = (backoff_ms * 2 > MAX_BACKOFF_MS)
+                       ? MAX_BACKOFF_MS : backoff_ms * 2;
+            request_id++;  /* Use a new request ID for the retry */
+            continue;
+        } else if (rc == -3) {
+            /* Quarantined — no retry */
+            fprintf(stderr, "ERROR: VM quarantined, cannot submit requests\n");
+            munmap((void *)mmio, VGPU_BAR_SIZE);
+            close(fd);
+            return 2;
+        } else {
+            fprintf(stderr, "ERROR: Failed to receive response\n");
+            munmap((void *)mmio, VGPU_BAR_SIZE);
+            close(fd);
+            return 1;
+        }
     }
-    
-    printf("\n");
-    
-    /* Wait for response */
-    if (wait_for_mmio_response(mmio, &result) != 0) {
-        fprintf(stderr, "ERROR: Failed to receive response\n");
+
+    if (rc != 0) {
+        fprintf(stderr, "ERROR: Exhausted all %d retries\n", MAX_RETRIES);
         munmap((void *)mmio, VGPU_BAR_SIZE);
         close(fd);
         return 1;
