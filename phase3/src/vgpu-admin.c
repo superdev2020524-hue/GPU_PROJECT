@@ -284,18 +284,18 @@ int main(int argc, char *argv[]) {
                 default: priority_str_expected = "medium"; break;
             }
             
-            /* Check if the device-model-args contain our vgpu-stub configuration */
+            /* Check if the device-model-args contain our vgpu-cuda configuration */
             char pool_str[8], priority_check[16], vm_id_str[16];
             snprintf(pool_str, sizeof(pool_str), "pool_id=%c", final_pool);
             snprintf(priority_check, sizeof(priority_check), "priority=%s", priority_str_expected);
             snprintf(vm_id_str, sizeof(vm_id_str), "vm_id=%d", final_vm_id);
             
-            if (strstr(device_args, "vgpu-stub") == NULL ||
+            if (strstr(device_args, "vgpu-cuda") == NULL ||
                 strstr(device_args, pool_str) == NULL ||
                 strstr(device_args, priority_check) == NULL ||
                 strstr(device_args, vm_id_str) == NULL) {
                 fprintf(stderr, "Error: Device-model-args verification failed\n");
-                fprintf(stderr, "Expected to contain: vgpu-stub, pool_id=%c, priority=%s, vm_id=%d\n",
+                fprintf(stderr, "Expected to contain: vgpu-cuda, pool_id=%c, priority=%s, vm_id=%d\n",
                         final_pool, priority_str_expected, final_vm_id);
                 fprintf(stderr, "Got: %s\n", device_args);
                 if (was_running) {
@@ -1085,6 +1085,24 @@ int main(int argc, char *argv[]) {
         }
         free(buf);
 
+    } else if (strcmp(cmd, "show-connections") == 0) {
+        /* vgpu-admin show-connections */
+        char *buf = (char *)malloc(65536);
+        if (!buf) {
+            fprintf(stderr, "Error: malloc failed\n");
+            vgpu_db_close(db);
+            return 1;
+        }
+
+        int status = admin_socket_query(VGPU_ADMIN_SHOW_CONNECTIONS, 0, 0,
+                                        buf, 65536);
+        if (status >= 0) {
+            printf("%s", buf);
+        } else {
+            fprintf(stderr, "Error: Failed to query mediator for connection status\n");
+        }
+        free(buf);
+
     } else if (strcmp(cmd, "reload-config") == 0) {
         /* vgpu-admin reload-config — tell mediator to re-read DB */
         char buf[4096];
@@ -1216,7 +1234,7 @@ static int update_device_model_args(const char *vm_uuid, char pool_id, int prior
     char cmd[1024];
     const char *priority_str;
     
-    /* Convert priority integer to string (vgpu-stub expects string, not integer) */
+    /* Convert priority integer to string (vgpu-cuda expects string, not integer) */
     switch (priority) {
         case 0: priority_str = "low"; break;
         case 1: priority_str = "medium"; break;
@@ -1225,7 +1243,7 @@ static int update_device_model_args(const char *vm_uuid, char pool_id, int prior
     }
     
     snprintf(cmd, sizeof(cmd),
-             "xe vm-param-set uuid=%s platform:device-model-args=\"-device vgpu-stub,pool_id=%c,priority=%s,vm_id=%d\" 2>/dev/null",
+             "xe vm-param-set uuid=%s platform:device-model-args=\"-device vgpu-cuda,pool_id=%c,priority=%s,vm_id=%d\" 2>/dev/null",
              vm_uuid, pool_id, priority_str, vm_id);
     return system(cmd);
 }
@@ -1555,6 +1573,7 @@ static void print_help(void) {
     printf("--- Phase 3: Monitoring ---\n");
     printf("  show-metrics [--prometheus]            Show mediator metrics\n");
     printf("  show-health                           Show GPU health and watchdog status\n");
+    printf("  show-connections                      Show active VM connections and server sockets\n");
     printf("  reload-config                         Tell mediator to re-read DB config\n\n");
     printf("--- General ---\n");
     printf("  status                                Show system status\n");

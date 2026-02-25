@@ -1,0 +1,40 @@
+================================================================================
+VM CONNECTION ISSUE - test@10.25.33.15
+================================================================================
+
+STATUS: Cannot connect to VM - authentication failing
+
+ISSUE:
+- SSH connection attempts result in "Permission denied"
+- Password prompt appears but authentication fails
+- VM is pingable (network connectivity OK)
+
+POSSIBLE CAUSES:
+1. Password might be incorrect
+2. VM might not be fully set up yet
+3. SSH service might need configuration
+4. User account might need password reset
+
+ATTEMPTS MADE:
+- Direct SSH connection
+- pexpect with password handling
+- Multiple password prompt handling
+- All result in "Permission denied"
+
+NEXT STEPS:
+1. Verify password is correct: Calvin@123
+2. Check if VM is fully initialized
+3. Verify SSH service is running on VM
+4. Try connecting manually to verify credentials
+5. If password is wrong, reset it or get correct password
+
+FILES READY FOR DEPLOYMENT:
+✓ libvgpu_cuda.c (with all fixes: SSH safety, dlsym order, whitelist cache)
+✓ cuda_transport.c
+✓ cuda_transport.h
+✓ gpu_properties.h
+✓ cuda_protocol.h
+
+All files are ready locally and will be copied once VM connection is established.
+
+================================================================================

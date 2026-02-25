@@ -1,0 +1,44 @@
+================================================================================
+CRITICAL FIX: Circular Dependency in is_system_process()
+================================================================================
+
+PROBLEM IDENTIFIED
+------------------
+
+The `is_system_process()` function uses `fopen()` to read `/proc/self/comm`, but
+`fopen()` itself is intercepted and calls `is_system_process()` to check if it
+should intercept. This creates a circular dependency:
+
+  1. fopen() calls is_system_process() to check if it should intercept
+  2. is_system_process() calls fopen() to read /proc/self/comm
+  3. This fopen() call goes back to step 1 → infinite recursion or check fails
+
+RESULT: lspci and other system processes are still being intercepted because
+the check fails due to the circular dependency.
+
+FIX IMPLEMENTED
+---------------
+
+Changed `is_system_process()` to use direct syscalls via dlsym(RTLD_NEXT):
+  - Uses real_open() instead of fopen()
+  - Uses real_read() instead of fread()
+  - Uses real_close() instead of fclose()
+
+This bypasses our interception and reads the process name directly.
+
+STATUS
+------
+
+✓ Fixed code ready in: /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c
+⚠ Need to copy to VM and rebuild
+
+NEXT STEPS
+----------
+
+1. Copy fixed file to VM
+2. Rebuild shim
+3. Verify lspci is NOT intercepted
+4. Verify vGPU device appears
+5. Test Ollama GPU mode
+
+================================================================================

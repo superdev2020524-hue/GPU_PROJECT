@@ -36,6 +36,86 @@
 #define VGPU_CTRL_REG_END        0x040
 
 /* ================================================================
+ * CUDA API Remoting Registers (BAR0 region 0x080 – 0x0FF)
+ *
+ * These registers handle forwarding of CUDA API calls between the
+ * guest shim libraries and the host mediator.
+ * ================================================================ */
+#define VGPU_REG_CUDA_OP           0x080  /* R/W  CUDA API call identifier      */
+#define VGPU_REG_CUDA_SEQ          0x084  /* R/W  Sequence number               */
+#define VGPU_REG_CUDA_NUM_ARGS     0x088  /* R/W  Number of inline args         */
+#define VGPU_REG_CUDA_DATA_LEN     0x08C  /* R/W  Bulk data length              */
+#define VGPU_REG_CUDA_DOORBELL     0x0A8  /* W    Ring to submit CUDA call      */
+#define VGPU_REG_CUDA_ARGS_BASE    0x0B0  /* R/W  Inline args (16 x uint32)     */
+#define VGPU_REG_CUDA_ARGS_END     0x0F0  /* (exclusive)                        */
+#define VGPU_REG_CUDA_RESULT_STATUS    0x0F0  /* RO  CUresult return value      */
+#define VGPU_REG_CUDA_RESULT_NUM       0x0F4  /* RO  Number of result values    */
+#define VGPU_REG_CUDA_RESULT_DATA_LEN  0x0F8  /* RO  Result bulk data length    */
+
+/* CUDA inline request data region (small payloads in BAR0) */
+#define VGPU_CUDA_REQ_DATA_OFFSET   0x100  /* 1 KB for small request data      */
+#define VGPU_CUDA_RESP_DATA_OFFSET  0x500  /* 1 KB for small response data     */
+#define VGPU_CUDA_SMALL_DATA_MAX    1024
+
+/* CUDA result inline values (8 x uint64 = 64 bytes at 0x900) */
+#define VGPU_REG_CUDA_RESULT_BASE  0x900
+
+/* CUDA control register block end */
+#define VGPU_CUDA_CTRL_END         0x100
+
+/* Maximum CUDA inline args (matches cuda_protocol.h) */
+#define VGPU_CUDA_MAX_ARGS         16
+
+/* ================================================================
+ * Shared-Memory Registration Registers (BAR0, 0x0C0 – 0x0CC)
+ *
+ * The guest CUDA shim allocates a large anonymous mmap region, locks
+ * it in RAM (mlock), resolves its guest physical address (GPA) via
+ * /proc/self/pagemap, and registers it with the vgpu-stub device.
+ *
+ * The vgpu-stub then calls cpu_physical_memory_map(GPA) to obtain a
+ * host-side pointer directly into guest RAM, eliminating the 8 MB
+ * BAR1 MMIO copy bottleneck.
+ *
+ * Layout of the registered region:
+ *   [0 .. shmem_size/2)          — Guest → Host data  (G2H)
+ *   [shmem_size/2 .. shmem_size) — Host → Guest data  (H2G)
+ *
+ * Protocol:
+ *   1. Guest writes GPA to SHMEM_GPA_LO/HI and size to SHMEM_SIZE.
+ *   2. Guest writes 1 to SHMEM_CTRL.
+ *   3. Guest polls STATUS until DONE (vgpu-stub has mapped the region).
+ *   4. For teardown, guest writes 0 to SHMEM_CTRL.
+ * ================================================================ */
+/* Placed AFTER the CUDA result-value block (0x900 + 8*8 = 0x940) so these
+ * addresses do not overlap with the CUDA control registers (0x080-0x0FF) or
+ * the CUDA arg registers (0x0B0-0x0EF). */
+#define VGPU_REG_SHMEM_GPA_LO  0x940  /* Guest physical addr, low  32 bits */
+#define VGPU_REG_SHMEM_GPA_HI  0x944  /* Guest physical addr, high 32 bits */
+#define VGPU_REG_SHMEM_SIZE    0x948  /* Total region size in bytes        */
+#define VGPU_REG_SHMEM_CTRL    0x94C  /* Write 1 = register, 0 = release   */
+
+/* Default shared-memory region size used by the guest shim (256 MB).
+ * Half is G2H, half is H2G.  The guest may negotiate a smaller size
+ * if its ulimits prevent locking 256 MB. */
+#define VGPU_SHMEM_DEFAULT_SIZE  (256u * 1024u * 1024u)  /* 256 MB */
+#define VGPU_SHMEM_MIN_SIZE      (  8u * 1024u * 1024u)  /*   8 MB fallback */
+
+/* ================================================================
+ * BAR1 — Large Data Region (16 MB)
+ *
+ * Retained as a fallback for guests that cannot lock the shmem region
+ * (e.g. non-root, ulimit restrictions).  When VGPU_CAP_SHMEM is set
+ * and the guest successfully registers a shared-memory region, BAR1 is
+ * not used and the bar1_data buffer in vgpu-stub is freed.
+ * ================================================================ */
+#define VGPU_BAR1_SIZE              (16 * 1024 * 1024)  /* 16 MB */
+#define VGPU_BAR1_G2H_OFFSET       0x000000  /* Guest-to-Host  (8 MB) */
+#define VGPU_BAR1_G2H_SIZE         (8 * 1024 * 1024)
+#define VGPU_BAR1_H2G_OFFSET       0x800000  /* Host-to-Guest  (8 MB) */
+#define VGPU_BAR1_H2G_SIZE         (8 * 1024 * 1024)
+
+/* ================================================================
  * STATUS Register Values (offset 0x004)
  * ================================================================ */
 
@@ -70,6 +150,9 @@
 #define VGPU_CAP_INTERRUPT       (1 << 1)   /* Interrupt notification (future)  */
 #define VGPU_CAP_DMA             (1 << 2)   /* DMA transfers (future)           */
 #define VGPU_CAP_MULTI_REQ       (1 << 3)   /* Multiple outstanding (future)    */
+#define VGPU_CAP_CUDA_REMOTE     (1 << 4)   /* CUDA API remoting support        */
+#define VGPU_CAP_BAR1_DATA       (1 << 5)   /* BAR1 large data region (legacy)  */
+#define VGPU_CAP_SHMEM           (1 << 6)   /* Guest-pinned shared-memory path  */
 
 /* ================================================================
  * PROTOCOL_VER Value (offset 0x020)
@@ -154,6 +237,10 @@ typedef struct __attribute__((packed)) VGPUResponse {
 /* Phase 3: Back-pressure and quarantine notifications */
 #define VGPU_MSG_BUSY       0x05   /* mediator → vgpu-stub: rate-limited      */
 #define VGPU_MSG_QUARANTINED 0x06  /* mediator → vgpu-stub: VM quarantined    */
+/* Phase 3+: CUDA API remoting messages */
+#define VGPU_MSG_CUDA_CALL      0x10  /* vgpu-stub → mediator: CUDA API call */
+#define VGPU_MSG_CUDA_RESULT    0x11  /* mediator → vgpu-stub: CUDA result   */
+#define VGPU_MSG_CUDA_DATA      0x12  /* Either: large data chunk transfer   */
 
 typedef struct __attribute__((packed)) VGPUSocketHeader {
     uint32_t magic;          /* 0x56475055 = "VGPU"                            */
@@ -162,14 +249,18 @@ typedef struct __attribute__((packed)) VGPUSocketHeader {
     uint32_t request_id;     /* Request tracking ID                            */
     char     pool_id;        /* 'A' or 'B'                                     */
     uint8_t  priority;       /* 0=low, 1=medium, 2=high                        */
-    uint16_t payload_len;    /* Length of payload following this header         */
+    uint16_t _pad;           /* alignment padding — do not use                 */
+    uint32_t payload_len;    /* Length of payload following this header         */
 } VGPUSocketHeader;
 
 #define VGPU_SOCKET_MAGIC    0x56475055  /* "VGPU" in little-endian            */
-#define VGPU_SOCKET_HDR_SIZE sizeof(VGPUSocketHeader)  /* 20 bytes             */
+#define VGPU_SOCKET_HDR_SIZE sizeof(VGPUSocketHeader)  /* 24 bytes             */
 
-/* Maximum payload size */
+/* Maximum payload size — legacy (1 KB) */
 #define VGPU_SOCKET_MAX_PAYLOAD  VGPU_REQ_BUFFER_SIZE  /* 1024 bytes          */
+
+/* Maximum CUDA payload (large transfers go via BAR1) */
+#define VGPU_CUDA_SOCKET_MAX_PAYLOAD  (8 * 1024 * 1024)  /* 8 MB              */
 
 /* ================================================================
  * Phase 3: Admin Socket (for vgpu-admin CLI → mediator)
@@ -184,6 +275,7 @@ typedef struct __attribute__((packed)) VGPUSocketHeader {
 #define VGPU_ADMIN_RELOAD_CONFIG     0x12
 #define VGPU_ADMIN_QUARANTINE_VM     0x13
 #define VGPU_ADMIN_UNQUARANTINE_VM   0x14
+#define VGPU_ADMIN_SHOW_CONNECTIONS  0x15
 
 /* Admin request header */
 typedef struct __attribute__((packed)) VGPUAdminRequest {
@@ -204,10 +296,12 @@ typedef struct __attribute__((packed)) VGPUAdminResponse {
  * PCI Device Identification
  * ================================================================ */
 
-#define VGPU_VENDOR_ID       0x1AF4  /* Red Hat, Inc.                          */
-#define VGPU_DEVICE_ID       0x1111  /* Custom vGPU stub                       */
-#define VGPU_CLASS_ID        0x1200  /* Processing Accelerator                 */
-#define VGPU_REVISION        0x02    /* Rev 2: MMIO communication support      */
+#define VGPU_VENDOR_ID       0x10DE  /* NVIDIA Corporation                     */
+#define VGPU_DEVICE_ID       0x2331  /* H100 80GB PCIe                         */
+#define VGPU_CLASS_ID        0x0302  /* 3D controller                          */
+#define VGPU_SUBSYS_VENDOR_ID 0x10DE /* NVIDIA Corporation (subsystem)         */
+#define VGPU_SUBSYS_DEVICE_ID 0x16C1 /* H100 PCIe subsystem                   */
+#define VGPU_REVISION        0xA1   /* Match real H100 silicon revision        */
 
 /* ================================================================
  * Priority Values (shared with mediator)

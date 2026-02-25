@@ -46,10 +46,10 @@
 #define VGPU_RESPONSE_HEADER_SIZE 32
 
 /* vGPU device identifiers */
-#define VGPU_VENDOR_ID 0x1af4
-#define VGPU_DEVICE_ID 0x1111
+#define VGPU_VENDOR_ID 0x10de
+#define VGPU_DEVICE_ID 0x2331
 #define VGPU_CLASS_MASK 0xffff00
-#define VGPU_CLASS 0x120000
+#define VGPU_CLASS 0x030200
 
 #define RESPONSE_TIMEOUT 30    // seconds
 #define POLL_INTERVAL 10000    // microseconds (10ms)

@@ -1,0 +1,102 @@
+================================================================================
+VGPU-STUB DEVICE MISSING IN GUEST VM
+================================================================================
+
+PROBLEM DIAGNOSIS
+-----------------
+
+From the terminal output, we can see:
+
+1. HOST SIDE (Mediator):
+   ✓ Mediator is running successfully
+   ✓ Listening on sockets for root-102 and root-121
+   ✓ CUDA initialized (NVIDIA H100 PCIe, 81004 MB)
+   ✓ Found 2 QEMU VMs with vgpu-cuda devices
+
+2. GUEST SIDE (test-5):
+   ✓ Shim library loading correctly
+   ✓ Early cuInit() being called
+   ✓ PCI file interception working (detecting NVIDIA vendor 0x10de)
+   ✗ VGPU-STUB device NOT found in /sys/bus/pci/devices
+   ✗ cuInit() fails with error 100 (no device found)
+
+ROOT CAUSE
+----------
+
+The vGPU-stub PCI device is not being passed to the guest VM. The shim is
+looking for a PCI device with:
+
+  - Vendor ID: 0x10DE (NVIDIA) AND Device ID: 0x2331 (H100), OR
+  - Vendor ID: 0x1234 or 0x1AF4 (QEMU/Red Hat) with Class: 0x030200
+
+But the guest only sees device 0000:00:05.0 with NVIDIA vendor (0x10de) but
+NOT the correct device ID (0x2331).
+
+SOLUTION
+--------
+
+The VM (test-5) needs to have the vgpu-cuda device added to its QEMU command
+line. This must be done on the HOST (Dom0/XCP-ng).
+
+STEPS TO FIX:
+
+1. On the HOST, check if test-5 has the vgpu-cuda device:
+   
+   # Find the VM's QEMU process
+   ps aux | grep qemu | grep test-5
+   
+   # Check if -device vgpu-cuda is in the command line
+   # If not, it needs to be added
+
+2. Add the device to the VM configuration:
+   
+   The QEMU command line should include:
+     -device vgpu-cuda,pool_id=A,priority=medium,vm_id=5
+   
+   This can be done via:
+   - XAPI database modification
+   - XenStore configuration
+   - VM configuration file (xl format)
+
+3. Restart the VM or hotplug the device
+
+4. Verify in guest:
+   
+   lspci | grep -i vgpu
+   # Should show: 00:05.0 3D controller: NVIDIA Corporation Device 2331
+   
+   lspci -nn | grep 2331
+   # Should show: 00:05.0 0302: 10de:2331
+
+5. Once the device appears, the shim should detect it and cuInit() will succeed.
+
+VERIFICATION
+------------
+
+After adding the device, in the guest VM:
+
+  $ lspci -nn | grep -E "10de:2331|0302.*10de"
+  # Should show the vGPU-stub device
+
+  $ cat /sys/bus/pci/devices/0000:00:05.0/vendor
+  # Should show: 0x10de
+
+  $ cat /sys/bus/pci/devices/0000:00:05.0/device  
+  # Should show: 0x2331
+
+  $ cat /sys/bus/pci/devices/0000:00:05.0/class
+  # Should show: 0x030200
+
+Once this is correct, the shim will find the device and Ollama will use GPU mode.
+
+================================================================================
+CURRENT STATUS SUMMARY
+================================================================================
+
+✓ Guest-side shim: WORKING (all code correct, safety measures active)
+✓ Host-side mediator: WORKING (running, listening, CUDA ready)
+✗ VM configuration: MISSING (vgpu-cuda device not in QEMU command line)
+
+The shim code is perfect - it just needs the PCI device to be present!
+
+================================================================================

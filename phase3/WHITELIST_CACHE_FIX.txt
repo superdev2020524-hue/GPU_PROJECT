@@ -1,0 +1,144 @@
+================================================================================
+WHITELIST CACHE FIX - ROOT CAUSE ANALYSIS
+================================================================================
+
+DATE: 2026-02-23
+ISSUE: Whitelist check caches negative result too early, permanently disabling interception
+
+================================================================================
+ROOT CAUSE
+================================================================================
+
+**The Problem:**
+The whitelist check caches the result immediately, even if the check fails due to:
+1. Early initialization (process name not set yet)
+2. Transient errors reading /proc/self/comm or /proc/self/cmdline
+3. Race conditions during library loading
+
+**What Happens:**
+1. First file interception call happens (e.g., during early init)
+2. `is_application_process()` tries to read `/proc/self/comm`
+3. If read fails or process name not set, `result = 0` (not an application)
+4. Result is cached: `g_process_type_cached = 0`
+5. ALL subsequent checks return 0 (cached), even if process IS ollama
+6. Interception is permanently disabled for that process
+
+**Why This Is Bad:**
+- If the first check happens too early, we cache "not ollama"
+- Even when the process name is set correctly later, we never retry
+- Ollama processes never get file interception
+- GPU discovery fails
+
+================================================================================
+THE FIX
+================================================================================
+
+**Solution:**
+Only cache the result if we successfully read the proc files. If we couldn't
+read them (early init, transient error), don't cache, allowing retry on
+subsequent calls.
+
+**Code Changes:**
+```c
+static int is_application_process(void)
+{
+    if (g_process_type_cached >= 0) {
+        return g_process_type_cached;  /* Use cached result */
+    }
+    
+    int result = 0;
+    int checked_successfully = 0;  /* Track if we successfully read proc files */
+    
+    /* Try to read /proc/self/comm */
+    int fd = syscall(__NR_open, "/proc/self/comm", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = syscall(__NR_read, fd, comm, sizeof(comm) - 1);
+        if (n > 0) {
+            /* Successfully read comm */
+            checked_successfully = 1;
+            if (strstr(comm, "ollama") != NULL) {
+                result = 1;
+            }
+        }
+        syscall(__NR_close, fd);
+    }
+    
+    /* If comm check didn't find ollama, check cmdline */
+    if (result == 0) {
+        fd = syscall(__NR_open, "/proc/self/cmdline", O_RDONLY);
+        if (fd >= 0) {
+            ssize_t n = syscall(__NR_read, fd, cmdline, sizeof(cmdline) - 1);
+            if (n > 0) {
+                /* Successfully read cmdline */
+                checked_successfully = 1;
+                /* ... check for ollama ... */
+            }
+            syscall(__NR_close, fd);
+        }
+    }
+    
+    /* CRITICAL: Only cache if we successfully checked */
+    if (checked_successfully) {
+        g_process_type_cached = result;
+    }
+    /* If checked_successfully == 0, return 0 (safe default) but don't cache */
+    /* This means the next call will retry the check */
+    
+    return result;
+}
+```
+
+**Key Changes:**
+1. Added `checked_successfully` flag to track if we read proc files
+2. Only cache result if `checked_successfully == 1`
+3. If check fails (can't read proc files), return 0 but don't cache
+4. Next call will retry the check
+
+================================================================================
+WHY THIS FIXES THE ISSUE
+================================================================================
+
+**Before Fix:**
+- First check fails → cache 0 → all subsequent checks return 0
+- Interception permanently disabled
+
+**After Fix:**
+- First check fails → return 0 but don't cache → next check retries
+- If process name is set later, check succeeds → cache result
+- Interception works correctly
+
+**Benefits:**
+1. Resilient to early initialization timing issues
+2. Handles transient errors gracefully
+3. Allows retry if first check fails
+4. Still safe (default is "don't intercept" if check fails)
+
+================================================================================
+TESTING
+================================================================================
+
+After deploying this fix:
+
+1. **Verify lspci still works** (system processes not intercepted)
+2. **Check Ollama process detection:**
+   - `cat /proc/$(pgrep -f ollama | head -1)/comm`
+   - `cat /proc/$(pgrep -f ollama | head -1)/cmdline`
+3. **Verify GPU mode:**
+   - `journalctl -u ollama -n 300 | grep -i "library="`
+   - Should show: `library=gpu` or `library=cuda`
+   - NOT: `library=cpu`
+
+================================================================================
+EXPECTED BEHAVIOR
+================================================================================
+
+**For Ollama processes:**
+- First check might fail (early init) → return 0, don't cache
+- Second check succeeds → detect "ollama" → cache 1 → intercept files
+- GPU discovery works
+
+**For system processes:**
+- Check succeeds → detect not ollama → cache 0 → don't intercept
+- System processes unaffected
+
+================================================================================

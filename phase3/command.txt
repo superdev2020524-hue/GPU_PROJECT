@@ -1,0 +1,314 @@
+### ============================================================================
+### HOST EFFECT & APPLICATION GUIDE — dlopen/dlsym interception fix
+### ============================================================================
+#
+# WHAT THIS FIX DOES
+# ------------------
+# Changes are GUEST-SIDE ONLY.  No QEMU rebuild, no host mediator rebuild,
+# and no host-side file changes are needed.
+#
+# ROOT CAUSE (confirmed by shim logs):
+#   libvgpu-cuda.so constructor fires (LOADED), but cuInit() is NEVER called.
+#   This means Ollama calls dlopen("libcuda.so.1") and gets a DIFFERENT handle
+#   (not our LD_PRELOAD'd shim), OR dlopen returns NULL.  Either way, the
+#   subsequent dlsym("cuInit") does NOT resolve to our shim's cuInit function.
+#
+# THE FIX:
+#   Add dlopen/dlsym/dlclose interception wrappers to the CUDA shim.
+#   When any code in the process calls dlopen("libcuda.so.1") or
+#   dlopen("libnvidia-ml.so.1"), our wrapper returns a sentinel handle.
+#   When dlsym is called on that sentinel, we resolve from RTLD_DEFAULT
+#   (global scope, which includes our LD_PRELOAD'd symbols).
+#   This technique is standard in CUDA remoting (CRICKET, rCUDA, GVirtuS).
+#   Also adds nvmlDeviceGetBoardPartNumber stub (last missing NVML symbol).
+#
+# HOST MEDIATOR IMPACT
+# --------------------
+# The mediator (mediator_phase3) requires NO changes and NO restart.
+#
+# HOST APPLICATION STEPS
+# ----------------------
+# Nothing to do on the host except verify the mediator is running.
+# All steps below are run FROM the developer machine (not on the host).
+#
+# PRE-CHECK: confirm host mediator is alive
+ssh root@10.25.33.10 'pgrep -a mediator_phase3 && echo "mediator OK" || echo "mediator NOT running"'
+ssh root@10.25.33.10 'grep "HEARTBEAT\|alive\|server socket" /tmp/mediator.log | tail -5'
+
+# ── dlopen/dlsym interception + nvmlDeviceGetBoardPartNumber ─────────────────
+#
+# Root cause: Ollama's Go runtime calls dlopen("libcuda.so.1") which bypasses
+# our LD_PRELOAD'd shim in some glibc configurations. The shim constructor
+# fires (proving LD_PRELOAD works), but cuInit() is never called because the
+# dlsym("cuInit") resolves to a different (or NULL) function pointer.
+#
+# Fix: Override dlopen/dlsym/dlclose in the CUDA shim. Intercepts loads of
+# libcuda.so*, libnvcuda.so*, libnvidia-ml.so* and returns sentinel handles.
+# dlsym on these sentinels resolves via RTLD_DEFAULT (global scope = our shim).
+#
+# Files changed (guest side only — no QEMU rebuild required):
+#   guest-shim/libvgpu_cuda.c  — dlopen/dlsym/dlclose wrappers + dlfcn.h
+#   guest-shim/libvgpu_nvml.c  — nvmlDeviceGetBoardPartNumber stub
+#   guest-shim/install.sh      — -ldl added to gcc link lines
+
+# ── STEP 1: push the three changed guest-shim files ──────────────────────────
+scp phase3/guest-shim/libvgpu_cuda.c  test-3@10.25.33.11:~/phase3/libvgpu_cuda.c
+scp phase3/guest-shim/libvgpu_nvml.c  test-3@10.25.33.11:~/phase3/libvgpu_nvml.c
+scp phase3/guest-shim/install.sh      test-3@10.25.33.11:~/phase3/install.sh
+
+# ── STEP 2: run install.sh in the VM ─────────────────────────────────────────
+ssh test-3@10.25.33.11 'cd ~/phase3 && sudo ./install.sh 2>&1 | tee /tmp/install_out.txt'
+# Verify clean build AND GPU discovery:
+#   [vgpu-shim]   ✓ libvgpu-cuda.so built
+#   [vgpu-shim]   ✓ libvgpu-nvml.so built
+#   [vgpu-shim]   ✓ OLLAMA_LLM_LIBRARY=cuda_v12 (from journal)
+#   [vgpu-shim]   ✓ Ollama GPU discovery: library=cuda_v12   ← TARGET
+
+# ── STEP 3: check shim log for dlopen interception + cuInit ──────────────────
+ssh test-3@10.25.33.11 'ls -lt /tmp/vgpu-shim-*.log 2>/dev/null | head -5'
+ssh test-3@10.25.33.11 'cat /tmp/vgpu-shim-cuda-*.log 2>/dev/null'
+# Expected lines:
+#   [libvgpu-cuda] LOADED (pid=...)
+#   [libvgpu-cuda] cuInit() device found at 0000:00:05.0 ...
+#   [libvgpu-cuda] GPU defaults applied (H100 80GB CC=9.0 VRAM=81920 MB)
+# In journalctl:
+ssh test-3@10.25.33.11 'journalctl -u ollama -n 50 --no-pager | grep -Ei "dlopen|dlsym|cuInit|GPU defaults|inference compute|library"'
+# Expected: dlopen("libcuda.so.1") intercepted, cuInit() succeeds, library=cuda_v12
+
+# ── STEP 4: run an Ollama query and check mediator for CUDA calls ─────────────
+ssh test-3@10.25.33.11 'ollama run llama3.2:1b "Hello from VGPU"'
+ssh root@10.25.33.10 'grep -E "CUDA_CALL|Total processed" /tmp/mediator.log | tail -10'
+# Expected: Total processed grows well beyond the pre-query count.
+# This confirms cuMemAlloc / cuLaunchKernel calls reach the host mediator.
+
+### === FIX: cuDeviceGetPCIBusId + real NVML PCI bus ID + OLLAMA_NUM_GPU=999 ===
+# Root cause: Ollama's GPU discovery matched NVML devices with CUDA devices by
+# PCI bus ID, but our NVML shim returned a fake "00000000:00:00.0" address AND
+# cuDeviceGetPCIBusId was missing from the CUDA shim entirely → library=cpu.
+#
+# Files changed (guest side only — no QEMU rebuild required):
+#   guest-shim/cuda_transport.c   — pci_bdf field + find_vgpu_device() BDF output
+#   guest-shim/cuda_transport.h   — cuda_transport_pci_bdf() declaration
+#   guest-shim/libvgpu_cuda.c     — cuDeviceGetPCIBusId / cuDeviceGetPCIBusId_v2
+#   guest-shim/libvgpu_nvml.c     — nvmlDeviceGetPciInfo_v3 uses real BDF
+#   guest-shim/install.sh         — OLLAMA_NUM_GPU=999 in drop-in; journal verify
+
+### === ROOT-CAUSE FIX: persistent connection reactor in mediator ===
+# The mediator's select() loop only polled listening server sockets.
+# After handle_client_connection() processed the first CUDA message, the
+# accepted client_fd was never added to the select() fd set, so subsequent
+# CUDA messages (e.g. cuInit after nvmlInit) were never read — STATUS=BUSY.
+# Fix: mediator now tracks accepted fds in persistent_fds[] and polls them.
+# No QEMU rebuild required.
+
+# ── STEP 1: push updated mediator source to the XCP-NG host and rebuild ──────
+scp phase3/src/mediator_phase3.c root@10.25.33.10:/root/phase3/src/mediator_phase3.c
+ssh root@10.25.33.10 'cd /root/phase3 && make mediator_phase3 2>&1 | tail -5 && echo BUILD_OK'
+
+# ── STEP 2: restart the mediator ─────────────────────────────────────────────
+ssh root@10.25.33.10 'sudo pkill -x mediator_phase3; sleep 1; cd /root/phase3 && sudo nohup ./mediator_phase3 > /tmp/mediator.log 2>&1 &'
+
+# ── STEP 3: re-run install.sh in the VM — both self-tests should now PASS ────
+ssh test-3@10.25.33.11 'cd ~/phase3 && sudo ./install.sh 2>&1 | tee /tmp/install_out.txt'
+# Expected output to contain:
+#   [self-test] PASS: doorbell→mediator round-trip OK
+#   [ollama-user-test] PASS
+# And mediator log should show:
+#   [PERSIST] fd=XX registered for persistent polling
+#   [cuda-executor] CUDA_CALL_INIT vm=3 — pipeline live  (appears TWICE: nvml + cuda)
+
+# After install.sh completes, look for these messages in /tmp/install_out.txt:
+#  "[ollama-user-test] PASS" → ollama user can open+mmap BAR0 (CAP_SYS_RAWIO works)
+#  "[ollama-user-test] FAIL: open ..." → permissions issue
+#  "[ollama-user-test] FAIL: mmap ..." → CAP_SYS_RAWIO missing (try adding it)
+
+# === CRITICAL: get the Ollama STARTUP journal (GPU detection messages) ===
+# Replace the timestamp with the Ollama restart time shown by install.sh
+ssh test-3@10.25.33.11 "journalctl -u ollama -n 100 --no-pager | grep -Ei 'libvgpu|cuda.transport|LOADED|cuInit|nvml|LLM_LIBRARY|cuda_v12|discovering|inference|Cannot|failed|error' | head -40"
+# Expected with fix working:
+#  "[libvgpu-nvml] LOADED (pid=...)"
+#  "[libvgpu-cuda] LOADED (pid=...)"
+#  "[cuda-transport] Found VGPU-STUB at 0000:00:05.0 (vendor=0x10de ...)"
+#  "[cuda-transport] Connected to VGPU-STUB (vm_id=3 data_path=BAR1)"
+#  "[libvgpu-nvml] nvmlInit() succeeded: NVIDIA H100 80GB HBM3"
+#  "[libvgpu-cuda] cuInit() succeeded"
+#  "inference compute ... library=cuda_v12 ..."   ← GPU selected!
+
+# Then run a query and check mediator:
+ssh test-3@10.25.33.11 'ollama run llama3.2:1b "Hello from GPU"'
+ssh root@10.25.33.10 'tail -20 /var/log/mediator_phase3.log'
+# Expected: Total processed > 1 (Ollama's CUDA calls counted)
+
+# === Manual mmap capability test (run this before deploy to confirm hypothesis) ===
+# If this returns "Permission denied", CAP_SYS_RAWIO fix is needed:
+ssh test-3@10.25.33.11 'sudo -u ollama python3 -c "
+import mmap, os, sys
+path = \"/sys/bus/pci/devices/0000:00:05.0/resource0\"
+try:
+    fd = os.open(path, os.O_RDWR | os.O_SYNC)
+    m = mmap.mmap(fd, 4096, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+    import struct
+    ver = struct.unpack(\"<I\", m[0x20:0x24])[0]
+    print(f\"mmap OK — protocol_ver=0x{ver:08x}\")
+    m.close()
+    os.close(fd)
+except PermissionError as e:
+    print(f\"EPERM: {e}  ← CAP_SYS_RAWIO fix needed\", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f\"ERROR: {e}\", file=sys.stderr)
+    sys.exit(2)
+"'
+
+### === QUICK DEPLOY (runs all steps automatically) ===
+# Run from /home/david/Downloads/gpu :
+bash phase3/deploy_to_host.sh
+
+### === PATCH: force unbuffered I/O + heartbeat in mediator ===
+# Push the updated mediator source to the host and rebuild:
+scp phase3/src/mediator_phase3.c  root@10.25.33.10:/root/phase3/src/mediator_phase3.c
+ssh root@10.25.33.10 'cd /root/phase3 && make host && pkill mediator_phase3; sleep 1; nohup ./mediator_phase3 > /var/log/mediator_phase3.log 2>&1 &'
+# Then re-run the self-test in the VM:
+ssh test-3@10.25.33.11 'cd ~/phase3 && sudo ./install.sh'
+# On host, check the mediator log for connection events:
+ssh root@10.25.33.10 'tail -30 /var/log/mediator_phase3.log'
+
+### === DIAGNOSE: why Ollama still uses CPU after self-test PASSES ===
+# A) Check what the Ollama systemd service actually has in its environment:
+ssh test-3@10.25.33.11 'systemctl show ollama --property=Environment'
+# Expected: includes LD_PRELOAD=.../libvgpu-cuda.so and LimitMEMLOCK=infinity
+
+# B) Check Ollama journal for shim stderr messages — this is the key diagnostic:
+ssh test-3@10.25.33.11 "journalctl -u ollama --since today --no-pager | grep -Ei 'libvgpu|cuda.transport|cuInit|Transport|VGPU|gpu|cuda|nvml|error' | tail -40"
+# If you see "[libvgpu-cuda] cuInit() succeeded" → shim is working; Ollama selects CPU anyway
+# If you see "[libvgpu-cuda] Transport init failed" → resource perms or device issue
+# If you see NOTHING → the shim is not being loaded at all
+
+# C) Show Ollama's library directory structure (reveals runner path):
+ssh test-3@10.25.33.11 'find /usr/local/lib/ollama -type f | sort'
+# Look for the runner binary name and which CUDA libs are in the same dir as the runner
+
+# D) Check what GPU Ollama thinks it has:
+ssh test-3@10.25.33.11 'sudo -u ollama ollama info 2>&1 | head -30'
+
+# E) Direct shim test as the ollama user (most targeted):
+ssh test-3@10.25.33.11 'sudo -u ollama bash -c "
+  LD_PRELOAD=/usr/lib64/libvgpu-cuda.so \
+  LD_LIBRARY_PATH=/usr/lib64 \
+  python3 -c \"import ctypes; lib=ctypes.CDLL(chr(39)+'libcuda.so.1'+chr(39)); print('loaded'); r=lib.cuInit(0); print('cuInit:', r)\"
+" 2>&1'
+# If cuInit: 0 → shim works for ollama user; Ollama runner is the problem
+# If error → transport or permission issue for ollama user
+
+# F) Full unfiltered Ollama journal (no grep — sees ALL messages incl. shim output):
+ssh test-3@10.25.33.11 'journalctl -u ollama --since today --no-pager | tail -60'
+# If you see "[libvgpu-nvml] nvmlInit() succeeded" → NVML shim is loaded
+# If you see NO libvgpu lines → LD_PRELOAD drop-in may not be applied; check:
+ssh test-3@10.25.33.11 'systemctl show ollama --property=Environment'
+ssh test-3@10.25.33.11 'systemctl cat ollama'
+
+# G) Check if Ollama environment has LD_PRELOAD set (quick check):
+ssh test-3@10.25.33.11 'sudo -u ollama printenv LD_PRELOAD LD_LIBRARY_PATH CUDA_VISIBLE_DEVICES 2>/dev/null || echo "not set"'
+
+### === RE-DEPLOY — sandbox override + NVML preload (fixes /sys read-only) ===
+scp phase3/guest-shim/install.sh test-3@10.25.33.11:~/phase3/install.sh
+ssh test-3@10.25.33.11 'cd ~/phase3 && sudo ./install.sh'
+
+# After install.sh, run an Ollama query and check mediator for Ollama CUDA calls:
+ssh test-3@10.25.33.11 'ollama run llama3.2:1b "Hello from VGPU"'
+ssh root@10.25.33.10 'tail -30 /var/log/mediator_phase3.log'
+# Expected: "Total processed: N" where N > 1 (self-test + Ollama calls)
+
+# If still CPU, collect these diagnostics:
+# 1) Confirm sandboxing is the issue — check Ollama service security settings:
+ssh test-3@10.25.33.11 'systemctl cat ollama | grep -E "Protect|Private|ReadOnly|Device|Restrict"'
+# 2) Verify ollama user can access /sys PCI files (this tests outside the service sandbox):
+ssh test-3@10.25.33.11 'sudo -u ollama ls -la /sys/bus/pci/devices/0000:00:05.0/resource0'
+# 3) Test within the ACTUAL systemd sandbox (mimics the service environment):
+ssh test-3@10.25.33.11 'systemd-run --uid=ollama --gid=ollama --same-dir \
+  --property=ProtectKernelTunables=no --property=PrivateDevices=no \
+  --wait -- /usr/lib64/libvgpu-cuda.so 2>&1 || \
+  systemd-run --uid=ollama --gid=ollama --same-dir --wait -- \
+    sh -c "cat /sys/bus/pci/devices/0000:00:05.0/vendor && echo OK" 2>&1'
+# 4) Full Ollama journal for the latest run:
+ssh test-3@10.25.33.11 'journalctl -u ollama --since today --no-pager | tail -40'
+
+### === RE-DEPLOY — stale-socket fix (QEMU) + soname + runner injection ===
+# 1. Push updated vgpu-stub to host and rebuild QEMU
+scp phase3/src/vgpu-stub-enhanced.c root@10.25.33.10:/root/phase3/src/vgpu-stub-enhanced.c
+ssh root@10.25.33.10 'cd /root/phase3 && make qemu'
+
+# 2. Restart the VM so the new QEMU binary is used (stale socket fix takes effect)
+#    (coordinate with XCP-NG host to hard-reset the VM)
+ssh root@10.25.33.10 'xe vm-reboot uuid=$(xe vm-list name-label=test3-HVM-domU --minimal) --force'
+
+# 3. After VM is back up, push updated install.sh and run it:
+scp phase3/guest-shim/install.sh test-3@10.25.33.11:~/phase3/install.sh
+ssh test-3@10.25.33.11 'cd ~/phase3 && sudo ./install.sh'
+
+# 4. Check mediator for connections and CUDA_CALL_INIT from Ollama:
+ssh root@10.25.33.10 'tail -40 /var/log/mediator_phase3.log'
+
+### === VERIFY: Ollama uses VGPU shim (self-test now PASSES) ===
+# 1. In the guest VM, run an Ollama query:
+ssh test-3@10.25.33.11 'ollama run llama3.2:1b "Hello"'
+
+# 2. On the host, check mediator processed at least one CUDA call:
+ssh root@10.25.33.10 'grep -E "CUDA_CALL_INIT|Total processed|CUDA_CALL" /var/log/mediator_phase3.log | tail -20'
+
+# Expected: multiple CUDA_CALL_INIT (one per cuInit), then CUDA_CALL_* for
+# cuModuleLoadData, cuMemAlloc, cuLaunchKernel, etc., and "Total processed: N"
+# after 60 s when the stats timer fires.
+
+### === DIAGNOSTIC — re-run self-test with improved output ===
+# Push updated install.sh (better self-test output) and re-run in VM:
+scp phase3/guest-shim/install.sh  test-3@10.25.33.11:/home/test-3/phase3/install.sh
+ssh test-3@10.25.33.11 'cd ~/phase3 && sudo ./install.sh'
+#
+# Read the self-test result carefully:
+#
+#   "[self-test] STATUS stayed IDLE (0x00)"
+#       → doorbell not dispatched → QEMU binary is OUTDATED (lacks MMIO-ordering fix)
+#       → fix: run "bash phase3/deploy_to_host.sh"  (full QEMU rebuild, 30-45 min)
+#
+#   "[self-test] STATUS stuck BUSY (0x01)"
+#       → doorbell reached stub, sent to mediator, but mediator did not reply
+#       → fix: ensure mediator_phase3 is running on host AND socket path is accessible
+#         ssh root@10.25.33.10 'pgrep -a mediator_phase3 && ls -la /var/xen/qemu/root-90/tmp/'
+#
+#   "[self-test] PASS"
+#       → verify on host after "ollama run llama3.2:1b Hello":
+#         ssh root@10.25.33.10 'grep -E "CUDA_CALL_INIT|Total processed" /var/log/mediator_phase3.log | tail -10'
+
+### === MANUAL STEP-BY-STEP (current fix: mediator persistent reactor) ===
+
+# 1. Push mediator source to XCP-NG host (NO QEMU rebuild needed)
+scp phase3/src/mediator_phase3.c  root@10.25.33.10:/root/phase3/src/mediator_phase3.c
+
+# 2. Rebuild mediator on host
+ssh root@10.25.33.10 'cd /root/phase3 && make mediator_phase3 2>&1 | tail -5 && echo BUILD_OK'
+
+# 3. Restart mediator
+ssh root@10.25.33.10 'sudo pkill -x mediator_phase3; sleep 1; cd /root/phase3 && sudo nohup ./mediator_phase3 > /tmp/mediator.log 2>&1 & echo MEDIATOR_STARTED'
+
+# 4. Re-run install.sh in VM
+ssh test-3@10.25.33.11 'cd ~/phase3 && sudo ./install.sh 2>&1 | tee /tmp/install_out.txt'
+
+# 5. Verify both self-tests pass
+grep -E 'self-test|ollama-user-test' /tmp/install_out.txt
+# Expected:
+#   [self-test] PASS: doorbell→mediator round-trip OK (cuda_result=0)
+#   [ollama-user-test] PASS
+
+# 6. Check mediator log for persistent polling registration
+ssh root@10.25.33.10 'grep -E "PERSIST|CUDA_CALL_INIT|Total processed" /tmp/mediator.log | tail -20'
+# Expected:
+#   [PERSIST] fd=XX registered for persistent polling (slot=0)
+#   [cuda-executor] CUDA_CALL_INIT vm=3 — pipeline live    ← appears 2+ times (nvml + cuda)
+#   [PERSIST] fd=XX registered for persistent polling (slot=0)
+#   [cuda-executor] CUDA_CALL_INIT vm=3 — pipeline live
+
+# 7. Run Ollama query and confirm GPU usage
+ssh test-3@10.25.33.11 'ollama run llama3.2:1b "Say: GPU is working" --nowordwrap'
+ssh root@10.25.33.10 'grep "Total processed" /tmp/mediator.log | tail -3'
+# Expected: Total processed > 1 after ollama run completes

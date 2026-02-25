@@ -1,0 +1,174 @@
+================================================================================
+ALTERNATIVE FILE COPY METHODS (NO SCP REQUIRED)
+================================================================================
+
+Since SCP connections are resetting, here are alternative methods to copy
+the improved libvgpu_cuda.c file to the VM.
+
+================================================================================
+METHOD 1: Pre-generated Script (RECOMMENDED)
+================================================================================
+
+**File:** `/home/david/Downloads/gpu/phase3/copy_to_vm.sh`
+
+This script contains the entire file encoded in base64. When VM is accessible:
+
+```bash
+bash /home/david/Downloads/gpu/phase3/copy_to_vm.sh
+```
+
+**Advantages:**
+- No SCP needed
+- Works even with unstable connections
+- Can retry if connection drops
+- All data is in the script
+
+**How it works:**
+1. Encodes file to base64
+2. Uses SSH heredoc to write base64 data
+3. Decodes on VM side
+4. Writes final file
+
+================================================================================
+METHOD 2: Python Receiver Script
+================================================================================
+
+**File:** `/home/david/Downloads/gpu/phase3/copy_via_python_script.sh`
+
+This method uses a small Python script on the VM to receive the file:
+
+```bash
+bash /home/david/Downloads/gpu/phase3/copy_via_python_script.sh
+```
+
+**Advantages:**
+- Small initial transfer (just the Python script)
+- Main file sent via pipe (no intermediate files)
+- More resilient to connection issues
+
+**How it works:**
+1. Copies small Python receiver script to VM
+2. Encodes file to base64
+3. Pipes base64 to VM via SSH
+4. Python script decodes and writes file
+
+================================================================================
+METHOD 3: Manual Copy (If SSH is Stable)
+================================================================================
+
+If you can SSH into the VM, you can manually copy:
+
+**On local machine:**
+```bash
+base64 /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c > /tmp/libvgpu_cuda.c.b64
+```
+
+**On VM (via SSH):**
+```bash
+# Create directory
+mkdir -p ~/phase3/guest-shim
+
+# Paste base64 data (or use heredoc)
+cat > /tmp/libvgpu_cuda.c.b64 << 'ENDOFFILE'
+[paste base64 data here]
+ENDOFFILE
+
+# Decode and write
+base64 -d /tmp/libvgpu_cuda.c.b64 > ~/phase3/guest-shim/libvgpu_cuda.c
+rm /tmp/libvgpu_cuda.c.b64
+
+# Verify
+wc -l ~/phase3/guest-shim/libvgpu_cuda.c
+ls -lh ~/phase3/guest-shim/libvgpu_cuda.c
+```
+
+================================================================================
+METHOD 4: Split File (For Very Unstable Connections)
+================================================================================
+
+If connections are very unstable, split the file into smaller pieces:
+
+**On local machine:**
+```bash
+# Split file into 50KB chunks
+split -b 50k /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c /tmp/libvgpu_cuda.c.part
+
+# Encode each part
+for part in /tmp/libvgpu_cuda.c.part*; do
+    base64 "$part" > "${part}.b64"
+done
+```
+
+**On VM:**
+```bash
+# Copy each part separately, then combine
+cat /tmp/libvgpu_cuda.c.part*.b64 | base64 -d > ~/phase3/guest-shim/libvgpu_cuda.c
+```
+
+================================================================================
+RECOMMENDED APPROACH
+================================================================================
+
+**When VM is accessible:**
+
+1. **Try Method 1 first** (pre-generated script):
+   ```bash
+   bash /home/david/Downloads/gpu/phase3/copy_to_vm.sh
+   ```
+
+2. **If that fails, try Method 2** (Python receiver):
+   ```bash
+   bash /home/david/Downloads/gpu/phase3/copy_via_python_script.sh
+   ```
+
+3. **If SSH is stable, use Method 3** (manual copy)
+
+4. **For very unstable connections, use Method 4** (split file)
+
+================================================================================
+VERIFICATION
+================================================================================
+
+After copying, verify the file:
+
+```bash
+ssh test-7@10.25.33.17
+
+# Check file exists
+ls -lh ~/phase3/guest-shim/libvgpu_cuda.c
+
+# Check line count (should be ~3510 lines)
+wc -l ~/phase3/guest-shim/libvgpu_cuda.c
+
+# Check first few lines
+head -10 ~/phase3/guest-shim/libvgpu_cuda.c
+
+# Check last few lines
+tail -10 ~/phase3/guest-shim/libvgpu_cuda.c
+
+# Verify it contains the enhanced whitelist
+grep -n "cmdline" ~/phase3/guest-shim/libvgpu_cuda.c | head -3
+```
+
+Expected output should show:
+- File size: ~129K
+- Line count: ~3510
+- Contains "cmdline" in whitelist function
+
+================================================================================
+FILES READY
+================================================================================
+
+✓ `/home/david/Downloads/gpu/phase3/copy_to_vm.sh`
+  - Pre-generated script with base64-encoded file
+  - Ready to run when VM is accessible
+
+✓ `/home/david/Downloads/gpu/phase3/copy_via_python_script.sh`
+  - Alternative method using Python receiver
+  - More resilient to connection issues
+
+✓ `/home/david/Downloads/gpu/phase3/copy_file_via_base64.py`
+  - Generator script (already run)
+  - Can regenerate scripts if needed
+
+================================================================================

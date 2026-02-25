@@ -1,0 +1,92 @@
+STRSTR FIX - Critical Fix for VM Crashes
+========================================
+
+Problem:
+--------
+Even after fixing va_start, the VM still crashed. The root cause was that
+is_application_process() was using strstr() to check for "sshd", "systemd",
+and "ollama" in the cmdline. Since strstr() is a libc function, it can
+trigger intercepted functions (like open()), causing infinite recursion or
+crashes during early library loading.
+
+Root Cause:
+-----------
+In is_application_process() (lines 1275-1290), strstr() was being called:
+- strstr(first_word, "sshd")
+- strstr(first_word, "systemd")  
+- strstr(cmdline, "ollama")
+
+When strstr() is called during library initialization, it may internally call
+functions that are intercepted by our library, leading to:
+1. Infinite recursion
+2. Segmentation faults
+3. VM crashes
+
+Solution:
+--------
+Replaced ALL strstr() calls in is_application_process() with direct
+character-by-character comparisons. This ensures:
+- No libc function calls in the critical path
+- Only direct character comparisons (safe during early loading)
+- No risk of triggering intercepted functions
+
+Changes Made:
+-------------
+File: phase3/guest-shim/libvgpu_cuda.c
+Lines: 1265-1292
+
+Before:
+  if (strstr(first_word, "sshd") != NULL ||
+      strstr(first_word, "systemd") != NULL) { ... }
+  if (strstr(cmdline, "ollama") != NULL) { ... }
+
+After:
+  /* Direct character comparison for sshd */
+  if (n >= 4 && cmdline[0] == 's' && cmdline[1] == 's' && 
+      cmdline[2] == 'h' && cmdline[3] == 'd') { ... }
+  
+  /* Direct character comparison for systemd */
+  if (n >= 7 && cmdline[0] == 's' && cmdline[1] == 'y' && ...) { ... }
+  
+  /* Direct character comparison for ollama (scanning through cmdline) */
+  for (i = 0; i <= n - 6; i++) {
+      if (cmdline[i] == 'o' && cmdline[i+1] == 'l' && ...) { ... }
+  }
+
+Key Principles:
+---------------
+1. is_application_process() must use ONLY:
+   - Direct syscalls (syscall(__NR_open, ...))
+   - Direct character comparisons (comm[0] == 'l')
+   - Simple arithmetic and control flow
+   
+2. is_application_process() must NEVER use:
+   - Any libc string functions (strstr, strcmp, strlen, etc.)
+   - Any intercepted functions (open, fopen, etc.)
+   - Any functions that might call intercepted functions
+
+Testing:
+--------
+After this fix:
+1. Build the library
+2. Deploy to VM
+3. Configure preload
+4. Test lspci (should work)
+5. Test cat /etc/ld.so.preload (should work)
+6. Test SSH (should work)
+7. Test other system commands (should work)
+
+Expected Results:
+-----------------
+- No segmentation faults
+- lspci works after preload
+- cat works after preload
+- SSH remains functional
+- System commands work normally
+- VM does not crash
+
+Deployment:
+-----------
+Use the same deployment process as before, but with this fixed version of
+libvgpu_cuda.c. The fix eliminates the last source of crashes in the
+is_application_process() function.

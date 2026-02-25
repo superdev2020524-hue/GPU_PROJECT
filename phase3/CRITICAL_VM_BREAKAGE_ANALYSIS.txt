@@ -1,0 +1,200 @@
+================================================================================
+CRITICAL VM BREAKAGE ANALYSIS
+================================================================================
+
+DATE: 2026-02-22
+ISSUE: Both test-3 and test-4 VMs have become unresponsive/broken
+SEVERITY: CRITICAL - System-level failures affecting entire VMs
+
+================================================================================
+ROOT CAUSE ANALYSIS
+================================================================================
+
+After analyzing the code and deployment history, several CRITICAL issues have
+been identified that could cause system-wide VM breakage:
+
+1. **cuInit() CALL IN CONSTRUCTOR - HIGHEST RISK**
+   
+   Problem: The constructor calls cuInit() during library load time.
+   
+   Why this is dangerous:
+   - The constructor runs for EVERY process that loads the library
+   - If /etc/ld.so.preload is configured, it runs for ALL processes
+   - This includes critical system processes (systemd, init, etc.)
+   - If cuInit() fails, hangs, or causes issues, it breaks the entire system
+   
+   Specific risks:
+   a) If cuInit() tries to access /sys files that don't exist or are locked
+   b) If it tries to open device files that cause I/O errors
+   c) If it triggers a kernel panic or system call that hangs
+   d) If it causes memory corruption during early system initialization
+   e) If it's called during systemd startup, it could prevent system from booting
+   
+   Evidence:
+   - Both VMs became unresponsive after deployment
+   - Connection resets suggest system-level failures
+   - The constructor runs before any error handling can catch issues
+
+2. **LD.SO.PRELOAD MISCONFIGURATION - HIGH RISK**
+   
+   Problem: If /etc/ld.so.preload contains invalid paths or the password.
+   
+   Why this is dangerous:
+   - /etc/ld.so.preload is loaded by EVERY process on the system
+   - If it contains an invalid library path, ALL processes fail to start
+   - This includes critical system processes (systemd, sshd, etc.)
+   - Once this happens, the system becomes completely unusable
+   
+   Evidence:
+   - We saw errors: "object 'Calvin@123' from /etc/ld.so.preload cannot be preloaded"
+   - This means the password was written to the file instead of the library path
+   - This would cause system-wide failures
+
+3. **NO ISOLATION FROM SYSTEM PROCESSES**
+   
+   Problem: The shim is loaded into ALL processes via /etc/ld.so.preload.
+   
+   Why this is dangerous:
+   - System processes don't need CUDA
+   - Loading CUDA shim into systemd, sshd, etc. is unnecessary and risky
+   - If the shim has any bugs, they affect the entire system
+   - No way to disable it if something goes wrong
+
+4. **CONSTRUCTOR RUNS DURING CRITICAL SYSTEM INIT**
+   
+   Problem: If systemd or init loads the library, constructor runs during boot.
+   
+   Why this is dangerous:
+   - System initialization is fragile
+   - Any failure during boot can prevent system from starting
+   - No recovery mechanism if constructor fails during boot
+   - Could cause kernel panics or boot loops
+
+================================================================================
+CRITICAL FIXES NEEDED
+================================================================================
+
+1. **REMOVE cuInit() FROM CONSTRUCTOR**
+   
+   Solution: Don't call cuInit() in the constructor. Instead:
+   - Call it lazily on first actual CUDA call
+   - This is already implemented in ensure_init()
+   - The constructor should ONLY do minimal logging
+   - No file I/O, no system calls, no device access
+   
+   Why this is safer:
+   - Constructor runs for all processes, but cuInit() only runs when needed
+   - System processes won't trigger CUDA initialization
+   - Only processes that actually use CUDA will initialize
+   - Failures are isolated to the specific process, not system-wide
+
+2. **USE PROCESS-SPECIFIC PRELOAD INSTEAD OF SYSTEM-WIDE**
+   
+   Solution: Don't use /etc/ld.so.preload. Instead:
+   - Use systemd service override with LD_PRELOAD environment variable
+   - Only affects the Ollama service, not entire system
+   - Can be disabled easily if needed
+   - No risk to system processes
+   
+   Alternative: Use a wrapper script that sets LD_PRELOAD only for Ollama
+
+3. **ADD SAFETY CHECKS IN CONSTRUCTOR**
+   
+   Solution: Make constructor as minimal as possible:
+   - Only log that library was loaded
+   - No file I/O (except maybe a simple log file)
+   - No system calls
+   - No device access
+   - No network operations
+   - No mutex operations that could deadlock
+
+4. **ADD RECOVERY MECHANISM**
+   
+   Solution: Create a way to disable the shim if it causes problems:
+   - Keep a backup of /etc/ld.so.preload
+   - Create a recovery script that can be run from console
+   - Document how to disable via systemd override
+   - Provide emergency recovery procedures
+
+================================================================================
+IMMEDIATE ACTIONS REQUIRED
+================================================================================
+
+1. **REMOVE cuInit() FROM CONSTRUCTOR IMMEDIATELY**
+   - This is the highest risk operation
+   - It's causing system-wide failures
+   - The lazy initialization in ensure_init() is sufficient
+
+2. **STOP USING /etc/ld.so.preload**
+   - Use systemd service override instead
+   - Only affects Ollama, not entire system
+   - Much safer and easier to disable
+
+3. **CREATE SAFE DEPLOYMENT PROCEDURE**
+   - Test in isolated environment first
+   - Deploy to non-critical VM
+   - Have recovery plan ready
+   - Monitor system health after deployment
+
+4. **ADD COMPREHENSIVE ERROR HANDLING**
+   - All operations should have timeouts
+   - All failures should be logged
+   - All critical operations should be reversible
+
+================================================================================
+SAFER ALTERNATIVE APPROACH
+================================================================================
+
+Instead of:
+- /etc/ld.so.preload (affects all processes)
+- cuInit() in constructor (runs for all processes)
+
+Use:
+- Systemd service override with LD_PRELOAD (affects only Ollama)
+- Lazy initialization on first CUDA call (only when needed)
+
+This approach:
+✓ Only affects the Ollama service
+✓ Doesn't interfere with system processes
+✓ Can be easily disabled
+✓ Isolated failures don't break the system
+✓ Safer for production use
+
+================================================================================
+RECOMMENDED CODE CHANGES
+================================================================================
+
+1. **libvgpu_cuda.c constructor:**
+   - Remove cuInit() call completely
+   - Keep only minimal logging
+   - Let ensure_init() handle initialization lazily
+
+2. **Deployment:**
+   - Don't modify /etc/ld.so.preload
+   - Use systemd service override:
+     /etc/systemd/system/ollama.service.d/vgpu.conf
+     [Service]
+     Environment="LD_PRELOAD=/usr/lib64/libvgpu-cuda.so"
+
+3. **Recovery script:**
+   - Create script to disable shim if needed
+   - Remove systemd override
+   - Restart Ollama
+
+================================================================================
+CONCLUSION
+================================================================================
+
+The VM breakage is caused by:
+1. cuInit() being called in constructor (runs for all processes)
+2. /etc/ld.so.preload affecting all system processes
+3. No isolation between Ollama and system processes
+
+The fix:
+1. Remove cuInit() from constructor
+2. Use systemd service override instead of /etc/ld.so.preload
+3. Only affect Ollama process, not entire system
+
+This will prevent future VM breakage while maintaining functionality.
+
+================================================================================

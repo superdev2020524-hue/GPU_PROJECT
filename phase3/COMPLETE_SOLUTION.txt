@@ -1,0 +1,225 @@
+================================================================================
+COMPLETE SOLUTION: Making Ollama Recognize vGPU and Use GPU Mode
+================================================================================
+
+STATUS: Fix implemented in source code. Ready for deployment.
+
+================================================================================
+PROBLEM SUMMARY
+================================================================================
+
+Ollama detects the vGPU via NVML (PCI bus ID: 0000:00:05.0) but reports
+library=cpu instead of library=cuda. This happens because:
+
+1. Ollama's GPU discovery matches CUDA devices with NVML devices by PCI bus ID
+2. The matching requires cuInit() to be called BEFORE cuDeviceGetPCIBusId()
+3. If cuInit() isn't called early enough, the matching fails
+4. Result: library=cpu with pci_id=""
+
+================================================================================
+SOLUTION IMPLEMENTED
+================================================================================
+
+Modified libvgpu_cuda.c to call cuInit(0) in the library constructor, ensuring
+CUDA is initialized immediately when the shim library loads, before Ollama's
+discovery logic runs.
+
+File: phase3/guest-shim/libvgpu_cuda.c
+Lines: 1062-1080
+
+The constructor (libvgpu_cuda_on_load) now includes:
+    if (!g_initialized) {
+        fprintf(stderr, "[libvgpu-cuda] Pre-initializing CUDA at load time (pid=%d)\n", (int)pid);
+        CUresult rc = cuInit(0);
+        if (rc == CUDA_SUCCESS) {
+            fprintf(stderr, "[libvgpu-cuda] Pre-initialization succeeded (pid=%d)\n", (int)pid);
+        }
+    }
+
+This ensures cuInit() is called at library load time, before any discovery.
+
+================================================================================
+DEPLOYMENT INSTRUCTIONS
+================================================================================
+
+Since automated deployment via SSH is having connection issues, please run
+these commands manually on the VM:
+
+1. SSH to the VM:
+   ssh test-3@10.25.33.11
+   Password: Calvin@123
+
+2. Navigate to the shim directory:
+   cd ~/phase3/guest-shim
+
+3. Verify the fix is in the source (should show line number):
+   grep -n "Pre-initializing CUDA at load time" libvgpu_cuda.c
+
+4. If the source file doesn't exist or doesn't have the fix, copy it from your
+   local machine:
+   # On your local machine:
+   scp phase3/guest-shim/libvgpu_cuda.c test-3@10.25.33.11:~/phase3/guest-shim/
+
+5. Rebuild the CUDA shim:
+   sudo gcc -shared -fPIC -o /usr/lib64/libvgpu-cuda.so \
+       libvgpu_cuda.c cuda_transport.c \
+       -I../include -I. -ldl -lpthread -O2 -Wall
+
+6. Ensure /etc/ld.so.preload is configured:
+   if ! grep -q "libvgpu-cuda.so" /etc/ld.so.preload; then
+       echo "/usr/lib64/libvgpu-cuda.so" | sudo tee -a /etc/ld.so.preload
+   fi
+
+7. Restart Ollama:
+   sudo systemctl restart ollama
+   sleep 10
+
+8. Verify Ollama is running:
+   systemctl is-active ollama
+
+9. Check for pre-initialization messages:
+   OLLAMA_PID=$(pgrep -f "ollama serve" | head -1)
+   cat /tmp/vgpu-shim-cuda-${OLLAMA_PID}.log | grep -i "pre-initializ"
+
+   You should see:
+   - "[libvgpu-cuda] Pre-initializing CUDA at load time (pid=...)"
+   - "[libvgpu-cuda] Pre-initialization succeeded (pid=...)"
+
+10. Run a test inference:
+    ollama run llama3.2:1b "test"
+
+11. Check library mode:
+    sudo journalctl -u ollama --since "2 minutes ago" | grep -E "library=" | tail -5
+
+    Expected output should show: library=cuda (or library=cuda_v*)
+    If you still see library=cpu, see troubleshooting below.
+
+================================================================================
+AUTOMATED DEPLOYMENT SCRIPT
+================================================================================
+
+A script has been created at: phase3/guest-shim/complete_fix.sh
+
+To use it:
+1. Copy to VM: scp phase3/guest-shim/complete_fix.sh test-3@10.25.33.11:~/
+2. SSH to VM and run: bash ~/complete_fix.sh
+
+The script will:
+- Verify the fix is in source
+- Rebuild the shim
+- Restart Ollama
+- Check for pre-initialization
+- Run a test inference
+- Report the final library mode
+
+All output is saved to: /tmp/vgpu_complete_fix.log
+
+================================================================================
+VERIFICATION CHECKLIST
+================================================================================
+
+After deployment, verify:
+
+□ Source file has "Pre-initializing CUDA at load time" (grep should find it)
+□ Shim library rebuilt successfully (ls -lh /usr/lib64/libvgpu-cuda.so)
+□ /etc/ld.so.preload contains libvgpu-cuda.so
+□ Ollama service is running (systemctl is-active ollama)
+□ Shim log shows "Pre-initialization succeeded"
+□ Ollama logs show "library=cuda" (not "library=cpu")
+□ Test inference runs successfully
+
+Quick verification command:
+  sudo journalctl -u ollama -n 500 | grep -E "library=|Pre-initializ" | tail -10
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+If Ollama still reports library=cpu after deployment:
+
+1. VERIFY SHIM IS LOADING:
+   - Check /etc/ld.so.preload: cat /etc/ld.so.preload
+   - Check shim log: cat /tmp/vgpu-shim-cuda-$(pgrep -f "ollama serve" | head -1).log
+   - Check process maps: sudo cat /proc/$(pgrep -f "ollama serve")/maps | grep vgpu
+
+2. VERIFY cuInit IS BEING CALLED:
+   - Look for "Pre-initializing CUDA at load time" in shim log
+   - Look for "Pre-initialization succeeded" in shim log
+   - If not found, the constructor may not be running
+
+3. CHECK PCI BUS ID MATCHING:
+   - NVML should return: 0000:00:05.0 (or 00000000:00:05.0)
+   - CUDA should return: 0000:00:05.0 (or 00000000:00:05.0)
+   - They must match exactly for Ollama's matching logic
+   - Check with: nvidia-smi (if available) or check /sys filesystem
+
+4. CHECK TRANSPORT CONNECTION:
+   - Verify mediator is running on host
+   - Verify QEMU vGPU-stub device is present
+   - Check Unix socket exists: ls -la /tmp/vgpu-cuda.sock (or configured path)
+
+5. CHECK OLLAMA LOGS FOR ERRORS:
+   sudo journalctl -u ollama -n 1000 | grep -iE "error|fail|cuda|gpu"
+
+6. VERIFY OLLAMA VERSION:
+   ollama --version
+   Some versions may have different discovery logic
+
+7. IF STILL FAILING:
+   - Check if Ollama is using a cached GPU detection result
+   - Try stopping Ollama, clearing any cache, and restarting
+   - Consider using LD_AUDIT interceptor (already implemented)
+   - Consider using force_load_shim wrapper (already implemented)
+
+================================================================================
+ALTERNATIVE APPROACHES (If Main Fix Doesn't Work)
+================================================================================
+
+1. LD_AUDIT INTERCEPTOR:
+   File: phase3/guest-shim/ld_audit_interceptor.c
+   - Intercepts dlopen calls at a lower level than LD_PRELOAD
+   - May be more reliable for Go binaries
+   - Install: See phase3/guest-shim/install_force_load.sh
+
+2. FORCE_LOAD_SHIM WRAPPER:
+   File: phase3/guest-shim/force_load_shim.c
+   - Explicitly dlopens shims with RTLD_GLOBAL before exec
+   - Can be used as wrapper: force_load_shim ollama serve
+   - Install: See phase3/guest-shim/install_force_load.sh
+
+3. SYSTEMD OVERRIDE:
+   Create: /etc/systemd/system/ollama.service.d/override.conf
+   Set Environment or modify ExecStart to use wrapper
+
+4. SOURCE CODE MODIFICATION:
+   Modify Ollama's Go source to ensure proper initialization order
+   (Requires rebuilding Ollama from source)
+
+================================================================================
+FILES MODIFIED/CREATED
+================================================================================
+
+Modified:
+- phase3/guest-shim/libvgpu_cuda.c (added cuInit in constructor)
+
+Created:
+- phase3/guest-shim/complete_fix.sh (deployment script)
+- phase3/guest-shim/full_diagnostic.sh (diagnostic script)
+- phase3/guest-shim/FINAL_DEPLOY.sh (deployment script)
+- phase3/deploy_fix.py (Python deployment script)
+- phase3/DEPLOYMENT_STATUS.txt (status document)
+- phase3/COMPLETE_SOLUTION.txt (this file)
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. Deploy the fix using the instructions above
+2. Verify using the checklist
+3. If library=cuda appears, SUCCESS!
+4. If still library=cpu, follow troubleshooting steps
+5. If issues persist, try alternative approaches listed above
+
+================================================================================
+END OF DOCUMENT
+================================================================================

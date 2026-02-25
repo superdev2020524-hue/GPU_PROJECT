@@ -1,0 +1,105 @@
+================================================================================
+FGETS() PATH LOOKUP FIX - DEPLOYMENT STATUS
+================================================================================
+
+FIX COMPLETED
+-------------
+
+✓ Code fixed in: /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c
+
+Changes made:
+1. track_file() now updates existing FILE* entries instead of always adding new
+2. fgets() and fread() path lookup now searches from end (most recent first)
+3. Better debugging with FILE* pointer logging
+
+DEPLOYMENT STATUS
+-----------------
+
+⚠ Automated deployment failed due to VM connection instability
+   - VM: test-5@10.25.33.15
+   - Issue: Connection reset by peer errors
+   - Multiple retry attempts failed
+
+MANUAL DEPLOYMENT STEPS
+-----------------------
+
+Since automated deployment is unreliable, please run these commands manually:
+
+1. Copy the fixed file:
+   scp /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c \
+       test-5@10.25.33.15:~/phase3/guest-shim/libvgpu_cuda.c
+
+2. SSH to VM:
+   ssh test-5@10.25.33.15
+   (password: Calvin@123)
+
+3. Rebuild shim:
+   cd ~/phase3/guest-shim
+   sudo gcc -shared -fPIC -o /usr/lib64/libvgpu-cuda.so \
+       libvgpu_cuda.c cuda_transport.c \
+       -I../include -I. -ldl -lpthread -O2 -Wall
+
+4. Test device discovery:
+   ls
+   sudo journalctl --since "1 minute ago" | grep -E "Found VGPU|fgets.*returning"
+
+5. Restart Ollama:
+   sudo systemctl restart ollama
+   sleep 25
+
+6. Test inference:
+   timeout 50 ollama run llama3.2:1b "test"
+
+7. Check GPU mode:
+   sudo journalctl -u ollama --since "2 minutes ago" | grep "library="
+
+EXPECTED RESULTS AFTER FIX
+---------------------------
+
+Before fix:
+  - fgets() for /vendor → vendor=0x10de ✓
+  - fgets() for /device → vendor=0x10de ✗ (WRONG - should be device=0x2331)
+  - fgets() for /class → vendor=0x10de ✗ (WRONG - should be class=0x030200)
+  - Result: Device lookup fails
+
+After fix:
+  - fgets() for /vendor → vendor=0x10de ✓
+  - fgets() for /device → device=0x2331 ✓
+  - fgets() for /class → class=0x030200 ✓
+  - Result: Device lookup succeeds: "Found VGPU-STUB at 0000:00:05.0"
+  - cuInit() succeeds
+  - Ollama detects GPU and uses GPU mode
+
+VERIFICATION CHECKLIST
+----------------------
+
+After deployment, verify:
+
+□ Build successful (no errors)
+□ fgets() logs show correct values:
+  - "fgets: returning vendor=0x10de (NVIDIA)"
+  - "fgets: returning device=0x2331 (H100 PCIe)"
+  - "fgets: returning class=0x030200 (3D controller)"
+□ Device discovery succeeds: "Found VGPU-STUB at 0000:00:05.0"
+□ cuInit() succeeds: "Early cuInit() succeeded"
+□ Ollama logs show: "library=cuda"
+
+FILES READY FOR DEPLOYMENT
+---------------------------
+
+✓ /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c (FIXED)
+✓ /home/david/Downloads/gpu/phase3/FGETS_PATH_LOOKUP_FIX.txt (Documentation)
+✓ /home/david/Downloads/gpu/phase3/FIX_FGETS_PATH_LOOKUP.sh (Deployment script)
+
+NEXT STEPS
+----------
+
+1. Manually copy the fixed file to the VM
+2. Rebuild the shim library
+3. Test device discovery
+4. Restart Ollama
+5. Verify GPU mode
+
+The fix is complete and ready - it just needs to be deployed to the VM.
+
+================================================================================

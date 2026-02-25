@@ -43,6 +43,10 @@
 /* Phase 3 DB config library (for VM weight / rate-limit lookups) */
 #include "vgpu_config.h"
 
+/* Phase 3+: CUDA API remoting */
+#include "cuda_protocol.h"
+#include "cuda_executor.h"
+
 /* ====================================================================
  * Constants
  * ==================================================================== */
@@ -82,6 +86,9 @@ static uint64_t g_pool_b_processed = 0;
 static int  g_cuda_busy = 0;
 static pthread_mutex_t g_cuda_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* Phase 3+: CUDA executor for API remoting */
+static cuda_executor_t *g_cuda_executor = NULL;
+
 /* Currently executing entry (for watchdog tracking) */
 static wfq_entry_t g_current_job;
 static int g_has_current_job = 0;
@@ -89,12 +96,32 @@ static int g_has_current_job = 0;
 /* DB connection for looking up VM configs */
 static sqlite3 *g_db = NULL;
 
+/* Connection tracking */
+#define MAX_TRACKED_CONNECTIONS 128
+typedef struct {
+    uint32_t vm_id;
+    int      fd;
+    time_t   connect_time;
+    uint64_t messages_sent;
+    uint64_t messages_received;
+    int      is_active;
+} connection_info_t;
+
+static connection_info_t g_connections[MAX_TRACKED_CONNECTIONS];
+static int g_num_connections = 0;
+static pthread_mutex_t g_connections_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* ====================================================================
  * Forward declarations
  * ==================================================================== */
 static int  setup_socket_server(const char *socket_path);
 static int  setup_admin_socket(void);
+static void track_connection(uint32_t vm_id, int fd);
+static void untrack_connection(int fd);
 static void handle_client_connection(int client_fd);
+static int  handle_persistent_message(int client_fd);
+static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
+                              const uint8_t *payload, uint32_t payload_len);
 static void handle_admin_connection(int client_fd);
 static void dispatch_next_job(void);
 static void execute_job(wfq_entry_t *entry);
@@ -110,26 +137,41 @@ static void signal_handler(int sig)
 
 /* ====================================================================
  * Auto-discover all QEMU chroot directories by scanning /proc
- * for vgpu-stub processes.  (Copied from Phase 2.)
+ * for processes that have the vgpu-cuda device on their cmdline.
+ *
+ * On XCP-NG the QEMU device is "-device vgpu-cuda,...".  The
+ * toolstack (xenopsd) chroots QEMU via the chroot() syscall before
+ * exec, so no "-chroot" flag appears on the command line.  We read
+ * the actual chroot directory from /proc/<pid>/root which is a
+ * symlink to whatever directory the process sees as /.
  * ==================================================================== */
-static int discover_all_qemu_chroots(char *chroots[], int max_chroots)
+static int discover_all_qemu_chroots(char *chroots[], int max_chroots, int verbose)
 {
     DIR *proc_dir;
     struct dirent *entry;
-    char cmdline_path[256];
+    char path_buf[512];
     char cmdline[4096];
+    char chroot_path[512];
     int count = 0;
+    int scanned = 0;
+    int vgpu_found = 0;
 
     proc_dir = opendir("/proc");
-    if (!proc_dir) return 0;
+    if (!proc_dir) {
+        fprintf(stderr, "[DISCOVERY] ERROR: Cannot open /proc: %s\n", strerror(errno));
+        return 0;
+    }
 
     while ((entry = readdir(proc_dir)) != NULL && count < max_chroots) {
+        /* Only look at numeric entries (PIDs) */
         if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
             continue;
 
-        snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%s/cmdline",
-                 entry->d_name);
-        FILE *f = fopen(cmdline_path, "r");
+        scanned++;
+
+        /* Read /proc/<pid>/cmdline */
+        snprintf(path_buf, sizeof(path_buf), "/proc/%s/cmdline", entry->d_name);
+        FILE *f = fopen(path_buf, "r");
         if (!f) continue;
 
         size_t len = fread(cmdline, 1, sizeof(cmdline) - 1, f);
@@ -137,42 +179,74 @@ static int discover_all_qemu_chroots(char *chroots[], int max_chroots)
         if (len == 0) continue;
         cmdline[len] = '\0';
 
+        /* Replace NUL separators with spaces so strstr works */
         for (size_t i = 0; i < len; i++) {
             if (cmdline[i] == '\0') cmdline[i] = ' ';
         }
 
-        if (strstr(cmdline, "vgpu-stub") == NULL)
+        /* We are looking for QEMU processes that loaded our device.
+         * The QEMU type name is "vgpu-cuda" (TYPE_VGPU_STUB in
+         * vgpu-stub-enhanced.c), so the cmdline contains
+         *   -device vgpu-cuda,...
+         * Note: NOT "vgpu-stub" — that is only the C source file name. */
+        if (strstr(cmdline, "vgpu-cuda") == NULL)
             continue;
 
-        char *chroot_arg = strstr(cmdline, "-chroot ");
-        if (chroot_arg) {
-            chroot_arg += strlen("-chroot ");
-            while (*chroot_arg == ' ') chroot_arg++;
-            char *end = strchr(chroot_arg, ' ');
-            size_t path_len = end ? (size_t)(end - chroot_arg)
-                                  : strlen(chroot_arg);
+        vgpu_found++;
 
-            /* Check for duplicates */
-            int duplicate = 0;
-            for (int i = 0; i < count; i++) {
-                if (strlen(chroots[i]) == path_len &&
-                    memcmp(chroots[i], chroot_arg, path_len) == 0) {
-                    duplicate = 1;
-                    break;
-                }
-            }
-            if (duplicate) continue;
+        /* Read the chroot path from /proc/<pid>/root.
+         * For a chrooted process this symlink resolves to the chroot dir.
+         * For a non-chrooted process it resolves to "/". */
+        snprintf(path_buf, sizeof(path_buf), "/proc/%s/root", entry->d_name);
+        ssize_t rl = readlink(path_buf, chroot_path, sizeof(chroot_path) - 1);
+        if (rl < 0) {
+            fprintf(stderr, "[DISCOVERY] WARNING: readlink(%s) failed: %s\n",
+                    path_buf, strerror(errno));
+            continue;
+        }
+        chroot_path[rl] = '\0';
 
-            chroots[count] = malloc(path_len + 1);
-            if (chroots[count]) {
-                memcpy(chroots[count], chroot_arg, path_len);
-                chroots[count][path_len] = '\0';
-                count++;
+        /* Skip non-chrooted processes (root is "/") */
+        if (strcmp(chroot_path, "/") == 0) {
+            fprintf(stderr, "[DISCOVERY] INFO: vgpu-cuda process pid=%s "
+                    "is not chrooted (root=/), skipping\n", entry->d_name);
+            continue;
+        }
+
+        /* Deduplicate — multiple QEMU workers may share a chroot */
+        int duplicate = 0;
+        for (int i = 0; i < count; i++) {
+            if (strcmp(chroots[i], chroot_path) == 0) {
+                duplicate = 1;
+                break;
             }
+        }
+        if (duplicate) continue;
+
+        chroots[count] = strdup(chroot_path);
+        if (chroots[count]) {
+            count++;
+        } else {
+            fprintf(stderr, "[DISCOVERY] WARNING: strdup failed for chroot path\n");
         }
     }
 
     closedir(proc_dir);
+
+    if (verbose) {
+        if (count > 0) {
+            printf("[DISCOVERY] Scanned %d processes, found %d vgpu-cuda process(es), "
+                   "discovered %d unique chroot(s)\n", scanned, vgpu_found, count);
+        } else if (vgpu_found > 0) {
+            fprintf(stderr, "[DISCOVERY] WARNING: Found %d vgpu-cuda process(es) but "
+                    "none were chrooted — socket will be created at %s (fallback)\n",
+                    vgpu_found, VGPU_SOCKET_PATH);
+        } else {
+            printf("[DISCOVERY] Scanned %d processes, no vgpu-cuda QEMU process found yet\n",
+                   scanned);
+        }
+    }
+
     return count;
 }
 
@@ -183,35 +257,81 @@ static int setup_socket_server(const char *socket_path)
 {
     struct sockaddr_un addr;
     int fd;
+    struct stat st;
 
-    unlink(socket_path);
+    /* Remove existing socket if it exists */
+    if (unlink(socket_path) < 0 && errno != ENOENT) {
+        fprintf(stderr, "[SOCKET] WARNING: Failed to unlink existing socket %s: %s\n",
+                socket_path, strerror(errno));
+    }
 
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) { perror("socket"); return -1; }
+    if (fd < 0) {
+        fprintf(stderr, "[SOCKET] ERROR: socket() failed for %s: %s (errno=%d)\n",
+                socket_path, strerror(errno), errno);
+        return -1;
+    }
 
     int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        fprintf(stderr, "[SOCKET] WARNING: setsockopt(SO_REUSEADDR) failed: %s\n",
+                strerror(errno));
+    }
 
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        perror("fcntl"); close(fd); return -1;
+        fprintf(stderr, "[SOCKET] ERROR: fcntl(O_NONBLOCK) failed for %s: %s (errno=%d)\n",
+                socket_path, strerror(errno), errno);
+        close(fd);
+        return -1;
     }
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
 
+    /* Ensure directory exists */
+    char *dir_path = strdup(socket_path);
+    char *last_slash = strrchr(dir_path, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+        if (mkdir(dir_path, 0755) < 0 && errno != EEXIST) {
+            fprintf(stderr, "[SOCKET] WARNING: Failed to create directory %s: %s\n",
+                    dir_path, strerror(errno));
+        }
+    }
+    free(dir_path);
+
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind"); close(fd); return -1;
+        fprintf(stderr, "[SOCKET] ERROR: bind() failed for %s: %s (errno=%d)\n",
+                socket_path, strerror(errno), errno);
+        close(fd);
+        return -1;
     }
 
-    chmod(socket_path, 0777);
+    if (chmod(socket_path, 0666) < 0) {
+        fprintf(stderr, "[SOCKET] WARNING: chmod(0666) failed for %s: %s\n",
+                socket_path, strerror(errno));
+    } else {
+        /* Verify permissions */
+        if (stat(socket_path, &st) == 0) {
+            mode_t mode = st.st_mode & 0777;
+            if ((mode & 0666) != 0666) {
+                fprintf(stderr, "[SOCKET] WARNING: Socket %s has permissions %03o, expected 0666\n",
+                        socket_path, mode);
+            }
+        }
+    }
 
     if (listen(fd, SOCKET_BACKLOG) < 0) {
-        perror("listen"); close(fd); return -1;
+        fprintf(stderr, "[SOCKET] ERROR: listen() failed for %s: %s (errno=%d)\n",
+                socket_path, strerror(errno), errno);
+        close(fd);
+        return -1;
     }
 
-    printf("[SOCKET] Listening on %s\n", socket_path);
+    printf("[SOCKET] Successfully listening on %s (fd=%d, permissions=0666)\n",
+           socket_path, fd);
     return fd;
 }
 
@@ -233,7 +353,7 @@ static int setup_admin_socket(void)
 /* ====================================================================
  * Parse VGPURequest payload (same as Phase 2)
  * ==================================================================== */
-static int parse_vgpu_request(const uint8_t *payload, uint16_t payload_len,
+static int parse_vgpu_request(const uint8_t *payload, uint32_t payload_len,
                               int *num1, int *num2)
 {
     if (payload_len < VGPU_REQUEST_HEADER_SIZE)
@@ -362,7 +482,18 @@ static void cuda_result_callback(int result, void *user_data)
                 entry->vm_id);
     }
 
+    /* Update sent message count */
+    pthread_mutex_lock(&g_connections_lock);
+    for (int i = 0; i < g_num_connections; i++) {
+        if (g_connections[i].fd == entry->client_fd && g_connections[i].is_active) {
+            g_connections[i].messages_sent++;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_connections_lock);
+
     /* Close the client socket */
+    untrack_connection(entry->client_fd);
     close(entry->client_fd);
 
     /* Record metrics */
@@ -483,15 +614,79 @@ static void dispatch_next_job(void)
  *   1. We check the rate limiter and watchdog before accepting
  *   2. We enqueue into the WFQ scheduler instead of the linked list
  * ==================================================================== */
+/* Track a new connection */
+static void track_connection(uint32_t vm_id, int fd)
+{
+    pthread_mutex_lock(&g_connections_lock);
+    
+    /* Find existing entry for this VM or allocate new */
+    int idx = -1;
+    for (int i = 0; i < g_num_connections; i++) {
+        if (g_connections[i].vm_id == vm_id && !g_connections[i].is_active) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0 && g_num_connections < MAX_TRACKED_CONNECTIONS) {
+        idx = g_num_connections++;
+    }
+    
+    if (idx >= 0) {
+        g_connections[idx].vm_id = vm_id;
+        g_connections[idx].fd = fd;
+        g_connections[idx].connect_time = time(NULL);
+        g_connections[idx].messages_sent = 0;
+        g_connections[idx].messages_received = 0;
+        g_connections[idx].is_active = 1;
+    }
+    
+    pthread_mutex_unlock(&g_connections_lock);
+}
+
+/* Remove connection tracking */
+static void untrack_connection(int fd)
+{
+    pthread_mutex_lock(&g_connections_lock);
+    for (int i = 0; i < g_num_connections; i++) {
+        if (g_connections[i].fd == fd && g_connections[i].is_active) {
+            g_connections[i].is_active = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_connections_lock);
+}
+
 static void handle_client_connection(int client_fd)
 {
     uint8_t rx_buf[VGPU_SOCKET_HDR_SIZE + VGPU_SOCKET_MAX_PAYLOAD];
     ssize_t n;
+    struct sockaddr_un peer_addr;
+    socklen_t peer_len = sizeof(peer_addr);
+
+    /* Get peer address for logging */
+    if (getpeername(client_fd, (struct sockaddr *)&peer_addr, &peer_len) == 0) {
+        printf("[CONNECTION] New connection from %s (fd=%d)\n",
+               peer_addr.sun_path[0] ? peer_addr.sun_path : "<abstract>", client_fd);
+    } else {
+        printf("[CONNECTION] New connection (fd=%d, peer info unavailable: %s)\n",
+               client_fd, strerror(errno));
+    }
+    fflush(stdout);
 
     /* Read socket header */
     n = read(client_fd, rx_buf, VGPU_SOCKET_HDR_SIZE);
     if (n < (ssize_t)VGPU_SOCKET_HDR_SIZE) {
-        if (n > 0) fprintf(stderr, "[ERROR] Incomplete header (%zd bytes)\n", n);
+        if (n > 0) {
+            fprintf(stderr, "[ERROR] Incomplete header from fd=%d (%zd/%zu bytes): %s\n",
+                    client_fd, n, VGPU_SOCKET_HDR_SIZE, strerror(errno));
+        } else if (n == 0) {
+            fprintf(stderr, "[ERROR] Connection closed by peer (fd=%d) before header\n",
+                    client_fd);
+        } else {
+            fprintf(stderr, "[ERROR] Read error from fd=%d: %s (errno=%d)\n",
+                    client_fd, strerror(errno), errno);
+        }
+        untrack_connection(client_fd);
         close(client_fd);
         return;
     }
@@ -500,10 +695,24 @@ static void handle_client_connection(int client_fd)
 
     /* Validate magic */
     if (hdr->magic != VGPU_SOCKET_MAGIC) {
-        fprintf(stderr, "[ERROR] Invalid magic: 0x%08x\n", hdr->magic);
+        fprintf(stderr, "[ERROR] Invalid magic: 0x%08x from fd=%d\n", hdr->magic, client_fd);
+        untrack_connection(client_fd);
         close(client_fd);
         return;
     }
+
+    /* Track connection after we know the VM ID */
+    track_connection(hdr->vm_id, client_fd);
+    
+    /* Update message count */
+    pthread_mutex_lock(&g_connections_lock);
+    for (int i = 0; i < g_num_connections; i++) {
+        if (g_connections[i].fd == client_fd && g_connections[i].is_active) {
+            g_connections[i].messages_received++;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_connections_lock);
 
     /* Handle PING */
     if (hdr->msg_type == VGPU_MSG_PING) {
@@ -512,33 +721,87 @@ static void handle_client_connection(int client_fd)
         pong.magic    = VGPU_SOCKET_MAGIC;
         pong.msg_type = VGPU_MSG_PONG;
         pong.vm_id    = hdr->vm_id;
-        write(client_fd, &pong, VGPU_SOCKET_HDR_SIZE);
-        close(client_fd);
-        return;
-    }
-
-    /* Only accept REQUEST messages from vgpu-stub */
-    if (hdr->msg_type != VGPU_MSG_REQUEST) {
-        close(client_fd);
-        return;
-    }
-
-    /* Read payload */
-    if (hdr->payload_len > 0) {
-        n = read(client_fd, rx_buf + VGPU_SOCKET_HDR_SIZE, hdr->payload_len);
-        if (n < 0 || (uint16_t)n < hdr->payload_len) {
-            fprintf(stderr, "[ERROR] Incomplete payload\n");
+        ssize_t sent = write(client_fd, &pong, VGPU_SOCKET_HDR_SIZE);
+        if (sent < 0) {
+            fprintf(stderr, "[PING] Failed to send PONG to vm_id=%u (fd=%d): %s\n",
+                    hdr->vm_id, client_fd, strerror(errno));
+            untrack_connection(client_fd);
             close(client_fd);
-            return;
+        } else {
+            /* Update sent count for PONG */
+            pthread_mutex_lock(&g_connections_lock);
+            for (int i = 0; i < g_num_connections; i++) {
+                if (g_connections[i].fd == client_fd && g_connections[i].is_active) {
+                    g_connections[i].messages_sent++;
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&g_connections_lock);
+        }
+        /* Note: For PING/PONG, we keep the connection open for persistent connections */
+        /* But for one-shot PINGs, we close. The vgpu-stub will reconnect if needed. */
+        close(client_fd);
+        return;
+    }
+
+    /* Accept REQUEST or CUDA_CALL messages from vgpu-stub */
+    if (hdr->msg_type != VGPU_MSG_REQUEST &&
+        hdr->msg_type != VGPU_MSG_CUDA_CALL) {
+        untrack_connection(client_fd);
+        close(client_fd);
+        return;
+    }
+
+    /* Read payload — for CUDA calls, payload may be large */
+    uint8_t *payload_buf = rx_buf + VGPU_SOCKET_HDR_SIZE;
+    uint8_t *alloc_buf = NULL;
+    uint32_t total_payload = hdr->payload_len;
+
+    if (total_payload > 0) {
+        if (total_payload > VGPU_SOCKET_MAX_PAYLOAD) {
+            /* Allocate larger buffer for CUDA payloads */
+            alloc_buf = (uint8_t *)malloc(total_payload);
+            if (!alloc_buf) {
+                fprintf(stderr, "[ERROR] malloc failed for %u byte payload\n",
+                        total_payload);
+                untrack_connection(client_fd);
+                close(client_fd);
+                return;
+            }
+            payload_buf = alloc_buf;
+        }
+
+        /* Read full payload (may require multiple reads) */
+        uint32_t total_read = 0;
+        while (total_read < total_payload) {
+            n = read(client_fd, payload_buf + total_read,
+                     total_payload - total_read);
+            if (n <= 0) {
+                fprintf(stderr, "[ERROR] Incomplete payload (%u/%u)\n",
+                        total_read, total_payload);
+                if (alloc_buf) free(alloc_buf);
+                untrack_connection(client_fd);
+                close(client_fd);
+                return;
+            }
+            total_read += (uint32_t)n;
         }
     }
 
-    /* Parse request */
+    /* Handle CUDA API call */
+    if (hdr->msg_type == VGPU_MSG_CUDA_CALL) {
+        handle_cuda_call(client_fd, hdr, payload_buf, total_payload);
+        if (alloc_buf) free(alloc_buf);
+        return;
+    }
+
+    /* Parse request (legacy vector-add path) */
     int num1, num2;
-    if (parse_vgpu_request(rx_buf + VGPU_SOCKET_HDR_SIZE,
-                           hdr->payload_len, &num1, &num2) != 0) {
+    if (parse_vgpu_request(payload_buf, hdr->payload_len, &num1, &num2) != 0) {
         fprintf(stderr, "[ERROR] Failed to parse request from vm%u\n",
                 hdr->vm_id);
+        if (alloc_buf) free(alloc_buf);
+        untrack_connection(client_fd);
         close(client_fd);
         return;
     }
@@ -546,11 +809,13 @@ static void handle_client_connection(int client_fd)
     /* Validate pool and priority */
     if (hdr->pool_id != 'A' && hdr->pool_id != 'B') {
         fprintf(stderr, "[ERROR] Invalid pool_id: '%c'\n", hdr->pool_id);
+        untrack_connection(client_fd);
         close(client_fd);
         return;
     }
     if (hdr->priority > VGPU_PRIORITY_HIGH) {
         fprintf(stderr, "[ERROR] Invalid priority: %u\n", hdr->priority);
+        untrack_connection(client_fd);
         close(client_fd);
         return;
     }
@@ -601,10 +866,12 @@ static void handle_client_connection(int client_fd)
 
     /* Copy raw payload for pass-through if needed */
     if (hdr->payload_len > 0 && hdr->payload_len <= sizeof(entry.payload)) {
-        memcpy(entry.payload, rx_buf + VGPU_SOCKET_HDR_SIZE,
-               hdr->payload_len);
+        memcpy(entry.payload, payload_buf, hdr->payload_len);
         entry.payload_len = hdr->payload_len;
     }
+
+    /* Free allocated payload buffer if any */
+    if (alloc_buf) free(alloc_buf);
 
     if (wfq_enqueue(&g_scheduler, &entry) != 0) {
         fprintf(stderr, "[ERROR] WFQ queue full for vm%u\n", hdr->vm_id);
@@ -616,6 +883,153 @@ static void handle_client_connection(int client_fd)
 
     /* Try to dispatch immediately if CUDA is idle */
     dispatch_next_job();
+}
+
+/* ====================================================================
+ * Handle a CUDA API call from a vgpu-stub
+ *
+ * This is the new path for CUDA remoting.  The payload contains a
+ * CUDACallHeader followed by optional bulk data.  We forward it to
+ * the CUDA executor, which replays the call on the real GPU, and
+ * send the CUDACallResult back.
+ * ==================================================================== */
+static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
+                              const uint8_t *payload, uint32_t payload_len)
+{
+    if (!g_cuda_executor) {
+        fprintf(stderr, "[ERROR] CUDA executor not initialized\n");
+        untrack_connection(client_fd);
+        close(client_fd);
+        return;
+    }
+
+    if (payload_len < sizeof(CUDACallHeader)) {
+        fprintf(stderr, "[ERROR] CUDA call payload too short (%u < %zu)\n",
+                payload_len, sizeof(CUDACallHeader));
+        untrack_connection(client_fd);
+        close(client_fd);
+        return;
+    }
+
+    /* === Phase 3 isolation checks === */
+
+    /* Check quarantine */
+    if (wd_is_quarantined(&g_watchdog, sock_hdr->vm_id)) {
+        printf("[REJECT] vm=%u quarantined (CUDA call)\n", sock_hdr->vm_id);
+        metrics_record_rejection(&g_metrics, sock_hdr->vm_id);
+        send_rejection(client_fd, sock_hdr->vm_id, sock_hdr->request_id,
+                       sock_hdr->pool_id, sock_hdr->priority,
+                       VGPU_MSG_QUARANTINED);
+        return;
+    }
+
+    /* Check rate limiter */
+    int vm_qd = wfq_vm_queue_depth(&g_scheduler, sock_hdr->vm_id);
+    int rl_result = rl_check(&g_rate_limiter, sock_hdr->vm_id, vm_qd);
+    if (rl_result != RL_ALLOW) {
+        printf("[REJECT] vm=%u rate-limited (CUDA call, code=%d)\n",
+               sock_hdr->vm_id, rl_result);
+        metrics_record_rejection(&g_metrics, sock_hdr->vm_id);
+        send_rejection(client_fd, sock_hdr->vm_id, sock_hdr->request_id,
+                       sock_hdr->pool_id, sock_hdr->priority, VGPU_MSG_BUSY);
+        return;
+    }
+
+    /* Parse the CUDA call header */
+    const CUDACallHeader *cuda_hdr = (const CUDACallHeader *)payload;
+    const void *bulk_data = NULL;
+    uint32_t bulk_len = 0;
+
+    if (payload_len > sizeof(CUDACallHeader)) {
+        bulk_data = payload + sizeof(CUDACallHeader);
+        bulk_len = payload_len - sizeof(CUDACallHeader);
+    }
+
+    /* Execute the CUDA call */
+    CUDACallResult result;
+    uint8_t *result_data = NULL;
+    uint32_t result_cap = 0;
+    uint32_t result_len = 0;
+
+    /* Allocate buffer for potential result data (e.g. cuMemcpyDtoH) */
+    if (cuda_hdr->call_id == CUDA_CALL_MEMCPY_DTOH ||
+        cuda_hdr->call_id == CUDA_CALL_MEMCPY_DTOH_ASYNC ||
+        cuda_hdr->call_id == CUDA_CALL_GET_GPU_INFO) {
+        result_cap = 8 * 1024 * 1024;  /* 8 MB max */
+        result_data = (uint8_t *)malloc(result_cap);
+    }
+
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    int rc = cuda_executor_call(g_cuda_executor,
+                                 cuda_hdr, bulk_data, bulk_len,
+                                 &result, result_data, result_cap,
+                                 &result_len);
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    uint64_t elapsed_us = (uint64_t)(end.tv_sec - start.tv_sec) * 1000000
+                        + (uint64_t)(end.tv_nsec - start.tv_nsec) / 1000;
+
+    /* Record metrics */
+    metrics_record_job(&g_metrics, sock_hdr->vm_id, elapsed_us, elapsed_us);
+
+    /* Send result back to vgpu-stub */
+    VGPUSocketHeader resp_hdr;
+    memset(&resp_hdr, 0, sizeof(resp_hdr));
+    resp_hdr.magic       = VGPU_SOCKET_MAGIC;
+    resp_hdr.msg_type    = VGPU_MSG_CUDA_RESULT;
+    resp_hdr.vm_id       = sock_hdr->vm_id;
+    resp_hdr.request_id  = sock_hdr->request_id;
+    resp_hdr.pool_id     = sock_hdr->pool_id;
+    resp_hdr.priority    = sock_hdr->priority;
+    resp_hdr.payload_len = (uint32_t)(sizeof(CUDACallResult) + result_len);
+
+    struct iovec iov[3];
+    struct msghdr msg;
+    int iov_cnt = 2;
+
+    iov[0].iov_base = &resp_hdr;
+    iov[0].iov_len  = VGPU_SOCKET_HDR_SIZE;
+    iov[1].iov_base = &result;
+    iov[1].iov_len  = sizeof(CUDACallResult);
+
+    if (result_len > 0 && result_data) {
+        iov[2].iov_base = result_data;
+        iov[2].iov_len  = result_len;
+        iov_cnt = 3;
+    }
+
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov    = iov;
+    msg.msg_iovlen = iov_cnt;
+
+    ssize_t sent = sendmsg(client_fd, &msg, MSG_NOSIGNAL);
+    if (sent < 0) {
+        fprintf(stderr, "[ERROR] Failed to send CUDA result: %s\n",
+                strerror(errno));
+    } else {
+        /* Update sent message count */
+        pthread_mutex_lock(&g_connections_lock);
+        for (int i = 0; i < g_num_connections; i++) {
+            if (g_connections[i].fd == client_fd && g_connections[i].is_active) {
+                g_connections[i].messages_sent++;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_connections_lock);
+    }
+
+    if (result_data) free(result_data);
+
+    /* Update stats */
+    g_total_processed++;
+    if (sock_hdr->pool_id == 'A') g_pool_a_processed++;
+    else                           g_pool_b_processed++;
+
+    /* Note: for CUDA calls we don't close client_fd here because
+     * the vgpu-stub maintains a persistent connection */
+    (void)rc;
 }
 
 /* ====================================================================
@@ -732,6 +1146,62 @@ static void handle_admin_connection(int client_fd)
         }
         break;
 
+    case VGPU_ADMIN_SHOW_CONNECTIONS: {
+        pthread_mutex_lock(&g_connections_lock);
+        data_len = snprintf(buf, ADMIN_BUF_SIZE,
+            "=== Active VM Connections ===\n"
+            "Total tracked: %d\n"
+            "Active: ", g_num_connections);
+        
+        int active_count = 0;
+        for (int i = 0; i < g_num_connections; i++) {
+            if (g_connections[i].is_active) {
+                active_count++;
+            }
+        }
+        data_len += snprintf(buf + data_len, ADMIN_BUF_SIZE - data_len,
+            "%d\n\n", active_count);
+        
+        if (active_count > 0) {
+            data_len += snprintf(buf + data_len, ADMIN_BUF_SIZE - data_len,
+                "VM ID | FD  | Connected Since    | Messages (Rx/Tx)\n"
+                "------+-----+--------------------+------------------\n");
+            
+            for (int i = 0; i < g_num_connections; i++) {
+                if (g_connections[i].is_active) {
+                    time_t now = time(NULL);
+                    time_t elapsed = now - g_connections[i].connect_time;
+                    int hours = elapsed / 3600;
+                    int mins = (elapsed % 3600) / 60;
+                    int secs = elapsed % 60;
+                    
+                    data_len += snprintf(buf + data_len, ADMIN_BUF_SIZE - data_len,
+                        "  %3u | %3d | %02d:%02d:%02d ago      | %10lu / %10lu\n",
+                        g_connections[i].vm_id,
+                        g_connections[i].fd,
+                        hours, mins, secs,
+                        (unsigned long)g_connections[i].messages_received,
+                        (unsigned long)g_connections[i].messages_sent);
+                }
+            }
+        } else {
+            data_len += snprintf(buf + data_len, ADMIN_BUF_SIZE - data_len,
+                "No active connections.\n");
+        }
+        
+        data_len += snprintf(buf + data_len, ADMIN_BUF_SIZE - data_len,
+            "\n=== Server Sockets ===\n"
+            "Active servers: %d\n", g_num_servers);
+        
+        for (int i = 0; i < g_num_servers; i++) {
+            data_len += snprintf(buf + data_len, ADMIN_BUF_SIZE - data_len,
+                "  [%d] %s (fd=%d)\n", i + 1, g_socket_paths[i], g_server_fds[i]);
+        }
+        
+        pthread_mutex_unlock(&g_connections_lock);
+        break;
+    }
+
     default:
         data_len = snprintf(buf, ADMIN_BUF_SIZE,
             "ERROR: Unknown admin command 0x%02x\n", req.command);
@@ -823,12 +1293,184 @@ static void print_usage(const char *prog)
 /* ====================================================================
  * Main event loop
  * ==================================================================== */
+/* ====================================================================
+ * Periodic re-discovery: scan for new QEMU chroot sockets.
+ * Called from the main loop every REDISCOVERY_INTERVAL_SEC seconds.
+ * This handles the common case where the mediator starts before VMs.
+ * ==================================================================== */
+#define REDISCOVERY_INTERVAL_SEC  10
+
+static void rediscover_and_setup_sockets(void)
+{
+    char *chroots[MAX_SERVER_SOCKETS];
+    /* verbose=0: suppress per-scan noise; only log truly new sockets below */
+    int num_chroots = discover_all_qemu_chroots(chroots, MAX_SERVER_SOCKETS, 0);
+
+    for (int i = 0; i < num_chroots; i++) {
+        char candidate[512];
+        snprintf(candidate, sizeof(candidate), "%s%s", chroots[i], VGPU_SOCKET_PATH);
+
+        /* Check if we already have a socket for this path */
+        int already_have = 0;
+        for (int j = 0; j < g_num_servers; j++) {
+            if (strcmp(g_socket_paths[j], candidate) == 0) {
+                already_have = 1;
+                break;
+            }
+        }
+
+        if (!already_have && g_num_servers < MAX_SERVER_SOCKETS) {
+            /* Ensure /tmp exists inside the chroot */
+            char tmp_dir[512];
+            snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", chroots[i]);
+            mkdir(tmp_dir, 0755);
+
+            snprintf(g_socket_paths[g_num_servers],
+                     sizeof(g_socket_paths[g_num_servers]),
+                     "%s", candidate);
+
+            g_server_fds[g_num_servers] =
+                setup_socket_server(g_socket_paths[g_num_servers]);
+
+            if (g_server_fds[g_num_servers] >= 0) {
+                printf("[REDISCOVERY] New VM socket: %s (fd=%d)\n",
+                       g_socket_paths[g_num_servers],
+                       g_server_fds[g_num_servers]);
+                g_num_servers++;
+            } else {
+                fprintf(stderr, "[REDISCOVERY] Failed to setup socket %s: %s\n",
+                        candidate, strerror(errno));
+                g_socket_paths[g_num_servers][0] = '\0';
+            }
+        }
+
+        free(chroots[i]);
+    }
+}
+
+/* ====================================================================
+ * handle_persistent_message — service one CUDA request on a reused fd
+ *
+ * The vgpu-stub maintains a persistent Unix socket connection: after the
+ * first CUDA message is handled by handle_client_connection(), subsequent
+ * CUDA calls arrive on the SAME fd.  run_mediator() adds such fds to its
+ * select() set and dispatches here when data is available.
+ *
+ * Returns 1  — keep the fd open and continue polling.
+ * Returns 0  — fd is closed or errored; caller should remove it.
+ * ==================================================================== */
+static int handle_persistent_message(int client_fd)
+{
+    uint8_t hdr_buf[VGPU_SOCKET_HDR_SIZE];
+    ssize_t n;
+
+    /* Read the socket header */
+    n = read(client_fd, hdr_buf, VGPU_SOCKET_HDR_SIZE);
+    if (n == 0) {
+        /* Clean EOF — vgpu-stub closed the connection */
+        printf("[PERSIST] fd=%d: connection closed by peer\n", client_fd);
+        return 0;
+    }
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return 1;  /* spurious wake-up, nothing to read */
+        fprintf(stderr, "[PERSIST] fd=%d: read error: %s\n",
+                client_fd, strerror(errno));
+        return 0;
+    }
+    if (n < (ssize_t)VGPU_SOCKET_HDR_SIZE) {
+        fprintf(stderr, "[PERSIST] fd=%d: incomplete header (%zd/%zu bytes)\n",
+                client_fd, n, VGPU_SOCKET_HDR_SIZE);
+        return 0;
+    }
+
+    VGPUSocketHeader *hdr = (VGPUSocketHeader *)hdr_buf;
+
+    if (hdr->magic != VGPU_SOCKET_MAGIC) {
+        fprintf(stderr, "[PERSIST] fd=%d: bad magic 0x%08x — closing\n",
+                client_fd, hdr->magic);
+        return 0;
+    }
+
+    if (hdr->msg_type != VGPU_MSG_CUDA_CALL) {
+        /* Only CUDA calls are expected on persistent connections.
+         * Any other type (PING, REQUEST, …) is unexpected here. */
+        fprintf(stderr, "[PERSIST] fd=%d: unexpected msg_type=0x%x — closing\n",
+                client_fd, hdr->msg_type);
+        return 0;
+    }
+
+    /* Update per-connection receive counter */
+    pthread_mutex_lock(&g_connections_lock);
+    for (int i = 0; i < g_num_connections; i++) {
+        if (g_connections[i].fd == client_fd && g_connections[i].is_active) {
+            g_connections[i].messages_received++;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_connections_lock);
+
+    /* Read payload — may be large for bulk-data CUDA calls */
+    uint32_t total_payload = hdr->payload_len;
+    uint8_t  inline_buf[VGPU_SOCKET_HDR_SIZE + VGPU_SOCKET_MAX_PAYLOAD];
+    uint8_t *payload_buf = NULL;
+    uint8_t *alloc_buf   = NULL;
+
+    if (total_payload > 0) {
+        if (total_payload <= VGPU_SOCKET_MAX_PAYLOAD) {
+            payload_buf = inline_buf;
+        } else {
+            alloc_buf = (uint8_t *)malloc(total_payload);
+            if (!alloc_buf) {
+                fprintf(stderr, "[PERSIST] fd=%d: malloc(%u) failed\n",
+                        client_fd, total_payload);
+                return 0;
+            }
+            payload_buf = alloc_buf;
+        }
+
+        uint32_t total_read = 0;
+        while (total_read < total_payload) {
+            n = read(client_fd, payload_buf + total_read,
+                     total_payload - total_read);
+            if (n <= 0) {
+                fprintf(stderr, "[PERSIST] fd=%d: incomplete payload "
+                        "(%u/%u bytes)\n", client_fd, total_read, total_payload);
+                if (alloc_buf) free(alloc_buf);
+                return 0;
+            }
+            total_read += (uint32_t)n;
+        }
+    }
+
+    /* Dispatch — blocks until the CUDA executor completes and sends the
+     * response.  handle_cuda_call() does NOT close client_fd on success. */
+    handle_cuda_call(client_fd, hdr, payload_buf, total_payload);
+
+    if (alloc_buf) free(alloc_buf);
+
+    /* Detect whether handle_cuda_call closed the fd (rejection / error paths
+     * call send_rejection() which calls close()).  fcntl() is the most direct
+     * check: it returns -1/EBADF if the fd is no longer valid. */
+    int keep = (fcntl(client_fd, F_GETFD) != -1);
+    return keep;
+}
+
 static void run_mediator(void)
 {
-    time_t last_stats = time(NULL);
+    time_t last_stats     = time(NULL);
+    time_t last_discovery = time(NULL);
+    time_t last_heartbeat = time(NULL);
     fd_set read_fds;
     int max_fd;
     struct timeval timeout;
+
+    /* Persistent client connections: vgpu-stub keeps the socket open across
+     * multiple CUDA calls.  We track accepted fds here and include them in
+     * every select() call so subsequent messages are not missed. */
+#define MAX_PERSISTENT_CLIENTS 64
+    int persistent_fds[MAX_PERSISTENT_CLIENTS];
+    for (int i = 0; i < MAX_PERSISTENT_CLIENTS; i++) persistent_fds[i] = -1;
 
     printf("[MEDIATOR] Starting main loop...\n");
     printf("[MEDIATOR] Listening on %d socket(s) for VM connections\n",
@@ -836,6 +1478,12 @@ static void run_mediator(void)
     if (g_admin_fd >= 0)
         printf("[MEDIATOR] Admin socket active on %s\n",
                VGPU_ADMIN_SOCKET_PATH);
+    /* Log each listening fd so we can verify the right fd is being polled */
+    for (int i = 0; i < g_num_servers; i++) {
+        printf("[MEDIATOR] Server socket[%d]: %s  fd=%d\n",
+               i, g_socket_paths[i], g_server_fds[i]);
+    }
+    fflush(stdout);
 
     while (!g_shutdown) {
         FD_ZERO(&read_fds);
@@ -843,8 +1491,18 @@ static void run_mediator(void)
 
         /* Add all QEMU chroot sockets */
         for (int i = 0; i < g_num_servers; i++) {
+            if (g_server_fds[i] < 0) continue;
             FD_SET(g_server_fds[i], &read_fds);
             if (g_server_fds[i] > max_fd) max_fd = g_server_fds[i];
+        }
+
+        /* Add persistent client fds so we detect subsequent CUDA messages
+         * on the same connection without needing a new accept(). */
+        for (int i = 0; i < MAX_PERSISTENT_CLIENTS; i++) {
+            if (persistent_fds[i] >= 0) {
+                FD_SET(persistent_fds[i], &read_fds);
+                if (persistent_fds[i] > max_fd) max_fd = persistent_fds[i];
+            }
         }
 
         /* Add admin socket */
@@ -865,6 +1523,7 @@ static void run_mediator(void)
 
         /* Accept connections on QEMU chroot sockets */
         for (int i = 0; i < g_num_servers; i++) {
+            if (g_server_fds[i] < 0) continue;
             if (FD_ISSET(g_server_fds[i], &read_fds)) {
                 struct sockaddr_un client_addr;
                 socklen_t client_len = sizeof(client_addr);
@@ -872,9 +1531,36 @@ static void run_mediator(void)
                                        (struct sockaddr *)&client_addr,
                                        &client_len);
                 if (client_fd >= 0) {
-                    printf("[SOCKET] New connection on %s (fd=%d)\n",
-                           g_socket_paths[i], client_fd);
+                    printf("[SOCKET] New connection on %s (fd=%d, server_idx=%d)\n",
+                           g_socket_paths[i], client_fd, i);
+                    fflush(stdout);
                     handle_client_connection(client_fd);
+
+                    /* handle_client_connection() closes client_fd for most
+                     * message types (PING, errors, legacy requests).  For CUDA
+                     * calls it intentionally leaves the fd open so the vgpu-stub
+                     * can reuse the connection.  Detect the open case with fcntl
+                     * and register the fd for persistent polling. */
+                    if (fcntl(client_fd, F_GETFD) != -1) {
+                        int slot = -1;
+                        for (int j = 0; j < MAX_PERSISTENT_CLIENTS; j++) {
+                            if (persistent_fds[j] == -1) { slot = j; break; }
+                        }
+                        if (slot >= 0) {
+                            persistent_fds[slot] = client_fd;
+                            printf("[PERSIST] fd=%d registered for persistent "
+                                   "polling (slot=%d)\n", client_fd, slot);
+                            fflush(stdout);
+                        } else {
+                            fprintf(stderr, "[PERSIST] too many persistent "
+                                    "clients, closing fd=%d\n", client_fd);
+                            untrack_connection(client_fd);
+                            close(client_fd);
+                        }
+                    }
+                } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    fprintf(stderr, "[SOCKET] accept() failed on %s: %s (errno=%d)\n",
+                            g_socket_paths[i], strerror(errno), errno);
                 }
             }
         }
@@ -891,20 +1577,66 @@ static void run_mediator(void)
             }
         }
 
+        /* Service readable persistent client connections.
+         * Each iteration handles ONE message per fd to stay fair. */
+        for (int i = 0; i < MAX_PERSISTENT_CLIENTS; i++) {
+            if (persistent_fds[i] < 0) continue;
+            if (!FD_ISSET(persistent_fds[i], &read_fds)) continue;
+
+            int pfd  = persistent_fds[i];
+            int keep = handle_persistent_message(pfd);
+            if (!keep) {
+                printf("[PERSIST] fd=%d removed from persistent set\n", pfd);
+                fflush(stdout);
+                untrack_connection(pfd);
+                close(pfd);
+                persistent_fds[i] = -1;
+            }
+        }
+
         /* Try to dispatch if CUDA is idle (in case a previous callback
            completed while we were in select) */
         dispatch_next_job();
 
-        /* Periodic stats */
         time_t now = time(NULL);
+
+        /* Periodic stats */
         if (now - last_stats >= 60) {
             print_stats();
             last_stats = now;
+        }
+
+        /* Heartbeat: confirm the main loop is alive and the socket is healthy */
+        if (now - last_heartbeat >= 10) {
+            printf("[HEARTBEAT] alive — %d server socket(s), admin_fd=%d\n",
+                   g_num_servers, g_admin_fd);
+            for (int i = 0; i < g_num_servers; i++) {
+                printf("[HEARTBEAT]   [%d] fd=%d  %s\n",
+                       i, g_server_fds[i], g_socket_paths[i]);
+            }
+            fflush(stdout);
+            last_heartbeat = now;
+        }
+
+        /* Periodic re-discovery: pick up VMs that started after the mediator.
+         * Runs every REDISCOVERY_INTERVAL_SEC seconds. */
+        if (now - last_discovery >= REDISCOVERY_INTERVAL_SEC) {
+            rediscover_and_setup_sockets();
+            last_discovery = now;
         }
     }
 
     /* ---- Shutdown ---- */
     printf("[MEDIATOR] Shutting down...\n");
+
+    /* Close all persistent client connections */
+    for (int i = 0; i < MAX_PERSISTENT_CLIENTS; i++) {
+        if (persistent_fds[i] >= 0) {
+            untrack_connection(persistent_fds[i]);
+            close(persistent_fds[i]);
+            persistent_fds[i] = -1;
+        }
+    }
 
     /* Stop watchdog thread */
     wd_stop(&g_watchdog);
@@ -943,9 +1675,17 @@ int main(int argc, char *argv[])
     int no_db   = 0;
     int no_nvml = 0;
 
+    /* Force unbuffered I/O so log messages are visible immediately even when
+     * stdout/stderr are pipes (e.g. under sudo or nohup redirection).
+     * Without this, libc switches to 8 KB block-buffering when the fd is not
+     * a TTY, and messages like "[SOCKET] New connection on..." never appear
+     * until the buffer fills up. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     printf("===========================================================\n");
-    printf("  MEDIATOR DAEMON v3.0 — Phase 3: WFQ + Isolation + Metrics\n");
-    printf("  Communication: MMIO PCI BAR0 + Unix domain socket\n");
+    printf("  MEDIATOR DAEMON v3.1 — Phase 3+: CUDA API Remoting\n");
+    printf("  Communication: MMIO PCI BAR0/BAR1 + Unix domain socket\n");
     printf("===========================================================\n\n");
 
     /* Parse arguments */
@@ -1016,12 +1756,21 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* 7. CUDA */
+    /* 7. CUDA (legacy vector-add) */
     if (cuda_init() != 0) {
         fprintf(stderr, "[ERROR] Failed to initialize CUDA\n");
         return 1;
     }
     printf("[INIT] CUDA ready\n");
+
+    /* 8. CUDA Executor (Phase 3+: API remoting) */
+    if (cuda_executor_init(&g_cuda_executor) == 0) {
+        printf("[INIT] CUDA API executor ready (remoting enabled)\n");
+    } else {
+        fprintf(stderr, "[WARN] CUDA executor init failed — "
+                "CUDA remoting disabled, legacy mode only\n");
+        g_cuda_executor = NULL;
+    }
 
     /* ---- Setup sockets ---- */
     g_num_servers = 0;
@@ -1042,10 +1791,10 @@ int main(int argc, char *argv[])
     } else {
         char *chroots[MAX_SERVER_SOCKETS];
         int num_chroots = discover_all_qemu_chroots(chroots,
-                                                     MAX_SERVER_SOCKETS);
+                                                     MAX_SERVER_SOCKETS, 1);
 
         if (num_chroots > 0) {
-            printf("[CONFIG] Found %d QEMU VM(s) with vgpu-stub:\n",
+            printf("[CONFIG] Found %d QEMU VM(s) with vgpu-cuda device:\n",
                    num_chroots);
             for (int i = 0; i < num_chroots; i++) {
                 char tmp_dir[512];
@@ -1059,13 +1808,15 @@ int main(int argc, char *argv[])
                 g_server_fds[g_num_servers] =
                     setup_socket_server(g_socket_paths[g_num_servers]);
                 if (g_server_fds[g_num_servers] >= 0) {
-                    printf("  [%d] %s -> %s\n", g_num_servers + 1,
+                    printf("  [%d] %s -> %s (socket created successfully)\n",
+                           g_num_servers + 1,
                            chroots[i],
                            g_socket_paths[g_num_servers]);
                     g_num_servers++;
                 } else {
-                    fprintf(stderr, "[WARN] Failed to setup socket in %s\n",
-                            chroots[i]);
+                    fprintf(stderr, "[WARN] Failed to setup socket in %s -> %s: %s\n",
+                            chroots[i], g_socket_paths[g_num_servers],
+                            strerror(errno));
                 }
                 free(chroots[i]);
             }
@@ -1097,6 +1848,10 @@ int main(int argc, char *argv[])
     wfq_destroy(&g_scheduler);
     rl_destroy(&g_rate_limiter);
     metrics_destroy(&g_metrics);
+    if (g_cuda_executor) {
+        cuda_executor_destroy(g_cuda_executor);
+        g_cuda_executor = NULL;
+    }
     cuda_cleanup();
     if (g_db) vgpu_db_close(g_db);
 

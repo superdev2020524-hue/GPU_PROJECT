@@ -1,0 +1,71 @@
+CACHE AND CAT FIX - Additional Safety Improvements
+==================================================
+
+Problem:
+--------
+Even after removing strstr(), `cat` was still crashing. Analysis showed:
+1. We weren't explicitly checking for common system tools like `cat`, `bash`, `sh`
+2. We were caching negative results, which could cause issues if cached incorrectly
+
+Solution:
+---------
+1. Added explicit checks for common system tools:
+   - `cat` (3 chars: 'c' 'a' 't')
+   - `bash` (4 chars: 'b' 'a' 's' 'h')
+   - `sh` (2 chars: 's' 'h')
+
+2. Made caching more conservative:
+   - Only cache positive results (when ollama is found)
+   - Never cache negative results - always recheck for non-ollama processes
+   - This prevents any possibility of caching a wrong value
+
+Changes Made:
+-------------
+File: phase3/guest-shim/libvgpu_cuda.c
+
+1. Added system process checks (lines ~1232-1242):
+   - Check for 'cat'
+   - Check for 'bash'
+   - Check for 'sh'
+
+2. Modified caching logic (lines ~1307-1315):
+   - Only cache if result == 1 (ollama found)
+   - Never cache result == 0 (non-ollama)
+   - Always recheck for non-ollama processes
+
+Rationale:
+----------
+- Whitelist approach: Only intercept ollama, everything else is excluded
+- Conservative caching: Only cache positive matches, never negative
+- Explicit exclusions: Common system tools explicitly checked
+- Safety first: Default to not intercepting if anything is uncertain
+
+Testing:
+--------
+After this fix:
+1. Build the library
+2. Deploy to VM
+3. Configure preload
+4. Test `cat /etc/ld.so.preload` (should work)
+5. Test `lspci` (should work)
+6. Test `bash` commands (should work)
+7. Test SSH (should work)
+8. Test other system commands (should work)
+
+Expected Results:
+-----------------
+- No segmentation faults
+- `cat` works after preload
+- `lspci` works after preload
+- `bash`/`sh` work after preload
+- SSH remains functional
+- System commands work normally
+- VM does not crash
+- Only ollama processes are intercepted
+
+Status:
+-------
+- Code fixed and ready
+- Waiting for working VM to test
+- Previous VM (test-8) crashed during testing
+- Need console access to remove preload or new VM

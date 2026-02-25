@@ -1,0 +1,173 @@
+================================================================================
+SAFE DEPLOYMENT GUIDE - PREVENTING VM BREAKAGE
+================================================================================
+
+CRITICAL LESSONS LEARNED:
+- Both test-3 and test-4 VMs became unresponsive after deployment
+- Root cause: cuInit() in constructor + /etc/ld.so.preload affecting all processes
+- This caused system-wide failures affecting critical system processes
+
+================================================================================
+SAFE DEPLOYMENT APPROACH
+================================================================================
+
+DO NOT USE:
+✗ /etc/ld.so.preload (affects ALL processes on the system)
+✗ cuInit() in constructor (runs for ALL processes that load the library)
+
+USE INSTEAD:
+✓ Systemd service override with LD_PRELOAD (affects only Ollama)
+✓ Lazy initialization in ensure_init() (only when CUDA is actually used)
+
+================================================================================
+STEP-BY-STEP SAFE DEPLOYMENT
+================================================================================
+
+1. BUILD THE SHIM (with fixed constructor - no cuInit() call)
+   ```bash
+   cd ~/phase3/guest-shim
+   sudo gcc -shared -fPIC -o /usr/lib64/libvgpu-cuda.so \
+     libvgpu_cuda.c cuda_transport.c \
+     -I../include -I. -ldl -lpthread -O2 -Wall
+   ```
+
+2. VERIFY THE BUILD
+   ```bash
+   file /usr/lib64/libvgpu-cuda.so
+   # Should show: ELF 64-bit LSB shared object
+   ```
+
+3. CONFIGURE SYSTEMD SERVICE OVERRIDE (NOT /etc/ld.so.preload!)
+   ```bash
+   sudo mkdir -p /etc/systemd/system/ollama.service.d
+   cat << EOF | sudo tee /etc/systemd/system/ollama.service.d/vgpu.conf
+   [Service]
+   Environment="LD_PRELOAD=/usr/lib64/libvgpu-cuda.so"
+   EOF
+   ```
+
+4. RELOAD SYSTEMD AND RESTART OLLAMA
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart ollama
+   sleep 15
+   ```
+
+5. VERIFY SHIM IS LOADED (only in Ollama process, not system processes)
+   ```bash
+   OLLAMA_PID=$(pgrep -f "ollama serve" | head -1)
+   sudo cat /proc/$OLLAMA_PID/maps | grep libvgpu-cuda
+   # Should show the library is loaded
+   ```
+
+6. VERIFY SYSTEM PROCESSES ARE NOT AFFECTED
+   ```bash
+   # Check systemd (should NOT have shim loaded)
+   sudo cat /proc/1/maps | grep libvgpu-cuda
+   # Should show nothing (empty)
+   
+   # Check sshd (should NOT have shim loaded)
+   SSHD_PID=$(pgrep -f "sshd" | head -1)
+   sudo cat /proc/$SSHD_PID/maps | grep libvgpu-cuda
+   # Should show nothing (empty)
+   ```
+
+7. TEST INFERENCE AND CHECK GPU MODE
+   ```bash
+   timeout 50 ollama run llama3.2:1b "test"
+   sudo journalctl -u ollama --since "2 minutes ago" | grep "library=" | tail -5
+   # Should show: library=cuda
+   ```
+
+================================================================================
+RECOVERY PROCEDURE (IF SOMETHING GOES WRONG)
+================================================================================
+
+If the system becomes unresponsive:
+
+1. **Via console (if VM console is accessible):**
+   ```bash
+   # Remove systemd override
+   sudo rm /etc/systemd/system/ollama.service.d/vgpu.conf
+   sudo systemctl daemon-reload
+   sudo systemctl restart ollama
+   ```
+
+2. **If /etc/ld.so.preload was accidentally used:**
+   ```bash
+   # Clear it (via console)
+   sudo bash -c "echo '' > /etc/ld.so.preload"
+   # Or remove the file
+   sudo rm /etc/ld.so.preload
+   # Reboot if necessary
+   sudo reboot
+   ```
+
+3. **Emergency recovery script (create before deployment):**
+   ```bash
+   #!/bin/bash
+   # emergency_recovery.sh
+   sudo rm -f /etc/systemd/system/ollama.service.d/vgpu.conf
+   sudo bash -c "echo '' > /etc/ld.so.preload"
+   sudo systemctl daemon-reload
+   sudo systemctl restart ollama
+   ```
+
+================================================================================
+WHY THIS APPROACH IS SAFER
+================================================================================
+
+1. **Systemd Override vs /etc/ld.so.preload:**
+   - Systemd override: Only affects Ollama service
+   - /etc/ld.so.preload: Affects ALL processes (dangerous!)
+
+2. **Lazy Initialization vs Constructor cuInit():**
+   - Lazy init: Only runs when CUDA is actually used
+   - Constructor cuInit(): Runs for ALL processes that load library (dangerous!)
+
+3. **Isolation:**
+   - System processes (systemd, sshd, etc.) are not affected
+   - Only Ollama process loads and uses the shim
+   - Failures are isolated to Ollama, not system-wide
+
+4. **Easy Recovery:**
+   - Can disable by removing systemd override
+   - No need to modify system-wide configuration
+   - Can be done without console access (via SSH if still working)
+
+================================================================================
+VERIFICATION CHECKLIST
+================================================================================
+
+Before considering deployment successful:
+
+[ ] Shim library built successfully
+[ ] Systemd override created (NOT /etc/ld.so.preload)
+[ ] Ollama restarted successfully
+[ ] Shim loaded in Ollama process (verified via /proc/PID/maps)
+[ ] System processes (systemd, sshd) do NOT have shim loaded
+[ ] Ollama reports library=cuda in logs
+[ ] System remains responsive and stable
+[ ] SSH access still works
+[ ] No system-wide errors in logs
+
+================================================================================
+SUMMARY
+================================================================================
+
+The VM breakage was caused by:
+1. cuInit() in constructor running for all processes
+2. /etc/ld.so.preload affecting all system processes
+
+The fix:
+1. Remove cuInit() from constructor (use lazy init instead)
+2. Use systemd service override instead of /etc/ld.so.preload
+3. Only affect Ollama process, not entire system
+
+This approach is:
+✓ Safer (isolated to one process)
+✓ Easier to disable (remove one file)
+✓ Won't break system processes
+✓ Can be deployed without risk of system-wide failure
+
+================================================================================

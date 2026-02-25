@@ -4,13 +4,18 @@
 # All source files live under phase3/ — no cross-directory dependencies.
 #
 # Builds:
-#   mediator_phase3   — host-side GPU mediation daemon with WFQ, rate limiter,
-#                       watchdog, metrics, NVML, and admin socket
-#   vgpu-admin        — admin CLI (C binary, uses libvgpu_config + sqlite)
+#   mediator_phase3    — host-side GPU mediation daemon with WFQ, rate limiter,
+#                        watchdog, metrics, NVML, CUDA executor, and admin socket
+#   vgpu-admin         — admin CLI (C binary, uses libvgpu_config + sqlite)
 #   vm_client_enhanced — guest-side MMIO client with Phase 3 retry logic
+#
+# Guest shim libraries (built separately, installed inside VM):
+#   libvgpu-cuda.so    — CUDA Driver API shim (replaces libcuda.so)
+#   libvgpu-nvml.so    — NVML shim (replaces libnvidia-ml.so)
 #
 # Usage:
 #   make              — build all host binaries
+#   make guest        — build guest shim libraries (libvgpu-cuda.so, libvgpu-nvml.so)
 #   make client       — build vm_client_enhanced only (for guest deployment)
 #   make install      — install binaries and DB schema
 #   make clean        — remove build artefacts
@@ -28,8 +33,9 @@ NVCC       ?= nvcc
 NVCC_FLAGS = -O2 -arch=sm_90 -x cu      # sm_90 = H100
 
 # Local directories (everything is inside phase3/)
-INC_DIR = include
-SRC_DIR = src
+INC_DIR    = include
+SRC_DIR    = src
+SHIM_DIR   = guest-shim
 
 # Include path — single local directory + CUDA
 INCLUDES = -I$(INC_DIR) -I$(CUDA_INC)
@@ -43,6 +49,7 @@ QEMU_SPEC      = $(RPM_SPECS)/qemu.spec
 QEMU_STUB_SRC  = $(SRC_DIR)/vgpu-stub-enhanced.c
 QEMU_STUB_RPM  = $(RPM_SOURCES)/vgpu-stub.c
 QEMU_PROTO_RPM = $(RPM_SOURCES)/vgpu_protocol.h
+QEMU_CUDA_PROTO_RPM = $(RPM_SOURCES)/cuda_protocol.h
 
 # ---- Phase 3 module sources ------------------------------------------------
 P3_SRCS = $(SRC_DIR)/scheduler_wfq.c \
@@ -52,6 +59,10 @@ P3_SRCS = $(SRC_DIR)/scheduler_wfq.c \
           $(SRC_DIR)/watchdog.c
 
 P3_OBJS = $(P3_SRCS:.c=.o)
+
+# ---- CUDA executor (host-side CUDA API replay engine) ----------------------
+CUDA_EXEC_SRC = $(SRC_DIR)/cuda_executor.c
+CUDA_EXEC_OBJ = $(SRC_DIR)/cuda_executor.o
 
 # ---- Mediator (host) -------------------------------------------------------
 MEDIATOR_SRC  = $(SRC_DIR)/mediator_phase3.c
@@ -75,10 +86,18 @@ ADMIN_BIN = vgpu-admin
 CLIENT_SRC = $(SRC_DIR)/vm_client_enhanced.c
 CLIENT_BIN = vm_client_enhanced
 
+# ---- Guest shim libraries --------------------------------------------------
+SHIM_CUDA_SRC     = $(SHIM_DIR)/libvgpu_cuda.c
+SHIM_NVML_SRC     = $(SHIM_DIR)/libvgpu_nvml.c
+SHIM_TRANSPORT_SRC= $(SHIM_DIR)/cuda_transport.c
+SHIM_CUDA_LIB     = $(SHIM_DIR)/libvgpu-cuda.so
+SHIM_NVML_LIB     = $(SHIM_DIR)/libvgpu-nvml.so
+SHIM_INCLUDES     = -I$(INC_DIR) -I$(SHIM_DIR)
+
 # ============================================================================
 # Targets
 # ============================================================================
-.PHONY: all host client clean install migrate help
+.PHONY: all host guest client clean install migrate help
 
 all: host
 
@@ -89,12 +108,24 @@ host: $(MEDIATOR_BIN) $(ADMIN_BIN)
 	@echo "  $(ADMIN_BIN)        — admin CLI"
 	@echo ""
 
+guest: $(SHIM_CUDA_LIB) $(SHIM_NVML_LIB)
+	@echo ""
+	@echo "Guest shim libraries built:"
+	@echo "  $(SHIM_CUDA_LIB)  — CUDA Driver API shim (replaces libcuda.so)"
+	@echo "  $(SHIM_NVML_LIB)  — NVML shim (replaces libnvidia-ml.so)"
+	@echo ""
+	@echo "Deploy to guest VM:"
+	@echo "  scp $(SHIM_DIR)/libvgpu-cuda.so $(SHIM_DIR)/libvgpu-nvml.so \\"
+	@echo "      $(SHIM_DIR)/install.sh guest-vm:/tmp/vgpu/"
+	@echo "  ssh guest-vm 'sudo /tmp/vgpu/install.sh'"
+	@echo ""
+
 client: $(CLIENT_BIN)
 	@echo "Guest binary built: $(CLIENT_BIN)"
 
 # ---- Mediator ---------------------------------------------------------------
-$(MEDIATOR_BIN): $(MEDIATOR_OBJ) $(P3_OBJS) $(CONFIG_OBJ) $(CUDA_OBJ)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -L$(CUDA_LIB) -lcudart -lcuda
+$(MEDIATOR_BIN): $(MEDIATOR_OBJ) $(P3_OBJS) $(CONFIG_OBJ) $(CUDA_OBJ) $(CUDA_EXEC_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -L$(CUDA_LIB) -lcudart -lcuda -lnvidia-ml
 	@echo "[LINK] $@"
 
 # ---- vgpu-admin CLI --------------------------------------------------------
@@ -107,12 +138,30 @@ $(CLIENT_BIN): $(CLIENT_SRC) $(INC_DIR)/vgpu_protocol.h
 	$(CC) $(CFLAGS) -I$(INC_DIR) -o $@ $(CLIENT_SRC)
 	@echo "[LINK] $@"
 
+# ---- Guest shim libraries (no CUDA SDK needed — pure userspace) ------------
+$(SHIM_CUDA_LIB): $(SHIM_CUDA_SRC) $(SHIM_TRANSPORT_SRC) $(SHIM_DIR)/cuda_transport.h \
+                  $(SHIM_DIR)/gpu_properties.h $(INC_DIR)/cuda_protocol.h
+	$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
+		-o $@ $(SHIM_CUDA_SRC) $(SHIM_TRANSPORT_SRC) -lpthread
+	@echo "[SHIM] $@"
+
+$(SHIM_NVML_LIB): $(SHIM_NVML_SRC) $(SHIM_TRANSPORT_SRC) $(SHIM_DIR)/cuda_transport.h \
+                  $(SHIM_DIR)/gpu_properties.h $(INC_DIR)/cuda_protocol.h
+	$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
+		-o $@ $(SHIM_NVML_SRC) $(SHIM_TRANSPORT_SRC) -lpthread
+	@echo "[SHIM] $@"
+
 # ---- Compile rules ----------------------------------------------------------
 
 # All .c files under src/ use the same include path
 $(SRC_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 	@echo "[CC]   $<"
+
+# CUDA executor (uses CUDA Driver API — needs CUDA SDK)
+$(CUDA_EXEC_OBJ): $(CUDA_EXEC_SRC) $(INC_DIR)/cuda_executor.h $(INC_DIR)/cuda_protocol.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	@echo "[CC]   $< (CUDA executor)"
 
 # CUDA helper (nvcc — extension is .c but contains CUDA kernels)
 $(CUDA_OBJ): $(CUDA_SRC)
@@ -140,6 +189,12 @@ install: host
 	@echo "To initialise or migrate the database:"
 	@echo "  sqlite3 $(DB_PATH) < $(ETC_PREFIX)/init_db.sql"
 	@echo "  sqlite3 $(DB_PATH) < $(ETC_PREFIX)/migrate_phase3.sql"
+	@echo ""
+	@echo "To deploy guest shim libraries into a VM:"
+	@echo "  make guest"
+	@echo "  scp guest-shim/libvgpu-cuda.so guest-shim/libvgpu-nvml.so \\"
+	@echo "      guest-shim/install.sh <guest-vm>:/tmp/vgpu/"
+	@echo "  ssh <guest-vm> 'sudo /tmp/vgpu/install.sh --with-ollama'"
 
 # ---- Database migration shortcut -------------------------------------------
 migrate:
@@ -149,19 +204,27 @@ migrate:
 
 # ---- Clean ------------------------------------------------------------------
 clean:
-	rm -f $(P3_OBJS) $(MEDIATOR_OBJ) $(CONFIG_OBJ) $(ADMIN_OBJ) $(CUDA_OBJ)
+	rm -f $(P3_OBJS) $(MEDIATOR_OBJ) $(CONFIG_OBJ) $(ADMIN_OBJ) $(CUDA_OBJ) $(CUDA_EXEC_OBJ)
 	rm -f $(MEDIATOR_BIN) $(ADMIN_BIN) $(CLIENT_BIN)
+	rm -f $(SHIM_CUDA_LIB) $(SHIM_NVML_LIB)
 	@echo "Clean."
 
 # ---- Help -------------------------------------------------------------------
 help:
 	@echo "Phase 3 Build Targets:"
 	@echo "  make          — build mediator_phase3 + vgpu-admin (host)"
+	@echo "  make guest    — build guest shim libraries (libvgpu-cuda.so, libvgpu-nvml.so)"
 	@echo "  make client   — build vm_client_enhanced (guest)"
 	@echo "  make install  — install binaries + schema to system paths"
 	@echo "  make migrate  — run Phase 3 DB schema migration"
 	@echo "  make clean    — remove build artefacts"
-	@echo "  make qemu     — build QEMU with vgpu-stub device"
+	@echo "  make qemu     — build QEMU with vgpu-cuda device"
+	@echo ""
+	@echo "Guest Shim:"
+	@echo "  The 'guest' target builds CUDA/NVML shim libraries that are installed"
+	@echo "  inside the guest VM. These replace libcuda.so and libnvidia-ml.so to"
+	@echo "  intercept CUDA/NVML calls and forward them to the host via the VGPU-STUB"
+	@echo "  PCI device. Use guest-shim/install.sh to deploy inside the VM."
 	@echo ""
 	@echo "Variables:"
 	@echo "  CUDA_PATH=/usr/local/cuda   — CUDA toolkit location"
@@ -193,6 +256,10 @@ qemu-check:
 	fi
 	@if [ ! -f "$(INC_DIR)/vgpu_protocol.h" ]; then \
 		echo "ERROR: vgpu_protocol.h not found: $(INC_DIR)/vgpu_protocol.h"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(INC_DIR)/cuda_protocol.h" ]; then \
+		echo "ERROR: cuda_protocol.h not found: $(INC_DIR)/cuda_protocol.h"; \
 		exit 1; \
 	fi
 	@echo "  Verifying source file integrity..."
@@ -264,6 +331,8 @@ qemu-prepare: qemu-check
 	@echo "  ✓ Copied $(QEMU_STUB_SRC) → $(QEMU_STUB_RPM)"
 	@cp "$(INC_DIR)/vgpu_protocol.h" "$(QEMU_PROTO_RPM)"
 	@echo "  ✓ Copied $(INC_DIR)/vgpu_protocol.h → $(QEMU_PROTO_RPM)"
+	@cp "$(INC_DIR)/cuda_protocol.h" "$(QEMU_CUDA_PROTO_RPM)"
+	@echo "  ✓ Copied $(INC_DIR)/cuda_protocol.h → $(QEMU_CUDA_PROTO_RPM)"
 	@echo "  Verifying file integrity..."
 	@if ! grep -q 'connect(fd,' "$(QEMU_STUB_RPM)"; then \
 		echo "  ✗ ERROR: File corruption detected in $(QEMU_STUB_RPM)"; \
@@ -358,23 +427,40 @@ qemu-integrate: qemu-prepare
 	else \
 		echo "  ✓ Source4 already present"; \
 	fi
+	@if ! grep -q "Source5: cuda_protocol.h" "$(QEMU_SPEC)"; then \
+		echo "  Adding Source5 line for cuda_protocol.h..."; \
+		sed -i '/^Source4:/a Source5: cuda_protocol.h' "$(QEMU_SPEC)"; \
+		echo "  ✓ Added Source5: cuda_protocol.h"; \
+	else \
+		echo "  ✓ Source5 already present"; \
+	fi
 	@if ! grep -q "cp -a %{SOURCE4}" "$(QEMU_SPEC)"; then \
 		echo "  Adding protocol header copy to spec..."; \
 		if grep -q "cp -a %{SOURCE3}" "$(QEMU_SPEC)"; then \
 			sed -i '/cp -a %{SOURCE3} hw\/misc\/vgpu-stub.c/a \
-cp -a %{SOURCE4} hw/misc/vgpu_protocol.h' "$(QEMU_SPEC)"; \
-			echo "  ✓ Added copy of vgpu_protocol.h to hw/misc/"; \
+cp -a %{SOURCE4} hw/misc/vgpu_protocol.h\
+cp -a %{SOURCE5} hw/misc/cuda_protocol.h' "$(QEMU_SPEC)"; \
+			echo "  ✓ Added copy of vgpu_protocol.h and cuda_protocol.h to hw/misc/"; \
 		else \
 			sed -i '/tar xzf.*SOURCE2/a \
 \
-# Add vgpu-stub device v2 (MMIO communication)\
+# Add vgpu device (MMIO + CUDA remoting)\
 cp -a %{SOURCE3} hw/misc/vgpu-stub.c\
 cp -a %{SOURCE4} hw/misc/vgpu_protocol.h\
+cp -a %{SOURCE5} hw/misc/cuda_protocol.h\
 echo "obj-y += vgpu-stub.o" >> hw/misc/Makefile.objs' "$(QEMU_SPEC)"; \
-			echo "  ✓ Added full vgpu-stub integration block"; \
+			echo "  ✓ Added full vgpu integration block"; \
 		fi; \
 	else \
 		echo "  ✓ Protocol header copy already in spec"; \
+	fi
+	@if ! grep -q "cp -a %{SOURCE5}" "$(QEMU_SPEC)"; then \
+		echo "  Adding cuda_protocol.h copy to spec..."; \
+		sed -i '/cp -a %{SOURCE4} hw\/misc\/vgpu_protocol.h/a \
+cp -a %{SOURCE5} hw/misc/cuda_protocol.h' "$(QEMU_SPEC)"; \
+		echo "  ✓ Added copy of cuda_protocol.h to hw/misc/"; \
+	else \
+		echo "  ✓ cuda_protocol.h copy already in spec"; \
 	fi
 	@if ! grep -q "vgpu-stub.o" "$(QEMU_SPEC)"; then \
 		sed -i '/cp -a %{SOURCE4} hw\/misc\/vgpu_protocol.h/a \
@@ -393,8 +479,10 @@ echo "obj-y += vgpu-stub.o" >> hw/misc/Makefile.objs' "$(QEMU_SPEC)"; \
 	@echo "Verifying spec file..."
 	@echo -n "  Source3: "; { grep "Source3: vgpu-stub.c" "$(QEMU_SPEC)" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
 	@echo -n "  Source4: "; { grep "Source4: vgpu_protocol.h" "$(QEMU_SPEC)" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
+	@echo -n "  Source5: "; { grep "Source5: cuda_protocol.h" "$(QEMU_SPEC)" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
 	@echo -n "  Copy stub: "; { grep "vgpu-stub.c" "$(QEMU_SPEC)" | grep "cp" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
-	@echo -n "  Copy header: "; { grep "vgpu_protocol.h" "$(QEMU_SPEC)" | grep "cp" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
+	@echo -n "  Copy vgpu_protocol: "; { grep "vgpu_protocol.h" "$(QEMU_SPEC)" | grep "cp" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
+	@echo -n "  Copy cuda_protocol: "; { grep "cuda_protocol.h" "$(QEMU_SPEC)" | grep "cp" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
 	@echo -n "  Makefile: "; { grep "vgpu-stub.o" "$(QEMU_SPEC)" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
 	@echo -n "  Werror: "; { grep "disable-werror" "$(QEMU_SPEC)" | head -1 | sed 's/[\\]$$//' || echo "MISSING!"; }
 
@@ -422,7 +510,7 @@ qemu-build: qemu-integrate
 qemu-install: qemu-build
 	@echo "Installing QEMU RPM..."
 	@echo "  ⚠  This step requires root privileges and will install QEMU system-wide"
-	@echo "  ⚠  Ensure all VMs using vgpu-stub are stopped before installing"
+	@echo "  ⚠  Ensure all VMs using the vgpu device are stopped before installing"
 	@RPM_FILE=$$(ls -1 "$(RPM_BUILD)/RPMS/x86_64/qemu-"*.rpm 2>/dev/null | head -1); \
 	if [ -z "$$RPM_FILE" ]; then \
 		echo "ERROR: No RPM file found. Build may have failed."; \
@@ -439,8 +527,8 @@ qemu-install: qemu-build
 		QEMU_BIN="/usr/lib64/xen/bin/qemu-system-i386"; \
 		if [ -x "$$QEMU_BIN" ]; then \
 			echo -n "    QEMU version: "; $$QEMU_BIN --version 2>/dev/null | head -1; \
-			echo -n "    vgpu-stub device: "; \
-			if $$QEMU_BIN -device help 2>/dev/null | grep -q "vgpu-stub"; then \
+			echo -n "    vgpu-cuda device: "; \
+			if $$QEMU_BIN -device help 2>/dev/null | grep -q "vgpu-cuda"; then \
 				echo "✓ AVAILABLE"; \
 			else \
 				echo "✗ NOT FOUND"; \
@@ -459,9 +547,9 @@ qemu: qemu-build
 	@echo ""
 	@echo "Next steps:"
 	@echo "  1. Install QEMU RPM: make qemu-install"
-	@echo "  2. Configure a test VM with vgpu-stub:"
+	@echo "  2. Configure a test VM with vgpu-cuda:"
 	@echo "     xe vm-param-set uuid=<VM_UUID> \\"
-	@echo "       platform:device-model-args=\"-device vgpu-stub,pool_id=B,priority=high,vm_id=200\""
+	@echo "       platform:device-model-args=\"-device vgpu-cuda,pool_id=B,priority=high,vm_id=200\""
 	@echo "  3. Start the VM and verify the device appears in lspci"
 	@echo "  4. Start the mediator daemon on dom0"
 
@@ -479,6 +567,10 @@ qemu-clean:
 	@if [ -f "$(QEMU_PROTO_RPM)" ]; then \
 		echo "  Removing copied vgpu_protocol.h..."; \
 		rm -f "$(QEMU_PROTO_RPM)"; \
+	fi
+	@if [ -f "$(QEMU_CUDA_PROTO_RPM)" ]; then \
+		echo "  Removing copied cuda_protocol.h..."; \
+		rm -f "$(QEMU_CUDA_PROTO_RPM)"; \
 	fi
 	@if [ -d "$(RPM_BUILD)/RPMS" ]; then \
 		echo "  Removing built RPM files..."; \

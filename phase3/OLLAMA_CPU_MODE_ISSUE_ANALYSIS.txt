@@ -1,0 +1,141 @@
+================================================================================
+OLLAMA CPU MODE ISSUE - ANALYSIS AND FIX
+================================================================================
+
+DATE: 2026-02-23
+ISSUE: Ollama reports library=cpu with empty pci_id="" despite whitelist fix
+STATUS: Whitelist improved, needs deployment and verification
+
+================================================================================
+CURRENT STATUS
+================================================================================
+
+✓ **lspci works** - No crashes, whitelist working for system processes
+✓ **Shim built** - Library exists and is configured
+✓ **Preload configured** - /etc/ld.so.preload set correctly
+✗ **Ollama reports library=cpu** - GPU discovery not working
+
+From logs:
+```
+library=cpu compute="" name=cpu description=cpu libdirs=ollama driver="" pci_id="" type=""
+```
+
+This means Ollama is not discovering the GPU device.
+
+================================================================================
+ROOT CAUSE ANALYSIS
+================================================================================
+
+The whitelist approach is working (lspci doesn't crash), but Ollama is not
+getting file interception. Possible reasons:
+
+1. **Process Name Mismatch**
+   - Whitelist checks `/proc/self/comm` for "ollama"
+   - But process might be named "ollama serve" or "ollama runner"
+   - `/proc/self/comm` only shows the first 15 characters and may be truncated
+
+2. **Subprocess Issue**
+   - Ollama spawns "ollama runner" subprocess for discovery
+   - Subprocess might not match whitelist if comm is different
+   - LD_PRELOAD should be inherited, but process name check might fail
+
+3. **File Interception Not Triggering**
+   - Even if process is detected, file interception might not be working
+   - PCI file path matching might be incorrect
+   - File tracking might be failing
+
+================================================================================
+FIX IMPLEMENTED
+================================================================================
+
+**Enhanced Whitelist Detection:**
+
+1. **Check /proc/self/comm** (process name)
+   - Matches if contains "ollama"
+
+2. **Also check /proc/self/cmdline** (full command line)
+   - More reliable - catches "ollama serve", "ollama runner", etc.
+   - Handles null-separated format correctly
+   - Matches if contains "ollama"
+
+This dual-check approach ensures we catch:
+- Main process: "ollama" or "ollama serve"
+- Subprocess: "ollama runner"
+- Any process with "ollama" in command line
+
+**Code Changes:**
+```c
+/* Check comm first */
+if (comm[0] && strstr(comm, "ollama") != NULL) {
+    result = 1;
+}
+
+/* Also check cmdline for subprocesses */
+if (result == 0) {
+    char cmdline[512] = {0};
+    int fd = syscall(__NR_open, "/proc/self/cmdline", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = syscall(__NR_read, fd, cmdline, sizeof(cmdline) - 1);
+        if (n > 0) {
+            cmdline[n] = '\0';
+            /* Replace nulls with spaces for strstr */
+            for (int i = 0; i < n && i < sizeof(cmdline) - 1; i++) {
+                if (cmdline[i] == '\0') cmdline[i] = ' ';
+            }
+            if (strstr(cmdline, "ollama") != NULL) {
+                result = 1;
+            }
+        }
+        syscall(__NR_close, fd);
+    }
+}
+```
+
+================================================================================
+DEPLOYMENT STEPS
+================================================================================
+
+1. **Copy improved file:**
+   scp /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c test-7@10.25.33.17:~/phase3/guest-shim/libvgpu_cuda.c
+
+2. **Rebuild:**
+   cd ~/phase3/guest-shim
+   sudo gcc -shared -fPIC -o /usr/lib64/libvgpu-cuda.so libvgpu_cuda.c cuda_transport.c -I../include -I. -ldl -lpthread -O2
+
+3. **Restart Ollama:**
+   sudo systemctl restart ollama
+   sleep 25
+
+4. **Verify GPU mode:**
+   journalctl -u ollama -n 200 | grep -i "library="
+   # Should show: library=gpu or library=cuda
+   # NOT: library=cpu
+
+5. **If still CPU mode, check:**
+   - Process name: cat /proc/$(pgrep -f ollama | head -1)/comm
+   - Cmdline: cat /proc/$(pgrep -f ollama | head -1)/cmdline
+   - Shim loaded: cat /proc/$(pgrep -f ollama | head -1)/maps | grep libvgpu-cuda
+
+================================================================================
+ALTERNATIVE: DEBUG MODE
+================================================================================
+
+If the enhanced whitelist still doesn't work, we can add debug logging to see:
+1. What process names are being checked
+2. Whether whitelist is matching
+3. Whether file interception is being triggered
+4. What PCI files are being accessed
+
+This would help identify the exact issue.
+
+================================================================================
+EXPECTED RESULT AFTER FIX
+================================================================================
+
+After deploying the enhanced whitelist:
+- lspci should still work (no crashes)
+- Ollama should report: library=gpu or library=cuda
+- pci_id should be populated: pci_id="0000:00:05.0"
+- GPU discovery should succeed
+
+================================================================================

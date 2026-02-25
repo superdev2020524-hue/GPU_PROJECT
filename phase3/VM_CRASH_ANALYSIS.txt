@@ -1,0 +1,54 @@
+VM CRASH ANALYSIS - test-9
+===========================
+
+Status: VM crashed again during deployment
+Issue: `cat /etc/ld.so.preload` causes segmentation fault
+
+What We Know:
+-------------
+1. We have explicit checks for 'cat' in is_application_process() (line 1252)
+2. We have re-entrancy protection
+3. We have conservative caching (only cache positive results)
+4. We use direct syscalls to read /proc/self/comm
+5. All early returns clear the re-entrancy flag
+
+But the VM still crashes when `cat` tries to read /etc/ld.so.preload.
+
+Possible Root Causes:
+---------------------
+1. `syscall()` itself might be problematic during early library loading
+2. Reading /proc/self/comm might fail in unexpected ways
+3. The check might be happening too late (after something already crashed)
+4. There might be a race condition or memory corruption
+5. The library might be getting loaded in a way that causes issues
+
+What We've Tried:
+-----------------
+1. ✓ Removed va_start/va_end from system process path
+2. ✓ Removed strstr() calls (using direct character comparisons)
+3. ✓ Added explicit checks for cat, bash, sh, lspci, sshd, systemd, init
+4. ✓ Added re-entrancy protection
+5. ✓ Fixed cache check logic (only check == 1)
+6. ✓ Made caching conservative (only cache positive results)
+7. ✓ All early returns clear flags
+
+But the VM still crashes.
+
+Next Steps:
+-----------
+1. Need to investigate if syscall() is safe during early library loading
+2. May need to use inline assembly for syscalls instead
+3. May need to avoid reading /proc/self/comm entirely and use a different approach
+4. May need to use signal handlers to catch crashes
+5. May need to test on a VM with console access to see exact crash location
+
+Current State:
+--------------
+- Code has all safety fixes applied
+- But VM still crashes
+- Need further investigation
+
+VM Recovery:
+------------
+test-9 needs console access to remove preload:
+  sudo sh -c "echo > /etc/ld.so.preload"

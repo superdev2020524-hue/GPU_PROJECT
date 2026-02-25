@@ -1,0 +1,53 @@
+================================================================================
+ROOT CAUSE ANALYSIS: lspci CRASH PERSISTENCE
+================================================================================
+
+ISSUE: Despite multiple fixes, lspci continues to crash after preload is configured.
+
+FIXES ATTEMPTED:
+1. ✓ Whitelist check happens FIRST (before dlsym())
+2. ✓ Direct character comparisons (no string functions)
+3. ✓ Explicit lspci exclusion with early return
+4. ✓ Removed TLS (__thread) - using simple static variable
+5. ✓ __libc_open to avoid dlsym() for system processes
+6. ✓ Only cache on successful check
+
+BUT lspci STILL CRASHES.
+
+POSSIBLE ROOT CAUSES:
+
+1. **The check itself might be crashing**
+   - Reading /proc/self/comm during early library loading might be problematic
+   - Even syscalls might cause issues during initialization
+   - The check might be called before the system is ready
+
+2. **dlsym() for system processes is still problematic**
+   - Even with __libc_open, fallback to dlsym() might trigger interception
+   - dlsym() internally might use functions we're intercepting
+
+3. **Static variable initialization**
+   - Static variables for real function pointers might cause issues
+   - Their initialization might trigger file operations
+
+4. **Library loading order**
+   - The library might be loaded in a way that causes issues
+   - Constructor might be running at the wrong time
+
+5. **The check is working, but something else crashes**
+   - Maybe the crash is from a different function we're intercepting
+   - Or maybe it's from the constructor or initialization code
+
+NEXT STEPS TO TRY:
+
+1. **Make check even simpler** - Just check first 2 characters, return immediately
+2. **Avoid dlsym() entirely for system processes** - Use only __libc_* functions
+3. **Make check happen in constructor** - Cache result before any functions are called
+4. **Add more system process exclusions** - Maybe lspci spawns subprocesses?
+5. **Test with minimal interception** - Only intercept one function to isolate the issue
+
+CRITICAL INSIGHT:
+The fact that lspci crashes even with explicit exclusion suggests the check itself
+might be the problem, OR the check is working but we're still doing something that
+causes a crash (like calling dlsym()).
+
+================================================================================

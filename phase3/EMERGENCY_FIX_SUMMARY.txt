@@ -1,0 +1,43 @@
+================================================================================
+EMERGENCY FIX: SYSCALL-BASED SOLUTION
+================================================================================
+
+ROOT CAUSE:
+Even with whitelist check, calling dlsym() for system processes triggers
+file operations that get intercepted, causing crashes.
+
+SOLUTION:
+For system processes, use DIRECT SYSCALLS instead of libc functions.
+This completely bypasses libc and our own interception.
+
+CHANGES MADE:
+1. open() - uses syscall(__NR_open, ...) for system processes
+2. openat() - uses syscall(__NR_openat, ...) for system processes  
+3. stat() - uses syscall(__NR_stat, ...) for system processes
+4. lstat() - uses syscall(__NR_lstat, ...) for system processes
+5. access() - uses syscall(__NR_access, ...) for system processes
+6. fopen() - uses __libc_fopen() if available, fallback to dlsym()
+
+WHITELIST CHECK:
+- Still happens FIRST (before any operations)
+- Catches "ls*" processes (lspci, ls, etc.) with 2-char check
+- Returns immediately for system processes
+- Uses simple static variable (no TLS)
+
+DEPLOYMENT:
+1. If VM is accessible, run: ./QUICK_FIX_DEPLOY.sh
+2. Or manually:
+   - Remove preload: sudo sh -c "echo > /etc/ld.so.preload"
+   - Copy fixed libvgpu_cuda.c
+   - Rebuild shim
+   - Test lspci before preload
+   - Configure preload
+   - Test lspci after preload (CRITICAL)
+   - Verify SSH works
+
+EXPECTED RESULT:
+- lspci should NOT crash
+- SSH should remain working
+- Ollama should work in GPU mode
+
+================================================================================

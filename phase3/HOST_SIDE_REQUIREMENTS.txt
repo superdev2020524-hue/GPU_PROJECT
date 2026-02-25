@@ -1,0 +1,148 @@
+================================================================================
+HOST-SIDE REQUIREMENTS FOR OLLAMA SHIM INJECTION
+================================================================================
+
+Date: $(date)
+Status: Guest-side solutions implemented, host-side verification needed
+
+================================================================================
+CURRENT SITUATION
+================================================================================
+
+The guest-side shim libraries (libvgpu-cuda.so, libvgpu-nvml.so) are functional
+but Ollama (Go binary) is not loading them via standard LD_PRELOAD mechanisms.
+
+Multiple injection methods have been implemented on the guest VM:
+1. /etc/ld.so.preload (system-wide, affects all processes)
+2. LD_AUDIT interceptor library
+3. force_load_shim wrapper program
+4. Updated systemd service configuration
+
+================================================================================
+HOST-SIDE VERIFICATION NEEDED
+================================================================================
+
+1. MEDIATOR STATUS
+   - Verify mediator_phase3 is running on host
+   - Check /var/log/mediator_phase3.log for activity
+   - Ensure mediator socket is accessible: /var/vgpu/mediator.sock
+   - Command: pgrep -a mediator_phase3
+
+2. QEMU VGPU-STUB DEVICE
+   - Verify vgpu-cuda device is configured in VM
+   - Check QEMU command line includes: -device vgpu-cuda,...
+   - Verify device appears in guest: lspci | grep NVIDIA
+   - PCI device should be: 10de:2331 (NVIDIA H100)
+
+3. VM CONFIGURATION
+   - Verify VM is registered in vgpu_config.db
+   - Check VM has correct pool assignment and priority
+   - Command: vgpu-admin show-vms
+
+4. NETWORK CONNECTIVITY
+   - Ensure host can SSH to guest VM (for deployment)
+   - Verify no firewall blocking mediator socket communication
+
+================================================================================
+NO HOST-SIDE CODE CHANGES REQUIRED
+================================================================================
+
+All solutions are guest-side only. The host mediator and QEMU vgpu-stub device
+should work as-is once the guest shims are properly loaded.
+
+However, if the guest shims still don't load after implementing all guest-side
+methods, we may need to investigate:
+
+1. QEMU vgpu-stub MMIO communication
+   - Check if doorbell writes from guest are reaching mediator
+   - Verify mediator is processing CUDA_CALL_INIT messages
+   - Check mediator logs for connection events
+
+2. Mediator CUDA executor
+   - Verify CUDA executor is initialized
+   - Check for CUDA driver errors in mediator logs
+   - Ensure physical GPU is accessible to mediator
+
+================================================================================
+TESTING PROCEDURE
+================================================================================
+
+After guest-side installation:
+
+1. On guest VM:
+   - Restart Ollama service: sudo systemctl restart ollama
+   - Check logs: journalctl -u ollama -f | grep -i "libvgpu\|cuda\|gpu"
+   - Run test: ollama run llama3.2:1b "test"
+   - Verify GPU detection: ollama info | grep -i "library\|gpu"
+
+2. On host:
+   - Monitor mediator: tail -f /var/log/mediator_phase3.log
+   - Look for CUDA_CALL_INIT messages from guest
+   - Check for "Total processed" counter incrementing
+
+3. Expected results:
+   - Guest: Ollama reports library=cuda_v12 (not library=cpu)
+   - Guest: cuInit() succeeds, GPU properties visible
+   - Host: Mediator logs show CUDA calls from guest VM
+   - Host: "Total processed" counter increases with Ollama activity
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+If shims still don't load:
+
+1. Check /etc/ld.so.preload on guest:
+   - Should contain paths to libvgpu-cuda.so and libvgpu-nvml.so
+   - Verify files exist at those paths
+   - Test: ldd /usr/bin/ls (should show shims loading)
+
+2. Check systemd service:
+   - Verify ExecStart uses force_load_shim or LD_AUDIT
+   - Check Environment variables are set
+   - Review service logs: systemctl status ollama
+
+3. Check shim constructor logs:
+   - Look for "[libvgpu-cuda] LOADED" messages
+   - Check /tmp/vgpu-shim-cuda-*.log files
+   - Verify constructor is firing
+
+4. Test manual loading:
+   - LD_PRELOAD=/usr/lib64/libvgpu-cuda.so /usr/local/bin/ollama info
+   - Should show shim loading messages
+
+================================================================================
+NEXT STEPS IF GUEST-SIDE FAILS
+================================================================================
+
+If all guest-side methods fail, we may need:
+
+1. Binary patching of Ollama executable
+   - Modify Ollama binary to load shims directly
+   - Requires reverse engineering Go binary format
+   - High complexity, last resort
+
+2. Kernel-level interception
+   - Use eBPF or kernel modules to intercept dlopen
+   - Requires root access and kernel development
+   - Very complex, security implications
+
+3. Source code modification
+   - Modify Ollama source to use shims
+   - Requires rebuilding Ollama from source
+   - Most reliable but requires source access
+
+================================================================================
+FILES DEPLOYED TO GUEST
+================================================================================
+
+1. /etc/ld.so.preload - System-wide library preload
+2. /usr/lib64/libldaudit_cuda.so - LD_AUDIT interceptor
+3. /usr/local/bin/force_load_shim - Wrapper program
+4. Updated /etc/systemd/system/ollama.service - Service config
+
+All files are deployed via install_force_load.sh script.
+
+================================================================================
+END OF DOCUMENT
+================================================================================
