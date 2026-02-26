@@ -169,12 +169,17 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
         return -1;
     }
 
+    /* CRITICAL: Set skip flag at the VERY START of find_vgpu_device()
+     * This ensures files are read with real values, not intercepted values
+     * This is needed because find_vgpu_device() might be called directly
+     * without going through cuda_transport_init() or cuda_transport_discover() */
+    write(2, "[cuda-transport] FORCE: find_vgpu_device() STARTED - setting skip flag\n", 72);
+    libvgpu_set_skip_interception(1);
+    write(2, "[cuda-transport] FORCE: Skip flag set to 1 in find_vgpu_device()\n", 65);
+    
     int device_count = 0;
     fprintf(stderr, "[cuda-transport] DEBUG: Starting device scan...\n");
     fflush(stderr);
-    /* CRITICAL: Force immediate output using write() syscall to verify function is called
-     * This bypasses any stderr buffering or redirection issues */
-    write(2, "[cuda-transport] FORCE: find_vgpu_device() STARTED\n", 52);
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
         device_count++;
@@ -287,6 +292,8 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
         strncpy(g_discovered_bdf, entry->d_name, sizeof(g_discovered_bdf) - 1);
         g_discovered_bdf[sizeof(g_discovered_bdf) - 1] = '\0';
         closedir(dir);
+        /* Re-enable interception after successful discovery */
+        libvgpu_set_skip_interception(0);
         return 0;
     }
 
@@ -296,6 +303,8 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
             "class=0x%06x)\n",
             device_count, VGPU_VENDOR_ID, VGPU_DEVICE_ID, VGPU_CLASS);
     closedir(dir);
+    /* Re-enable interception after discovery */
+    libvgpu_set_skip_interception(0);
     return -1;
 }
 
@@ -454,14 +463,31 @@ static int setup_shmem(cuda_transport_t *t)
  * ================================================================ */
 int cuda_transport_init(cuda_transport_t **tp)
 {
+    /* CRITICAL: Force immediate output to verify function is called */
+    write(2, "[cuda-transport] FORCE: cuda_transport_init() STARTED\n", 54);
+    
     char res0_path[512], res1_path[512];
     char pci_bdf[64] = {0};
     cuda_transport_t *t;
+
+    /* CRITICAL: Disable PCI file interception BEFORE calling find_vgpu_device()
+     * This ensures we read real values from /sys, not intercepted values
+     * Same fix as in cuda_transport_discover() */
+    write(2, "[cuda-transport] FORCE: About to set skip flag to 1\n", 52);
+    libvgpu_set_skip_interception(1);
+    write(2, "[cuda-transport] FORCE: Skip flag SET to 1 (pid=", 48);
+    char pid_str[32];
+    snprintf(pid_str, sizeof(pid_str), "%d)\n", (int)getpid());
+    write(2, pid_str, strlen(pid_str));
+    fprintf(stderr, "[cuda-transport] DEBUG: cuda_transport_init() - Skip flag SET to 1 (pid=%d)\n", (int)getpid());
+    fflush(stderr);
 
     if (find_vgpu_device(res0_path, sizeof(res0_path),
                          res1_path, sizeof(res1_path),
                          pci_bdf,   sizeof(pci_bdf)) != 0) {
         fprintf(stderr, "[cuda-transport] VGPU-STUB device not found\n");
+        /* Re-enable interception after discovery */
+        libvgpu_set_skip_interception(0);
         return -1;
     }
 
@@ -516,6 +542,9 @@ int cuda_transport_init(cuda_transport_t **tp)
         }
     }
 
+    /* Re-enable interception after successful discovery */
+    libvgpu_set_skip_interception(0);
+    
     fprintf(stderr, "[cuda-transport] Connected to VGPU-STUB "
             "(vm_id=%u, data_path=%s)\n",
             t->vm_id,

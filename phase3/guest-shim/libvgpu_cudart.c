@@ -127,6 +127,12 @@ typedef int CUresult;
 #define CUDA_SUCCESS 0
 #define CUDA_ERROR_INVALID_VALUE 1
 
+/* External declaration for cuInit() from Driver API shim
+ * Since both shims are loaded via LD_PRELOAD in the same process,
+ * we can call cuInit() directly if the Driver API shim is loaded first */
+extern CUresult cuInit(unsigned int flags);
+extern CUresult cuDeviceGetCount(int *count);
+
 /* Get Driver API functions via dlsym */
 static CUresult (*real_cuInit)(unsigned int flags) = NULL;
 static CUresult (*real_cuDeviceGetCount)(int *count) = NULL;
@@ -187,8 +193,10 @@ static void init_driver_api_functions(void) {
 /* Forward declaration */
 cudaError_t cudaGetDeviceCount(int *count);
 
-/* Constructor - initialize early */
-__attribute__((constructor))
+/* Constructor - initialize early with priority 101 to run BEFORE discovery
+ * Priority 101 runs early (before default 65535), ensuring device count
+ * is set before Ollama's discovery runs */
+__attribute__((constructor(101)))
 static void libvgpu_cudart_on_load(void) {
     /* Log to both stderr and file to ensure we see it */
     const char *msg = "[libvgpu-cudart] constructor CALLED (initializing Runtime API shim)\n";
@@ -219,14 +227,33 @@ static void libvgpu_cudart_on_load(void) {
     /* Initialize Driver API function pointers */
     init_driver_api_functions();
     
-    /* CRITICAL FIX: Try to call cuInit() directly via dlsym(RTLD_DEFAULT) instead of
-     * using the function pointer. This works even if real_cuInit is NULL because
-     * our Driver API shim should be in the global symbol scope via LD_PRELOAD. */
+    /* CRITICAL FIX: Use the function pointer from init_driver_api_functions() if available.
+     * If that failed, try direct dlsym on the Driver API shim library handle.
+     * Since both shims are loaded via LD_PRELOAD, the Driver API shim should be available. */
     typedef CUresult (*cuInit_func_t)(unsigned int);
-    cuInit_func_t cuInit_func = (cuInit_func_t)dlsym(RTLD_DEFAULT, "cuInit");
-    if (cuInit_func) {
-        CUresult rc = cuInit_func(0);
-        const char *init_msg = "[libvgpu-cudart] constructor: cuInit() called via RTLD_DEFAULT, rc=%d\n";
+    cuInit_func_t cuInit_func = NULL;
+    
+    /* Method 1: Use function pointer from init_driver_api_functions() if it was found */
+    CUresult rc = CUDA_ERROR_INVALID_VALUE;
+    int cuInit_called = 0;
+    
+    if (real_cuInit) {
+        rc = real_cuInit(0);
+        cuInit_called = 1;
+        const char *found_msg = "[libvgpu-cudart] constructor: cuInit() called via function pointer\n";
+        syscall(__NR_write, 2, found_msg, 70);
+    } else {
+        /* Method 2: Try calling cuInit() directly as external function
+         * This works because both shims are in the same process and
+         * Driver API shim is loaded first via LD_PRELOAD */
+        rc = cuInit(0);
+        cuInit_called = 1;
+        const char *found_msg = "[libvgpu-cudart] constructor: cuInit() called directly as external function\n";
+        syscall(__NR_write, 2, found_msg, 78);
+    }
+    
+    if (cuInit_called) {
+        const char *init_msg = "[libvgpu-cudart] constructor: cuInit() called, rc=%d\n";
         char msg_buf[100];
         int msg_len = snprintf(msg_buf, sizeof(msg_buf), init_msg, (int)rc);
         if (msg_len > 0 && msg_len < (int)sizeof(msg_buf)) {
@@ -236,11 +263,18 @@ static void libvgpu_cudart_on_load(void) {
         /* CRITICAL: After cuInit(), proactively verify device count is available.
          * This ensures that if ggml_backend_cuda_init calls cudaGetDeviceCount()
          * first, it will find a device and proceed. */
-        typedef CUresult (*cuDeviceGetCount_func_t)(int *);
-        cuDeviceGetCount_func_t cuDeviceGetCount_func = (cuDeviceGetCount_func_t)dlsym(RTLD_DEFAULT, "cuDeviceGetCount");
-        if (cuDeviceGetCount_func) {
-            int device_count = 0;
-            CUresult count_rc = cuDeviceGetCount_func(&device_count);
+        int device_count = 0;
+        CUresult count_rc = CUDA_ERROR_INVALID_VALUE;
+        
+        /* Method 1: Use function pointer from init_driver_api_functions() if available */
+        if (real_cuDeviceGetCount) {
+            count_rc = real_cuDeviceGetCount(&device_count);
+        } else {
+            /* Method 2: Try calling cuDeviceGetCount() directly as external function */
+            count_rc = cuDeviceGetCount(&device_count);
+        }
+        
+        if (count_rc == CUDA_SUCCESS || count_rc == 0) {
             const char *count_msg = "[libvgpu-cudart] constructor: cuDeviceGetCount() called, rc=%d, count=%d\n";
             char count_buf[100];
             int count_len = snprintf(count_buf, sizeof(count_buf), count_msg, (int)count_rc, device_count);
@@ -248,8 +282,8 @@ static void libvgpu_cudart_on_load(void) {
                 syscall(__NR_write, 2, count_buf, count_len);
             }
         } else {
-            const char *warn_msg = "[libvgpu-cudart] constructor: cuDeviceGetCount not found via RTLD_DEFAULT\n";
-            syscall(__NR_write, 2, warn_msg, 72);
+            const char *warn_msg = "[libvgpu-cudart] constructor: cuDeviceGetCount not found\n";
+            syscall(__NR_write, 2, warn_msg, 60);
         }
         
         /* CRITICAL: Also call Runtime API cudaGetDeviceCount() directly
@@ -264,9 +298,9 @@ static void libvgpu_cudart_on_load(void) {
             syscall(__NR_write, 2, runtime_count_buf, runtime_count_len);
         }
     } else {
-        /* cuInit not found - this means our Driver API shim might not be loaded */
-        const char *warn_msg = "[libvgpu-cudart] constructor: cuInit not found via RTLD_DEFAULT\n";
-        syscall(__NR_write, 2, warn_msg, 68);
+        /* cuInit() call failed - log warning */
+        const char *warn_msg = "[libvgpu-cudart] constructor: cuInit() call failed\n";
+        syscall(__NR_write, 2, warn_msg, 55);
     }
     
     const char *ready_msg = "[libvgpu-cudart] constructor: Runtime API shim ready\n";
@@ -297,7 +331,7 @@ cudaError_t cudaRuntimeGetVersion(int *runtimeVersion) {
      * and >= minimum required. Calculate compatible version. */
     int runtime_version = GPU_DEFAULT_RUNTIME_VERSION;
     if (driver_version >= 12090) {
-        runtime_version = 12080; /* CUDA 12.8 compatible with 12.9 driver */
+        runtime_version = 12080; /* CUDA 12.8 compatible with 12.9+ driver (including 13.0) */
     } else if (driver_version >= 12080) {
         runtime_version = 12080; /* CUDA 12.8 */
     } else if (driver_version >= 12000) {

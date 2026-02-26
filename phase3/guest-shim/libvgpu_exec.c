@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/syscall.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -358,8 +359,14 @@ pid_t clone(int (*fn)(void *), void *child_stack, int flags, void *arg, ...)
 __attribute__((constructor))
 static void libvgpu_exec_on_load(void)
 {
-    /* Minimal constructor - no I/O operations to avoid crashes during early loading */
-    /* All logging happens in intercepted functions (execve, fork, clone) where it's safe */
-    static volatile int loaded = 0;
-    __sync_bool_compare_and_swap(&loaded, 0, 1);
+    /* Log that we're loaded - use syscall to avoid libc issues during early loading */
+    const char *msg = "[libvgpu-exec] constructor: Library loaded (pid=";
+    syscall(__NR_write, 2, msg, strlen(msg));
+    char pid_str[32];
+    int pid_len = snprintf(pid_str, sizeof(pid_str), "%d", (int)getpid());
+    if (pid_len > 0 && pid_len < (int)sizeof(pid_str)) {
+        syscall(__NR_write, 2, pid_str, pid_len);
+    }
+    const char *msg2 = ")\n";
+    syscall(__NR_write, 2, msg2, strlen(msg2));
 }

@@ -1,70 +1,69 @@
 # Next Step Analysis
 
-## Current Status
+## Date: 2026-02-26
 
-✅ **What Works:**
-- Libraries ARE loaded (10 references in process memory)
-- Symbols ARE resolvable (dlsym() test passed)
-- `/proc/driver/nvidia/version` interception works (test program shows interception)
-- `open()` and `openat()` have early interception
+## Current Situation
 
-❌ **What Doesn't Work:**
-- Functions are NOT called (no `cuInit()`, `nvmlInit_v2()` messages)
-- GPU mode stays CPU
-- No interception messages in Ollama logs
+### ✅ What's Working
+- Device discovery: VGPU-STUB found
+- All symlinks in place:
+  - `/usr/local/lib/ollama/libggml-cuda.so` → `cuda_v12/libggml-cuda.so`
+  - `/usr/local/lib/ollama/libcublas.so.12` → `cuda_v12/libcublas.so.12`
+  - `/usr/local/lib/ollama/libcublasLt.so.12` → `cuda_v12/libcublasLt.so.12`
+  - All CUDA library symlinks correct
+- All shim functions implemented and exported
 
-## Key Insight
+### ❌ What's Not Working
+- `libggml-cuda.so` is NOT being opened during discovery (strace shows no opens)
+- `initial_count=0` (no GPUs detected)
+- GPU mode is CPU (`library=cpu`)
 
-**Ollama might not check `/proc/driver/nvidia/version` at all!**
+## Comparison with Previous Work
 
-Instead, Ollama might:
-1. Load libraries via `dlopen()` ✓ (we confirmed libraries load)
-2. Check if functions exist via `dlsym()` ✓ (we confirmed symbols resolve)
-3. **But then check something ELSE before calling functions** ✗
-4. If that check fails, never calls functions
+### Previous State (from BREAKTHROUGH_LIBGGML_LOADING.md)
+- ✅ `libggml-cuda.so` WAS being opened from `cuda_v12/` directly
+- ❌ But discovery timed out (initialization issue)
 
-## Possible Prerequisite Checks
+### Current State
+- ❌ `libggml-cuda.so` is NOT being opened at all
+- ❌ Backend scanner may not be finding it
 
-1. **`/dev/nvidia*` device files**
-   - Ollama might check if `/dev/nvidia0`, `/dev/nvidiactl`, etc. exist
-   - Our interception handles these in `is_nvidia_proc_file()`
-   - But `stat()` and `access()` check process type FIRST
-   - Maybe they need early interception too?
+## Possible Causes
 
-2. **Library version/capabilities**
-   - Ollama might check library version before calling functions
-   - Or check if library supports certain capabilities
+1. **Backend scanner not running**
+   - Maybe backend scanner only runs under certain conditions
+   - Or backend scanner is disabled/failing silently
 
-3. **Wrapper function checks**
-   - Ollama has `ggml_nvml_init` wrapper
-   - Wrapper might check prerequisites before calling functions
+2. **Backend scanner pattern mismatch**
+   - Maybe scanner looks for specific filename patterns
+   - Or scanner checks file properties before opening
 
-4. **Subprocess discovery**
-   - Discovery might happen in a subprocess
-   - Subprocess might not have `LD_PRELOAD` set
-   - Or subprocess doesn't inherit interception
+3. **OLLAMA_LIBRARY_PATH issue**
+   - Path includes `cuda_v12`, but scanner might not scan subdirectories
+   - Scanner might only look in top-level directory
+
+4. **Version/configuration difference**
+   - Current Ollama version might behave differently
+   - Or configuration changed
 
 ## Next Steps
 
-1. **Add early interception to `stat()` and `access()`**
-   - Similar to what we did for `open()` and `openat()`
-   - Intercept `/dev/nvidia*` files BEFORE process check
-   - This ensures prerequisite checks pass
+1. **Verify backend scanner is running**
+   - Check for backend scanning logs
+   - Verify scanner actually executes
 
-2. **Verify if discovery happens in subprocess**
-   - Check if runner subprocess has `LD_PRELOAD`
-   - Verify if subprocess has interception
+2. **Check if there's a configuration issue**
+   - Maybe need to enable CUDA backend explicitly
+   - Or need to set an environment variable
 
-3. **Check if Ollama uses wrapper functions**
-   - Maybe `ggml_nvml_init` wrapper checks prerequisites
-   - If wrapper fails, never calls our functions
+3. **Compare with working state**
+   - Check what was different when it was working
+   - Review all configuration changes
 
-4. **Consider early initialization**
-   - If discovery won't call functions, we might need early init
-   - But must be extremely careful to avoid VM crashes
+4. **Test direct loading**
+   - Verify libggml-cuda.so can be loaded manually
+   - Check if initialization succeeds
 
-## Recommended Action
+## Conclusion
 
-**Add early interception to `stat()` and `access()` for `/dev/nvidia*` files.**
-
-This ensures that if Ollama checks device files before calling functions, those checks will pass.
+**The symlinks are in place, but the backend scanner is not finding/opening libggml-cuda.so.** This is different from previous work where it WAS being opened but initialization failed. We need to understand why the backend scanner is not finding it now.

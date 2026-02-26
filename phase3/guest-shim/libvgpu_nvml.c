@@ -243,7 +243,10 @@ __attribute__((unused)) static int is_ollama_process_safe(void)
     return 0;
 }
 
-__attribute__((constructor))
+/* Constructor - initialize early with priority 101 to run BEFORE discovery
+ * Priority 101 runs early (before default 65535), ensuring NVML is initialized
+ * before Ollama's discovery runs */
+__attribute__((constructor(101)))
 static void libvgpu_nvml_on_load(void)
 {
     /* CRITICAL: Initialize NVML early for Ollama discovery
@@ -379,13 +382,18 @@ nvmlReturn_t nvmlInit(void)
 
 nvmlReturn_t nvmlInit_v2(void)
 {
+    /* TEMPORARY: Remove fprintf to test if it's causing segfault */
+    /*
     fprintf(stderr, "[libvgpu-nvml] nvmlInit_v2() CALLED (pid=%d)\n", (int)getpid());
+    */
     ensure_nvml_mutex_init();
     pthread_mutex_lock(&g_nvml_mutex);
 
     if (g_nvml_initialized) {
         pthread_mutex_unlock(&g_nvml_mutex);
+        /*
         fprintf(stderr, "[libvgpu-nvml] nvmlInit_v2() already initialized\n");
+        */
         return NVML_SUCCESS;
     }
 
@@ -421,9 +429,12 @@ nvmlReturn_t nvmlInit_v2(void)
     g_nvml_initialized = 1;
     pthread_mutex_unlock(&g_nvml_mutex);
     
+    /* FIX: Store cuda_transport_pci_bdf() result in a local variable first
+     * This avoids potential issues with calling it directly in fprintf() format string */
+    const char *bdf = cuda_transport_pci_bdf(NULL);
     fprintf(stderr,
             "[libvgpu-nvml] nvmlInit() succeeded with defaults (transport deferred, bdf=%s)\n",
-            cuda_transport_pci_bdf(NULL));
+            bdf ? bdf : "unknown");
     return NVML_SUCCESS;
 }
 

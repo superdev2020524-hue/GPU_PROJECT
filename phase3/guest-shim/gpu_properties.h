@@ -89,9 +89,9 @@
 /* CRITICAL: CUDA runtime (libcudart.so.12) checks driver version.
  * Error: "CUDA driver version is insufficient for CUDA runtime version"
  * We need to return a version that's >= what the runtime expects.
- * CUDA 12.8 runtime typically requires driver >= 12.8, but let's use 12.9
+ * CUDA 12.8 runtime typically requires driver >= 12.8, but let's use 13.0
  * to ensure compatibility. Format: major * 1000 + minor * 10 */
-#define GPU_DEFAULT_DRIVER_VERSION          12090  /* CUDA 12.9 (increased from 12.8) */
+#define GPU_DEFAULT_DRIVER_VERSION          13000  /* CUDA 13.0 (increased from 12.9) */
 #define GPU_DEFAULT_RUNTIME_VERSION         12080  /* CUDA 12.8 runtime */
 
 /* ---- UUID (placeholder — 16 zero bytes, host fills in real one) - */

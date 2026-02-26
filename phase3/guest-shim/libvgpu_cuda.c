@@ -1238,13 +1238,53 @@ static void ensure_tracked_files_mutex_init(void)
     }
 }
 
-/* Flag to disable interception during our own discovery */
-static __thread int g_skip_pci_interception = 0;
+/* Flag to disable interception during our own discovery
+ * CRITICAL: Must be process-global (not thread-local) because
+ * cuda_transport_discover() and fopen() may run in different threads */
+static int g_skip_pci_interception = 0;
+static pthread_mutex_t g_skip_flag_mutex;
+static int g_skip_flag_mutex_initialized = 0;
+
+/* Helper: Ensure skip flag mutex is initialized (lazy initialization)
+ * CRITICAL: Do NOT use PTHREAD_MUTEX_INITIALIZER - it runs at library load time
+ * and can crash during early initialization via /etc/ld.so.preload */
+static void ensure_skip_flag_mutex_init(void)
+{
+    if (!g_skip_flag_mutex_initialized) {
+        /* Simple check - during early library loading, we're typically single-threaded */
+        /* If there's a race, pthread_mutex_init will fail on second call, which is OK */
+        int rc = pthread_mutex_init(&g_skip_flag_mutex, NULL);
+        if (rc == 0) {
+            g_skip_flag_mutex_initialized = 1;
+        }
+    }
+}
 
 /* Function to set the skip flag - called from cuda_transport.c */
 void libvgpu_set_skip_interception(int skip)
 {
-    g_skip_pci_interception = skip;
+    ensure_skip_flag_mutex_init();
+    
+    /* CRITICAL: Force immediate output using write() syscall */
+    write(2, "[libvgpu-cuda] FORCE: libvgpu_set_skip_interception() called with skip=", 70);
+    char skip_str[4];
+    snprintf(skip_str, sizeof(skip_str), "%d\n", skip);
+    write(2, skip_str, strlen(skip_str));
+    
+    if (g_skip_flag_mutex_initialized) {
+        pthread_mutex_lock(&g_skip_flag_mutex);
+        g_skip_pci_interception = skip;
+        pthread_mutex_unlock(&g_skip_flag_mutex);
+    } else {
+        /* Mutex not initialized yet - just set the flag directly (single-threaded during init) */
+        g_skip_pci_interception = skip;
+    }
+    
+    write(2, "[libvgpu-cuda] FORCE: Skip flag SET to ", 42);
+    write(2, skip_str, strlen(skip_str));
+    
+    fprintf(stderr, "[libvgpu-cuda] Skip flag SET to %d (pid=%d)\n", skip, (int)getpid());
+    fflush(stderr);
 }
 
 /* Function to check if caller is from our own code (cuda_transport.c) */
@@ -1375,10 +1415,41 @@ static int is_tracked_pci_file(FILE *fp)
 /* Intercept fopen() to track PCI device files */
 FILE *fopen(const char *pathname, const char *mode)
 {
-    /* CRITICAL: Debug message FIRST to verify function is being called */
+    /* CRITICAL: NULL check FIRST to avoid segfault when accessing pathname[0] */
+    if (!pathname) {
+        if (g_real_fopen_global) {
+            return g_real_fopen_global(NULL, mode);
+        }
+        return NULL;
+    }
+    
+    /* TEMPORARY: Disable early PCI check to test if it's causing the segfault
+     * If segfault stops, we know it's in the character comparison logic */
+    /* 
+    if (pathname[0] == '/' && pathname[1] == 's' && pathname[2] == 'y' && pathname[3] == 's' &&
+        pathname[4] == '/' && pathname[5] == 'b' && pathname[6] == 'u' && pathname[7] == 's' &&
+        pathname[8] == '/' && pathname[9] == 'p' && pathname[10] == 'c' && pathname[11] == 'i' &&
+        pathname[12] == '/' && pathname[13] == 'd' && pathname[14] == 'e' && pathname[15] == 'v' &&
+        pathname[16] == 'i' && pathname[17] == 'c' && pathname[18] == 'e' && pathname[19] == 's' &&
+        pathname[20] == '/') {
+        const char *q = pathname + 21;
+        while (*q && *q != '/') q++;
+        if (*q == '/') {
+            if ((q[1] == 'v' && q[2] == 'e' && q[3] == 'n' && q[4] == 'd' && q[5] == 'o' && q[6] == 'r' && q[7] == '\0') ||
+                (q[1] == 'd' && q[2] == 'e' && q[3] == 'v' && q[4] == 'i' && q[5] == 'c' && q[6] == 'e' && q[7] == '\0') ||
+                (q[1] == 'c' && q[2] == 'l' && q[3] == 'a' && q[4] == 's' && q[5] == 's' && q[6] == '\0')) {
+                return NULL;
+            }
+        }
+    }
+    */
+    
+    /* Debug message - TEMPORARY: Remove to test if fprintf is causing segfault */
+    /*
     fprintf(stderr, "[libvgpu-cuda] fopen() INTERCEPTOR CALLED: %s (pid=%d)\n",
-            pathname ? pathname : "NULL", (int)getpid());
+            pathname, (int)getpid());
     fflush(stderr);
+    */
     
     /* CRITICAL: Check process type FIRST, before any dlsym() calls */
     if (!is_application_process()) {
@@ -1425,48 +1496,120 @@ FILE *fopen(const char *pathname, const char *mode)
     }
     
     /* Application process - proceed with interception */
-    /* CRITICAL: Check skip flag FIRST, before any dlsym/dlopen operations
-     * When skip flag is set (during cuda_transport_discover), we must read real values
-     * This means we should NOT intercept at all - just call real fopen() and return */
+    ensure_skip_flag_mutex_init();
+    int skip_flag = 0;
+    if (g_skip_flag_mutex_initialized) {
+        pthread_mutex_lock(&g_skip_flag_mutex);
+        skip_flag = g_skip_pci_interception;
+        pthread_mutex_unlock(&g_skip_flag_mutex);
+    } else {
+        skip_flag = g_skip_pci_interception;
+    }
+    
+    /* REMOVED: Duplicate PCI file handling - already handled at function start with inline checks */
+    
     fprintf(stderr, "[libvgpu-cuda] fopen() called: %s, skip_flag=%d (pid=%d)\n",
-            pathname ? pathname : "NULL", g_skip_pci_interception, (int)getpid());
+            pathname ? pathname : "NULL", skip_flag, (int)getpid());
     fflush(stderr);
-    if (g_skip_pci_interception) {
-        /* Use global real_fopen() resolved in constructor
-         * This is more reliable than trying to resolve it here */
-        if (!g_real_fopen_global) {
-            /* Fallback: try to resolve now (might fail if we're in interceptor) */
-            g_real_fopen_global = (FILE *(*)(const char *, const char *))
-                                  dlsym(RTLD_NEXT, "fopen");
-            if (!g_real_fopen_global) {
-                fprintf(stderr, "[libvgpu-cuda] ERROR: Cannot resolve real fopen() (skip mode, pid=%d)\n",
-                        (int)getpid());
-                fflush(stderr);
-                return NULL;
+    
+    if (skip_flag) {
+        /* For skip mode, use syscall approach for reliability
+         * This ensures files can be read even if real_fopen() can't be resolved */
+        if (!pathname) {
+            return NULL;
+        }
+        /* Parse mode string to get flags */
+        int flags = O_RDONLY;
+        if (mode) {
+            if (strchr(mode, 'w')) {
+                flags = O_WRONLY | O_CREAT | O_TRUNC;
+            } else if (strchr(mode, 'a')) {
+                flags = O_WRONLY | O_CREAT | O_APPEND;
+            } else {
+                flags = O_RDONLY;
             }
         }
-        FILE *fp = g_real_fopen_global(pathname, mode);
-        fprintf(stderr, "[libvgpu-cuda] fopen() SKIP interception (discovery mode): %s -> %p (pid=%d)\n",
-                pathname ? pathname : "NULL", (void*)fp, (int)getpid());
+        /* Use direct syscall - this cannot be intercepted */
+        int fd = syscall(__NR_open, pathname, flags, 0644);
+        if (fd < 0) {
+            fprintf(stderr, "[libvgpu-cuda] fopen() skip mode syscall failed: %s (pid=%d)\n",
+                    pathname, (int)getpid());
+            fflush(stderr);
+            return NULL;
+        }
+        /* Convert fd to FILE* using fdopen() */
+        FILE *fp = fdopen(fd, mode ? mode : "r");
+        if (!fp) {
+            close(fd);
+            fprintf(stderr, "[libvgpu-cuda] fopen() skip mode fdopen() failed: %s (pid=%d)\n",
+                    pathname, (int)getpid());
+            fflush(stderr);
+            return NULL;
+        }
+        fprintf(stderr, "[libvgpu-cuda] fopen() SKIP interception (syscall): %s -> %p (pid=%d)\n",
+                pathname, (void*)fp, (int)getpid());
         fflush(stderr);
         return fp;
     }
     
-    /* Normal interception mode - use global real_fopen() resolved in constructor
-     * This is more reliable than trying to resolve it here */
-    if (!g_real_fopen_global) {
-        /* Fallback: try to resolve now (might fail if we're in interceptor) */
-        g_real_fopen_global = (FILE *(*)(const char *, const char *))
-                              dlsym(RTLD_NEXT, "fopen");
-        if (!g_real_fopen_global) {
-            fprintf(stderr, "[libvgpu-cuda] ERROR: Cannot resolve real fopen() (pid=%d)\n",
-                    (int)getpid());
-            fflush(stderr);
-            return NULL;
+    /* Normal interception mode */
+    if (!pathname) {
+        return NULL;
+    }
+    
+    if (g_real_fopen_global) {
+        FILE *fp = NULL;
+        if ((void*)g_real_fopen_global == NULL || 
+            (void*)g_real_fopen_global == (void*)-1 ||
+            (uintptr_t)g_real_fopen_global < 0x1000) {
+            goto use_fallback;
+        }
+        fp = g_real_fopen_global(pathname, mode);
+        if (fp) {
+            /* Only track PCI device files for interception */
+            if (is_pci_device_file_path(pathname)) {
+                if (!is_caller_from_our_code()) {
+                    track_file(fp, pathname);
+                }
+            }
+            return fp;
         }
     }
     
-    FILE *fp = g_real_fopen_global(pathname, mode);
+    use_fallback:
+    /* Fallback: Use syscall approach if real_fopen() not available */
+    if (!pathname) {
+        return NULL;
+    }
+    /* Parse mode string to get flags */
+    int flags = O_RDONLY;
+    if (mode) {
+        if (strchr(mode, 'w')) {
+            flags = O_WRONLY | O_CREAT | O_TRUNC;
+        } else if (strchr(mode, 'a')) {
+            flags = O_WRONLY | O_CREAT | O_APPEND;
+        } else {
+            flags = O_RDONLY;
+        }
+    }
+    /* Use direct syscall - this cannot be intercepted */
+    int fd = syscall(__NR_open, pathname, flags, 0644);
+    if (fd < 0) {
+        return NULL;
+    }
+    /* Convert fd to FILE* using fdopen() */
+    FILE *fp = fdopen(fd, mode ? mode : "r");
+    if (!fp) {
+        close(fd);
+        return NULL;
+    }
+    
+    /* Only track PCI device files for interception */
+    if (is_pci_device_file_path(pathname)) {
+        if (!is_caller_from_our_code()) {
+            track_file(fp, pathname);
+        }
+    }
     
     /* CRITICAL FIX: Only track PCI device files opened by OTHER processes (not cuda_transport.c)
      * Based on documentation - when GPU was working, cuda_transport.c read files directly.
@@ -1507,7 +1650,17 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
     }
     
     /* REVERTED: Don't intercept fread() for cuda_transport.c - let it read real values */
-    if (g_skip_pci_interception) {
+    ensure_skip_flag_mutex_init();
+    int skip_flag = 0;
+    if (g_skip_flag_mutex_initialized) {
+        pthread_mutex_lock(&g_skip_flag_mutex);
+        skip_flag = g_skip_pci_interception;
+        pthread_mutex_unlock(&g_skip_flag_mutex);
+    } else {
+        skip_flag = g_skip_pci_interception;
+    }
+    
+    if (skip_flag) {
         /* Skip interception during discovery */
         return real_fread ? real_fread(ptr, size, nmemb, stream) : 0;
     }
@@ -1564,19 +1717,20 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
 /* Intercept fgets() for PCI device files */
 char *fgets(char *s, int size, FILE *stream)
 {
-    /* CRITICAL: Check skip flag FIRST, before any other checks
-     * When skip flag is set (during cuda_transport_discover), we must read real values */
-    if (g_skip_pci_interception) {
-        /* For skip mode, try to use global real_fgets() if available */
-        if (g_real_fgets_global) {
-            char *result = g_real_fgets_global(s, size, stream);
-            fprintf(stderr, "[libvgpu-cuda] fgets() SKIP interception: fp=%p -> %p (pid=%d)\n",
-                    (void*)stream, (void*)result, (int)getpid());
-            fflush(stderr);
-            return result;
-        }
-        /* Fallback: Use read() syscall directly if real_fgets() not available
-         * This works for files opened via syscall + fdopen() */
+    ensure_skip_flag_mutex_init();
+    int skip_flag = 0;
+    if (g_skip_flag_mutex_initialized) {
+        pthread_mutex_lock(&g_skip_flag_mutex);
+        skip_flag = g_skip_pci_interception;
+        pthread_mutex_unlock(&g_skip_flag_mutex);
+    } else {
+        skip_flag = g_skip_pci_interception;
+    }
+    
+    if (skip_flag) {
+        /* CRITICAL: When skip_flag=1, ALWAYS use syscall read
+         * Files are opened via syscall + fdopen(), so we must use syscall read
+         * Don't try real_fgets() - it might not work with syscall-opened files */
         int fd = fileno(stream);
         if (fd >= 0) {
             ssize_t n = syscall(__NR_read, fd, s, size - 1);
@@ -1587,13 +1741,24 @@ char *fgets(char *s, int size, FILE *stream)
                 if (nl) {
                     nl[1] = '\0';
                 }
-                fprintf(stderr, "[libvgpu-cuda] fgets() SKIP interception (syscall read): fp=%p -> %p, read %zd bytes (pid=%d)\n",
-                        (void*)stream, (void*)s, n, (int)getpid());
+                fprintf(stderr, "[libvgpu-cuda] fgets() SKIP mode (syscall read): fd=%d, read %zd bytes: '%s' (pid=%d)\n",
+                        fd, n, s, (int)getpid());
                 fflush(stderr);
                 return s;
+            } else if (n == 0) {
+                /* EOF */
+                fprintf(stderr, "[libvgpu-cuda] fgets() SKIP mode: fd=%d, EOF (pid=%d)\n", fd, (int)getpid());
+                fflush(stderr);
+                return NULL;
+            } else {
+                /* Error */
+                fprintf(stderr, "[libvgpu-cuda] fgets() SKIP mode syscall read failed: fd=%d, errno=%d (pid=%d)\n",
+                        fd, errno, (int)getpid());
+                fflush(stderr);
+                return NULL;
             }
         }
-        fprintf(stderr, "[libvgpu-cuda] ERROR: fgets() skip mode failed (pid=%d)\n", (int)getpid());
+        fprintf(stderr, "[libvgpu-cuda] ERROR: fgets() skip mode: invalid fd (pid=%d)\n", (int)getpid());
         fflush(stderr);
         return NULL;
     }
@@ -1623,7 +1788,164 @@ char *fgets(char *s, int size, FILE *stream)
     if (!real_fgets) {
         real_fgets = (char *(*)(char *, int, FILE *))
                      dlsym(RTLD_NEXT, "fgets");
+        if (!real_fgets) {
+            fprintf(stderr, "[libvgpu-cuda] ERROR: Cannot resolve real fgets() (pid=%d)\n", (int)getpid());
+            fflush(stderr);
+        }
     }
+    
+    /* CRITICAL: If file is NOT tracked (caller is from our code), use syscall read directly
+     * Don't rely on real_fgets() - it might be NULL or fail
+     * Use the same syscall approach as skip_flag=1 to ensure real values are read */
+    if (!is_tracked_pci_file(stream) || is_caller_from_our_code()) {
+        /* Use syscall read directly - this bypasses all interception and libc issues */
+        int fd = fileno(stream);
+        if (fd >= 0) {
+            ssize_t n = syscall(__NR_read, fd, s, size - 1);
+            if (n > 0) {
+                s[n] = '\0';
+                /* Find newline and ensure string ends there */
+                char *nl = strchr(s, '\n');
+                if (nl) {
+                    nl[1] = '\0';
+                }
+                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted (syscall read): fd=%d, read %zd bytes: '%s' (pid=%d)\n",
+                        fd, n, s, (int)getpid());
+                fflush(stderr);
+                return s;
+            } else if (n == 0) {
+                /* EOF */
+                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted: fd=%d, EOF (pid=%d)\n", fd, (int)getpid());
+                fflush(stderr);
+                return NULL;
+            } else {
+                /* Error */
+                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted syscall read failed: fd=%d, errno=%d (pid=%d)\n",
+                        fd, errno, (int)getpid());
+                fflush(stderr);
+                return NULL;
+            }
+        }
+        fprintf(stderr, "[libvgpu-cuda] ERROR: fgets() NOT intercepted: invalid fd (pid=%d)\n", (int)getpid());
+        fflush(stderr);
+        return NULL;
+    }
+    
+    /* DISABLED FOR TESTING (now restored):
+    ensure_skip_flag_mutex_init();
+    int skip_flag = 0;
+    if (g_skip_flag_mutex_initialized) {
+        pthread_mutex_lock(&g_skip_flag_mutex);
+        skip_flag = g_skip_pci_interception;
+        pthread_mutex_unlock(&g_skip_flag_mutex);
+    } else {
+        skip_flag = g_skip_pci_interception;
+    }
+    
+    if (skip_flag) {
+        /* CRITICAL: When skip_flag=1, ALWAYS use syscall read
+         * Files are opened via syscall + fdopen(), so we must use syscall read
+         * Don't try real_fgets() - it might not work with syscall-opened files */
+        int fd = fileno(stream);
+        if (fd >= 0) {
+            ssize_t n = syscall(__NR_read, fd, s, size - 1);
+            if (n > 0) {
+                s[n] = '\0';
+                /* Find newline and ensure string ends there */
+                char *nl = strchr(s, '\n');
+                if (nl) {
+                    nl[1] = '\0';
+                }
+                fprintf(stderr, "[libvgpu-cuda] fgets() SKIP mode (syscall read): fd=%d, read %zd bytes: '%s' (pid=%d)\n",
+                        fd, n, s, (int)getpid());
+                fflush(stderr);
+                return s;
+            } else if (n == 0) {
+                /* EOF */
+                fprintf(stderr, "[libvgpu-cuda] fgets() SKIP mode: fd=%d, EOF (pid=%d)\n", fd, (int)getpid());
+                fflush(stderr);
+                return NULL;
+            } else {
+                /* Error */
+                fprintf(stderr, "[libvgpu-cuda] fgets() SKIP mode syscall read failed: fd=%d, errno=%d (pid=%d)\n",
+                        fd, errno, (int)getpid());
+                fflush(stderr);
+                return NULL;
+            }
+        }
+        fprintf(stderr, "[libvgpu-cuda] ERROR: fgets() skip mode: invalid fd (pid=%d)\n", (int)getpid());
+        fflush(stderr);
+        return NULL;
+    }
+    
+    /* CRITICAL: Check process type FIRST, before any dlsym() calls */
+    if (!is_application_process()) {
+        /* For system processes, use read() syscall directly
+         * This works for files opened via syscall + fdopen() */
+        int fd = fileno(stream);
+        if (fd >= 0) {
+            ssize_t n = syscall(__NR_read, fd, s, size - 1);
+            if (n > 0) {
+                s[n] = '\0';
+                /* Find newline and ensure string ends there */
+                char *nl = strchr(s, '\n');
+                if (nl) {
+                    nl[1] = '\0';
+                }
+                return s;
+            }
+        }
+        return NULL;
+    }
+    
+    /* Application process - proceed with interception */
+    static char *(*real_fgets)(char *, int, FILE *) = NULL;
+    if (!real_fgets) {
+        real_fgets = (char *(*)(char *, int, FILE *))
+                     dlsym(RTLD_NEXT, "fgets");
+        if (!real_fgets) {
+            fprintf(stderr, "[libvgpu-cuda] ERROR: Cannot resolve real fgets() (pid=%d)\n", (int)getpid());
+            fflush(stderr);
+        }
+    }
+    
+    /* CRITICAL: If file is NOT tracked (caller is from our code), use syscall read directly
+     * Don't rely on real_fgets() - it might be NULL or fail
+     * Use the same syscall approach as skip_flag=1 to ensure real values are read */
+    if (!is_tracked_pci_file(stream) || is_caller_from_our_code()) {
+        /* Use syscall read directly - this bypasses all interception and libc issues */
+        int fd = fileno(stream);
+        if (fd >= 0) {
+            ssize_t n = syscall(__NR_read, fd, s, size - 1);
+            if (n > 0) {
+                s[n] = '\0';
+                /* Find newline and ensure string ends there */
+                char *nl = strchr(s, '\n');
+                if (nl) {
+                    nl[1] = '\0';
+                }
+                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted (syscall read): fd=%d, read %zd bytes: '%s' (pid=%d)\n",
+                        fd, n, s, (int)getpid());
+                fflush(stderr);
+                return s;
+            } else if (n == 0) {
+                /* EOF */
+                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted: fd=%d, EOF (pid=%d)\n", fd, (int)getpid());
+                fflush(stderr);
+                return NULL;
+            } else {
+                /* Error */
+                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted syscall read failed: fd=%d, errno=%d (pid=%d)\n",
+                        fd, errno, (int)getpid());
+                fflush(stderr);
+                return NULL;
+            }
+        }
+        fprintf(stderr, "[libvgpu-cuda] ERROR: fgets() NOT intercepted: invalid fd (pid=%d)\n", (int)getpid());
+        fflush(stderr);
+        return NULL;
+    }
+    
     if (is_tracked_pci_file(stream) && !is_caller_from_our_code()) {
         char path[512] = "";
         int i;
@@ -1861,7 +2183,10 @@ CUresult cuDeviceGetPCIBusId(char *pciBusId, int len, CUdevice dev);
  * journald.  Check /tmp/vgpu-shim-cuda-<pid>.log after a failing run.
  * ================================================================ */
 
-__attribute__((constructor))
+/* Constructor - initialize early with priority 101 to run BEFORE discovery
+ * Priority 101 runs early (before default 65535), ensuring CUDA is initialized
+ * before Ollama's discovery runs */
+__attribute__((constructor(101)))
 static void libvgpu_cuda_on_load(void)
 {
     /* CRITICAL: Early initialization for application processes
