@@ -1,63 +1,61 @@
 # Current Status Summary
 
-## Date: 2026-02-25
+## ✅ Major Achievements
 
-## 🎉 MAJOR SUCCESS: Device Discovery is Working! 🎉
+1. **Model File Loading Fixed** ✅
+   - `fopen()` interception now excludes model files
+   - Models load successfully without corruption
 
-### What's Working
+2. **Model Inference Working** ✅
+   - Models run and produce correct output
+   - Tested with multiple prompts successfully
 
-✅ **Device Discovery**: WORKING
-- `Found VGPU-STUB at 0000:00:05.0 (vendor=0x10de device=0x2331 class=0x030200 match=exact)`
-- Real values are correctly read from `/sys/bus/pci/devices/*/vendor|device|class`
+3. **CUDA Backend Loading** ✅
+   - `libggml-cuda.so` loads successfully
+   - Driver API shim intercepts calls correctly
 
-✅ **GPU Detection**: WORKING
-- GPU defaults applied: H100 80GB CC=9.0 VRAM=81920 MB
-- `device_found=1`
-- `cuInit() device found at 0000:00:05.0`
+4. **Basic CUDA Functions Working** ✅
+   - `cuInit()` called and succeeds
+   - `cuDeviceGetCount()` called and returns 1
+   - Device discovery finds VGPU-STUB at 0000:00:05.0
 
-✅ **The Fix**: WORKING
-- Modified `fgets()` to use syscall read directly when files are NOT tracked
-- This bypasses all libc and interception issues
-- Real values (0x10de, 0x2331, 0x030200) are now correctly read
+## ❌ Current Blocker
 
-### Known Issue
+**Error**: `ggml_cuda_init: failed to initialize CUDA: API call is not supported in the installed CUDA driver`
 
-⚠ **Segfault**: Occurs after device discovery succeeds
-- Happens right after `fopen()` is called for `/sys/bus/pci/devices/0000:00:05.0/vendor`
-- Prevents Ollama from running
-- Does NOT affect device discovery (discovery works before segfault)
-- Likely caused by fprintf/fflush or NULL pointer in fopen() interceptor
+### What This Means:
+- GGML's CUDA initialization is failing
+- A CUDA function is returning `CUDA_ERROR_NOT_SUPPORTED` or similar
+- This happens right after `cuInit()` succeeds
+- No device query functions (`cuDeviceGet()`, `cuDeviceGetAttribute()`) are called
 
-### Files Modified
+### Possible Causes:
+1. **Missing Function**: GGML calls a function we haven't implemented
+2. **Function Lookup Failure**: `cuGetProcAddress()` fails to find a required function
+3. **Version Mismatch**: Driver version check fails
+4. **Context Requirement**: GGML requires a context that doesn't exist
 
-1. **`phase3/guest-shim/libvgpu_cuda.c`**:
-   - `fgets()`: Use syscall read when files are NOT tracked
-   - `g_skip_flag_mutex`: Changed to lazy initialization (fixes potential early init crash)
-   - Added `ensure_skip_flag_mutex_init()` function
+## 🔍 Next Investigation Steps
 
-2. **`phase3/guest-shim/cuda_transport.c`**:
-   - Skip flag setting in `cuda_transport_init()` and `find_vgpu_device()`
-   - FORCE debug messages added
+1. **Check `cuGetProcAddress` calls**: Verify if GGML uses this to look up functions
+2. **Add comprehensive logging**: Log all CUDA function calls to see what's actually being called
+3. **Verify function exports**: Ensure all required functions are properly exported
+4. **Check GGML source**: Understand what `ggml_cuda_init` actually does
 
-### Next Steps
+## 📊 Progress
 
-1. ✅ Device discovery: COMPLETE
-2. ⚠ Fix segfault (blocking Ollama from running)
-3. ⚠ Verify GPU mode is active in Ollama (once segfault is fixed)
-4. ⚠ Test inference performance
+- **Model Loading**: ✅ Complete
+- **Model Inference**: ✅ Complete (but using CPU)
+- **CUDA Backend Loading**: ✅ Complete
+- **GPU Detection**: ⚠️ Partial (device found, but initialization fails)
+- **GPU Compute**: ❌ Not working (falls back to CPU)
 
-### Verification
+## 🎯 Goal
 
-Device discovery is verified working by logs:
-```
-[libvgpu-cuda] fgets() NOT intercepted (syscall read): read 7 bytes: '0x10de'
-[libvgpu-cuda] fgets() NOT intercepted (syscall read): read 7 bytes: '0x2331'
-[libvgpu-cuda] fgets() NOT intercepted (syscall read): read 9 bytes: '0x030200'
-[cuda-transport] Found VGPU-STUB at 0000:00:05.0 (vendor=0x10de device=0x2331 class=0x030200 match=exact)
-[libvgpu-cuda] GPU defaults applied (H100 80GB CC=9.0 VRAM=81920 MB)
-[libvgpu-cuda] device_found=1
-```
+Get GGML to successfully initialize CUDA so that:
+1. Device queries work (`cuDeviceGet()`, `cuDeviceGetAttribute()`)
+2. Context creation works (`cuCtxCreate()`)
+3. Memory allocation works (`cuMemAlloc()`)
+4. Kernel execution works (`cuLaunchKernel()`)
 
-### Conclusion
-
-**Device discovery is working!** The core functionality is complete. The segfault is a separate issue that needs to be fixed before Ollama can run, but it doesn't affect the device discovery mechanism itself.
+Once this works, the model will use GPU compute instead of CPU fallback.

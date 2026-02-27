@@ -34,6 +34,24 @@
 #include "gpu_properties.h"
 
 /* ================================================================
+ * Stub for libvgpu_set_skip_interception
+ * 
+ * This function is defined in libvgpu-cuda.so, but when libggml-cuda.so
+ * loads libnvidia-ml.so.1 (our NVML shim) as a dependency, the CUDA shim
+ * might not be loaded yet. We provide a stub here so the symbol resolves.
+ * 
+ * If the CUDA shim is loaded later, cuda_transport.c will use dlsym to
+ * find the real implementation and use that instead.
+ * ================================================================ */
+void libvgpu_set_skip_interception(int skip)
+{
+    /* Stub implementation - does nothing */
+    /* cuda_transport.c will use dlsym to find the real implementation
+     * from libvgpu-cuda.so if it's available */
+    (void)skip;  /* Suppress unused parameter warning */
+}
+
+/* ================================================================
  * dlsym interception for NVML discovery
  *
  * Ollama uses dlsym to find NVML functions. If dlsym fails to find
@@ -277,6 +295,19 @@ static void libvgpu_nvml_on_load(void)
     
     /* Initialize NVML early - this makes discovery work */
     nvmlInit_v2();
+    
+    /* CRITICAL: Call nvmlDeviceGetCount_v2() early so discovery knows there's a GPU
+     * Discovery uses NVML device count to decide if it should load libggml-cuda.so
+     * If device count is 0, discovery won't load the library
+     * By calling it here, we ensure discovery sees count=1 before it tries to load */
+    unsigned int device_count = 0;
+    nvmlDeviceGetCount_v2(&device_count);
+    /* Log the result for debugging - use simple syscall writes (no snprintf in constructor) */
+    const char *msg1 = "[libvgpu-nvml] constructor: nvmlDeviceGetCount_v2() called early, count=";
+    syscall(__NR_write, 2, msg1, strlen(msg1));
+    /* Write count as single digit (we know it's 1) */
+    const char *count_str = (device_count == 1) ? "1\n" : "0\n";
+    syscall(__NR_write, 2, count_str, strlen(count_str));
     
     /* OLD COMMENT - kept for reference:
      * When deployed via /etc/ld.so.preload, this library loads into ALL processes
@@ -783,11 +814,12 @@ nvmlReturn_t nvmlDeviceGetCudaComputeCapability(nvmlDevice_t device,
         nvmlInit_v2();
     }
     
-    *major = g_nvml_gpu_info_valid ? g_nvml_gpu_info.compute_cap_major
-                                    : GPU_DEFAULT_CC_MAJOR;
-    *minor = g_nvml_gpu_info_valid ? g_nvml_gpu_info.compute_cap_minor
-                                    : GPU_DEFAULT_CC_MINOR;
-    fprintf(stderr, "[libvgpu-nvml] nvmlDeviceGetCudaComputeCapability() returning: %d.%d (pid=%d)\n",
+    /* CRITICAL: Always return 9.0 regardless of initialization state */
+    *major = GPU_DEFAULT_CC_MAJOR;  /* Force 9 */
+    *minor = GPU_DEFAULT_CC_MINOR;  /* Force 0 */
+    
+    /* CRITICAL: Enhanced logging to verify this is called during discovery */
+    fprintf(stderr, "[libvgpu-nvml] nvmlDeviceGetCudaComputeCapability() returning: %d.%d (FORCED, pid=%d)\n",
             *major, *minor, (int)getpid());
     fflush(stderr);
     return NVML_SUCCESS;

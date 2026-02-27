@@ -27,7 +27,8 @@
 /* Use library names (not full paths) - dynamic linker will find them via LD_LIBRARY_PATH
  * This matches what force_load_shim sets in LD_PRELOAD
  * CRITICAL: Must include ALL shim libraries for runner subprocess */
-static const char *SHIM_LIBS = "libvgpu-exec.so:libvgpu-syscall.so:libvgpu-cuda.so:libvgpu-nvml.so:libvgpu-cudart.so";
+/* NOTE: libvgpu-syscall.so removed - was causing issues */
+static const char *SHIM_LIBS = "libvgpu-exec.so:libvgpu-cuda.so:libvgpu-nvml.so:libvgpu-cudart.so";
 
 /* Get or create LD_PRELOAD with our shims */
 static char *get_preload_env(void)

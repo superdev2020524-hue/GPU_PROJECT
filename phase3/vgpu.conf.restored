@@ -1,0 +1,10 @@
+[Service]
+# Configuration based on documented working state (CONFIGURATION_FIXED_STATUS.md)
+# OLLAMA_LLM_LIBRARY is REQUIRED - removing it causes Ollama to crash (SEGV)
+# OLLAMA_LIBRARY_PATH tells scanner where to find libraries
+# LD_PRELOAD for CUDA shim ensures it loads first, so NVML shim can resolve symbols
+Environment="LD_PRELOAD=/usr/lib64/libvgpu-cuda.so"
+Environment="LD_LIBRARY_PATH=/usr/local/lib/ollama/cuda_v12:/usr/local/lib/ollama:/usr/lib64"
+Environment="OLLAMA_LIBRARY_PATH=/usr/local/lib/ollama:/usr/local/lib/ollama/cuda_v12"
+Environment="OLLAMA_LLM_LIBRARY=cuda_v12"
+Environment="OLLAMA_NUM_GPU=999"

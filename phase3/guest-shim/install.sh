@@ -209,10 +209,15 @@ build_shims() {
     log "  ✓ libvgpu-cuda.so built"
 
     # Build NVML shim
+    # Note: cuda_transport.c uses libvgpu_set_skip_interception() which is
+    # defined in libvgpu-cuda.so. We allow undefined symbols here because
+    # both libraries will be loaded together (via LD_PRELOAD or symlinks),
+    # so the symbol will be available via RTLD_DEFAULT at runtime.
     log "  Compiling libvgpu-nvml.so ..."
     gcc -shared -fPIC -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE \
         -I"${INCLUDE_DIR}" -I"${SHIM_SRC_DIR}" \
         -Wl,-soname,libnvidia-ml.so.1 \
+        -Wl,--allow-shlib-undefined \
         -o "${SHIM_SRC_DIR}/libvgpu-nvml.so" \
         "${SHIM_SRC_DIR}/libvgpu_nvml.c" \
         "${SHIM_SRC_DIR}/cuda_transport.c" \

@@ -1,3 +1,5 @@
+#define _GNU_SOURCE  /* Required for RTLD_DEFAULT */
+
 /*
  * CUDA Transport — guest-side communication layer
  *
@@ -41,9 +43,13 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <time.h>
+#include <dlfcn.h>
 
 #include "cuda_transport.h"
 #include "cuda_protocol.h"
+
+/* Forward declaration */
+static void call_libvgpu_set_skip_interception(int skip);
 
 /* ---- PCI scan constants ---------------------------------------- */
 #define VGPU_VENDOR_ID   0x10DE
@@ -174,7 +180,7 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
      * This is needed because find_vgpu_device() might be called directly
      * without going through cuda_transport_init() or cuda_transport_discover() */
     write(2, "[cuda-transport] FORCE: find_vgpu_device() STARTED - setting skip flag\n", 72);
-    libvgpu_set_skip_interception(1);
+    call_libvgpu_set_skip_interception(1);
     write(2, "[cuda-transport] FORCE: Skip flag set to 1 in find_vgpu_device()\n", 65);
     
     int device_count = 0;
@@ -293,7 +299,7 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
         g_discovered_bdf[sizeof(g_discovered_bdf) - 1] = '\0';
         closedir(dir);
         /* Re-enable interception after successful discovery */
-        libvgpu_set_skip_interception(0);
+        call_libvgpu_set_skip_interception(0);
         return 0;
     }
 
@@ -304,7 +310,7 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
             device_count, VGPU_VENDOR_ID, VGPU_DEVICE_ID, VGPU_CLASS);
     closedir(dir);
     /* Re-enable interception after discovery */
-    libvgpu_set_skip_interception(0);
+    call_libvgpu_set_skip_interception(0);
     return -1;
 }
 
@@ -474,7 +480,7 @@ int cuda_transport_init(cuda_transport_t **tp)
      * This ensures we read real values from /sys, not intercepted values
      * Same fix as in cuda_transport_discover() */
     write(2, "[cuda-transport] FORCE: About to set skip flag to 1\n", 52);
-    libvgpu_set_skip_interception(1);
+    call_libvgpu_set_skip_interception(1);
     write(2, "[cuda-transport] FORCE: Skip flag SET to 1 (pid=", 48);
     char pid_str[32];
     snprintf(pid_str, sizeof(pid_str), "%d)\n", (int)getpid());
@@ -487,7 +493,7 @@ int cuda_transport_init(cuda_transport_t **tp)
                          pci_bdf,   sizeof(pci_bdf)) != 0) {
         fprintf(stderr, "[cuda-transport] VGPU-STUB device not found\n");
         /* Re-enable interception after discovery */
-        libvgpu_set_skip_interception(0);
+        call_libvgpu_set_skip_interception(0);
         return -1;
     }
 
@@ -543,7 +549,7 @@ int cuda_transport_init(cuda_transport_t **tp)
     }
 
     /* Re-enable interception after successful discovery */
-    libvgpu_set_skip_interception(0);
+    call_libvgpu_set_skip_interception(0);
     
     fprintf(stderr, "[cuda-transport] Connected to VGPU-STUB "
             "(vm_id=%u, data_path=%s)\n",
@@ -981,14 +987,32 @@ int cuda_transport_is_connected(cuda_transport_t *tp)
  * device still exists, it returns success without re-scanning.
  */
 /* Forward declaration for skip interception function */
-extern void libvgpu_set_skip_interception(int skip);
+/* Use runtime resolution via dlsym to avoid linking dependency */
+static void (*libvgpu_set_skip_interception_ptr)(int skip) = NULL;
+
+/* Forward declaration - the actual function is defined in libvgpu-cuda.so or libvgpu-nvml.so
+ * We use a wrapper to avoid static/non-static conflicts */
+
+/* Wrapper that uses dlsym to find the real implementation */
+static void call_libvgpu_set_skip_interception(int skip)
+{
+    if (!libvgpu_set_skip_interception_ptr) {
+        /* Resolve symbol at runtime - it's in libvgpu-cuda.so or libvgpu-nvml.so */
+        libvgpu_set_skip_interception_ptr = (void (*)(int))dlsym(RTLD_DEFAULT, "libvgpu_set_skip_interception");
+        if (!libvgpu_set_skip_interception_ptr) {
+            /* Symbol not found - this is OK if CUDA shim isn't loaded */
+            return;
+        }
+    }
+    libvgpu_set_skip_interception_ptr(skip);
+}
 
 int cuda_transport_discover(void)
 {
     /* CRITICAL: Disable PCI file interception FIRST, before ANY operations
      * This ensures we read real values from /sys, not intercepted values
      * Based on documentation: when working, cuda_transport.c read real values directly */
-    libvgpu_set_skip_interception(1);
+    call_libvgpu_set_skip_interception(1);
     fprintf(stderr, "[cuda-transport] DEBUG: Skip flag SET to 1 (pid=%d)\n", (int)getpid());
     fflush(stderr);
     
@@ -1025,7 +1049,7 @@ int cuda_transport_discover(void)
     fprintf(stderr, "[cuda-transport] DEBUG: Slow path: find_vgpu_device() returned %d, g_discovered_bdf='%s'\n", rc, g_discovered_bdf);
     
     /* Re-enable interception after discovery */
-    libvgpu_set_skip_interception(0);
+    call_libvgpu_set_skip_interception(0);
     
     return rc;
 }
