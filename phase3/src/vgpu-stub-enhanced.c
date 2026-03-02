@@ -377,6 +377,9 @@ static void vgpu_mmio_write(void *opaque, hwaddr addr,
             break;
         case VGPU_REG_CUDA_DOORBELL:
             if (val == 1) {
+                fprintf(stderr, "[vgpu] vm_id=%u: CUDA DOORBELL RING: call_id=0x%04x seq=%u (addr=0x%lx)\n",
+                        s->vm_id, s->cuda_op, s->cuda_seq, (unsigned long)addr);
+                fflush(stderr);
                 vgpu_process_cuda_doorbell(s);
             }
             break;
@@ -673,6 +676,10 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
     uint32_t data_len = s->cuda_data_len;
     uint8_t *data_ptr = NULL;
 
+    fprintf(stderr, "[vgpu] vm_id=%u: PROCESSING CUDA DOORBELL: call_id=0x%04x seq=%u args=%u data_len=%u\n",
+            s->vm_id, s->cuda_op, s->cuda_seq, s->cuda_num_args, data_len);
+    fflush(stderr);
+
     /* Mark device busy */
     s->status_reg = VGPU_STATUS_BUSY;
     s->error_code = VGPU_ERR_NONE;
@@ -710,9 +717,15 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
 
     /* Connect to mediator if needed */
     if (s->mediator_fd < 0) {
+        fprintf(stderr, "[vgpu] vm_id=%u: Connecting to mediator for CUDA call 0x%04x\n",
+                s->vm_id, s->cuda_op);
+        fflush(stderr);
         vgpu_try_connect_mediator(s);
     }
     if (s->mediator_fd < 0) {
+        fprintf(stderr, "[vgpu] vm_id=%u: ERROR: Cannot connect to mediator (call_id=0x%04x)\n",
+                s->vm_id, s->cuda_op);
+        fflush(stderr);
         s->status_reg = VGPU_STATUS_ERROR;
         s->error_code = VGPU_ERR_MEDIATOR_UNAVAIL;
         return;
@@ -781,10 +794,17 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
     msg.msg_iov    = iov;
     msg.msg_iovlen = iov_cnt;
 
+    fprintf(stderr, "[vgpu] vm_id=%u: SENDING CUDA CALL to mediator: call_id=0x%04x seq=%u total_bytes=%zu (fd=%d)\n",
+            s->vm_id, s->cuda_op, s->cuda_seq,
+            (size_t)(VGPU_SOCKET_HDR_SIZE + sizeof(CUDACallHeader) + data_len),
+            s->mediator_fd);
+    fflush(stderr);
+
     sent = sendmsg(s->mediator_fd, &msg, MSG_NOSIGNAL);
     if (sent < 0) {
-        fprintf(stderr, "[vgpu] CUDA sendmsg failed: %s\n",
-                strerror(errno));
+        fprintf(stderr, "[vgpu] vm_id=%u: CUDA sendmsg failed: %s (call_id=0x%04x)\n",
+                s->vm_id, strerror(errno), s->cuda_op);
+        fflush(stderr);
         qemu_set_fd_handler(s->mediator_fd, NULL, NULL, NULL);
         close(s->mediator_fd);
         s->mediator_fd = -1;
@@ -792,6 +812,10 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
         s->error_code  = VGPU_ERR_MEDIATOR_UNAVAIL;
         return;
     }
+
+    fprintf(stderr, "[vgpu] vm_id=%u: CUDA CALL SENT to mediator: %zd bytes (call_id=0x%04x seq=%u)\n",
+            s->vm_id, sent, s->cuda_op, s->cuda_seq);
+    fflush(stderr);
 
     /* STATUS stays BUSY until mediator responds */
 }

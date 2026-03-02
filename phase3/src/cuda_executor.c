@@ -694,6 +694,9 @@ int cuda_executor_call(cuda_executor_t *exec,
     case CUDA_CALL_MEM_ALLOC: {
         uint64_t bytesize = CUDA_UNPACK_U64(call->args, 0);
 
+        fprintf(stderr, "[cuda-executor] cuMemAlloc: allocating %llu bytes on physical GPU (vm=%u)\n",
+                (unsigned long long)bytesize, call->vm_id);
+
         rc = ensure_vm_context(exec, vm);
         if (rc != CUDA_SUCCESS) break;
 
@@ -705,6 +708,10 @@ int cuda_executor_call(cuda_executor_t *exec,
             vm_add_mem(vm, guest_ptr, dptr, (size_t)bytesize);
             result->num_results = 1;
             result->results[0] = guest_ptr;
+            fprintf(stderr, "[cuda-executor] cuMemAlloc SUCCESS: allocated 0x%llx on physical GPU (vm=%u)\n",
+                    (unsigned long long)dptr, call->vm_id);
+        } else {
+            fprintf(stderr, "[cuda-executor] cuMemAlloc FAILED: rc=%d (vm=%u)\n", rc, call->vm_id);
         }
         break;
     }
@@ -739,7 +746,14 @@ int cuda_executor_call(cuda_executor_t *exec,
         if (data && data_len > 0) {
             size_t copy_len = (size_t)byte_count;
             if (copy_len > data_len) copy_len = data_len;
+            fprintf(stderr, "[cuda-executor] cuMemcpyHtoD: dst=0x%llx size=%zu bytes (vm=%u)\n",
+                    (unsigned long long)host_dst, copy_len, call->vm_id);
             rc = cuMemcpyHtoD(host_dst, data, copy_len);
+            if (rc == CUDA_SUCCESS) {
+                fprintf(stderr, "[cuda-executor] cuMemcpyHtoD SUCCESS: data copied to physical GPU (vm=%u)\n", call->vm_id);
+            } else {
+                fprintf(stderr, "[cuda-executor] cuMemcpyHtoD FAILED: rc=%d (vm=%u)\n", rc, call->vm_id);
+            }
         }
         break;
     }
@@ -756,10 +770,15 @@ int cuda_executor_call(cuda_executor_t *exec,
 
         size_t copy_len = (size_t)byte_count;
         if (result_data && result_cap >= copy_len) {
+            fprintf(stderr, "[cuda-executor] cuMemcpyDtoH: src=0x%llx size=%zu bytes (vm=%u)\n",
+                    (unsigned long long)host_src, copy_len, call->vm_id);
             rc = cuMemcpyDtoH(result_data, host_src, copy_len);
             if (rc == CUDA_SUCCESS) {
                 result->data_len = (uint32_t)copy_len;
                 if (result_len) *result_len = (uint32_t)copy_len;
+                fprintf(stderr, "[cuda-executor] cuMemcpyDtoH SUCCESS: data copied from physical GPU (vm=%u)\n", call->vm_id);
+            } else {
+                fprintf(stderr, "[cuda-executor] cuMemcpyDtoH FAILED: rc=%d (vm=%u)\n", rc, call->vm_id);
             }
         }
         break;
@@ -1036,6 +1055,11 @@ int cuda_executor_call(cuda_executor_t *exec,
             offset += param_sizes[i];
         }
 
+        fprintf(stderr, "[cuda-executor] cuLaunchKernel: grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u vm=%u\n",
+                lp->grid_dim_x, lp->grid_dim_y, lp->grid_dim_z,
+                lp->block_dim_x, lp->block_dim_y, lp->block_dim_z,
+                lp->shared_mem_bytes, lp->num_params, call->vm_id);
+
         rc = cuLaunchKernel(func,
                            lp->grid_dim_x, lp->grid_dim_y, lp->grid_dim_z,
                            lp->block_dim_x, lp->block_dim_y, lp->block_dim_z,
@@ -1047,6 +1071,9 @@ int cuda_executor_call(cuda_executor_t *exec,
         /* Synchronize after launch to detect errors immediately */
         if (rc == CUDA_SUCCESS) {
             rc = cuCtxSynchronize();
+            fprintf(stderr, "[cuda-executor] cuLaunchKernel SUCCESS: kernel executed on physical GPU (vm=%u)\n", call->vm_id);
+        } else {
+            fprintf(stderr, "[cuda-executor] cuLaunchKernel FAILED: rc=%d (vm=%u)\n", rc, call->vm_id);
         }
         break;
     }

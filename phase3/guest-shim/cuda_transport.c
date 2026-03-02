@@ -42,6 +42,7 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <dlfcn.h>
 
@@ -666,6 +667,11 @@ static int do_single_cuda_call(cuda_transport_t *tp,
     time_t start;
     uint32_t status;
 
+    /* Log that we're sending a CUDA operation to VGPU-STUB */
+    fprintf(stderr, "[cuda-transport] SENDING to VGPU-STUB: call_id=0x%04x seq=%u args=%u data_len=%u (pid=%d)\n",
+            call_id, seq, num_args, send_len, (int)getpid());
+    fflush(stderr);
+
     /* Write bulk data before writing metadata registers */
     write_bulk_data(tp, send_data, send_len);
 
@@ -681,6 +687,9 @@ static int do_single_cuda_call(cuda_transport_t *tp,
         REG32(tp->bar0, REG_CUDA_ARGS_BASE + i * 4) = args[i];
 
     /* Ring doorbell (single 4-byte MMIO write, one VM exit) */
+    fprintf(stderr, "[cuda-transport] RINGING DOORBELL: MMIO write to VGPU-STUB (call_id=0x%04x, pid=%d)\n",
+            call_id, (int)getpid());
+    fflush(stderr);
     REG32(tp->bar0, REG_CUDA_DOORBELL) = 1;
 
     /* Poll for completion */
@@ -697,6 +706,16 @@ static int do_single_cuda_call(cuda_transport_t *tp,
         }
         usleep(POLL_INTERVAL_US);
     }
+
+    /* Log completion */
+    if (status == STATUS_DONE) {
+        fprintf(stderr, "[cuda-transport] RECEIVED from VGPU-STUB: call_id=0x%04x seq=%u status=DONE (pid=%d)\n",
+                call_id, seq, (int)getpid());
+    } else {
+        fprintf(stderr, "[cuda-transport] RECEIVED from VGPU-STUB: call_id=0x%04x seq=%u status=ERROR (pid=%d)\n",
+                call_id, seq, (int)getpid());
+    }
+    fflush(stderr);
 
     /* Read result registers */
     if (result) {
@@ -911,7 +930,25 @@ int cuda_transport_call(cuda_transport_t *tp,
                         void *recv_data, uint32_t recv_cap,
                         uint32_t *recv_len)
 {
-    if (!tp || !tp->bar0) return 1;
+    /* CRITICAL: Use syscall to ensure log is written immediately */
+    char inv_msg[256];
+    int inv_len = snprintf(inv_msg, sizeof(inv_msg),
+                          "[cuda-transport] cuda_transport_call() INVOKED: call_id=0x%04x data_len=%u tp=%p bar0=%p (pid=%d)\n",
+                          call_id, send_len, (void*)tp, tp ? (void*)tp->bar0 : NULL, (int)getpid());
+    if (inv_len > 0 && inv_len < (int)sizeof(inv_msg)) {
+        syscall(__NR_write, 2, inv_msg, inv_len);
+    }
+    
+    if (!tp || !tp->bar0) {
+        char err_msg[128];
+        int err_len = snprintf(err_msg, sizeof(err_msg),
+                              "[cuda-transport] ERROR: tp=%p bar0=%p (pid=%d)\n",
+                              (void*)tp, tp ? (void*)tp->bar0 : NULL, (int)getpid());
+        if (err_len > 0 && err_len < (int)sizeof(err_msg)) {
+            syscall(__NR_write, 2, err_msg, err_len);
+        }
+        return 1;
+    }
 
     uint32_t limit = max_single_payload(tp);
 

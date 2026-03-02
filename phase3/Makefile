@@ -87,12 +87,18 @@ CLIENT_SRC = $(SRC_DIR)/vm_client_enhanced.c
 CLIENT_BIN = vm_client_enhanced
 
 # ---- Guest shim libraries --------------------------------------------------
-SHIM_CUDA_SRC     = $(SHIM_DIR)/libvgpu_cuda.c
-SHIM_NVML_SRC     = $(SHIM_DIR)/libvgpu_nvml.c
-SHIM_TRANSPORT_SRC= $(SHIM_DIR)/cuda_transport.c
-SHIM_CUDA_LIB     = $(SHIM_DIR)/libvgpu-cuda.so
-SHIM_NVML_LIB     = $(SHIM_DIR)/libvgpu-nvml.so
-SHIM_INCLUDES     = -I$(INC_DIR) -I$(SHIM_DIR)
+SHIM_CUDA_SRC      = $(SHIM_DIR)/libvgpu_cuda.c
+SHIM_CUDART_SRC    = $(SHIM_DIR)/libvgpu_cudart.c
+SHIM_NVML_SRC      = $(SHIM_DIR)/libvgpu_nvml.c
+SHIM_CUBLAS_SRC    = $(SHIM_DIR)/libvgpu_cublas.c
+SHIM_CUBLASLT_SRC  = $(SHIM_DIR)/libvgpu_cublasLt.c
+SHIM_TRANSPORT_SRC = $(SHIM_DIR)/cuda_transport.c
+SHIM_CUDA_LIB      = $(SHIM_DIR)/libvgpu-cuda.so.1
+SHIM_CUDART_LIB    = $(SHIM_DIR)/libvgpu-cudart.so
+SHIM_NVML_LIB      = $(SHIM_DIR)/libvgpu-nvml.so
+SHIM_CUBLAS_LIB    = $(SHIM_DIR)/libvgpu-cublas.so.12
+SHIM_CUBLASLT_LIB  = $(SHIM_DIR)/libvgpu-cublasLt.so.12
+SHIM_INCLUDES      = -I$(INC_DIR) -I$(SHIM_DIR)
 
 # ============================================================================
 # Targets
@@ -108,15 +114,19 @@ host: $(MEDIATOR_BIN) $(ADMIN_BIN)
 	@echo "  $(ADMIN_BIN)        — admin CLI"
 	@echo ""
 
-guest: $(SHIM_CUDA_LIB) $(SHIM_NVML_LIB)
+guest: $(SHIM_CUDA_LIB) $(SHIM_CUDART_LIB) $(SHIM_NVML_LIB) $(SHIM_CUBLAS_LIB) $(SHIM_CUBLASLT_LIB)
 	@echo ""
 	@echo "Guest shim libraries built:"
-	@echo "  $(SHIM_CUDA_LIB)  — CUDA Driver API shim (replaces libcuda.so)"
-	@echo "  $(SHIM_NVML_LIB)  — NVML shim (replaces libnvidia-ml.so)"
+	@echo "  $(SHIM_CUDA_LIB)    — CUDA Driver API shim (replaces libcuda.so.1)"
+	@echo "  $(SHIM_CUDART_LIB)  — CUDA Runtime API shim (replaces libcudart.so.12)"
+	@echo "  $(SHIM_NVML_LIB)    — NVML shim (replaces libnvidia-ml.so)"
+	@echo "  $(SHIM_CUBLAS_LIB)  — CUBLAS shim (replaces libcublas.so.12)"
+	@echo "  $(SHIM_CUBLASLT_LIB) — CUBLAS LT shim (replaces libcublasLt.so.12)"
 	@echo ""
 	@echo "Deploy to guest VM:"
-	@echo "  scp $(SHIM_DIR)/libvgpu-cuda.so $(SHIM_DIR)/libvgpu-nvml.so \\"
-	@echo "      $(SHIM_DIR)/install.sh guest-vm:/tmp/vgpu/"
+	@echo "  scp $(SHIM_DIR)/libvgpu-cuda.so.1 $(SHIM_DIR)/libvgpu-cudart.so \\"
+	@echo "      $(SHIM_DIR)/libvgpu-cublas.so.12 $(SHIM_DIR)/libvgpu-cublasLt.so.12 \\"
+	@echo "      $(SHIM_DIR)/libvgpu-nvml.so $(SHIM_DIR)/install.sh guest-vm:/tmp/vgpu/"
 	@echo "  ssh guest-vm 'sudo /tmp/vgpu/install.sh'"
 	@echo ""
 
@@ -142,13 +152,35 @@ $(CLIENT_BIN): $(CLIENT_SRC) $(INC_DIR)/vgpu_protocol.h
 $(SHIM_CUDA_LIB): $(SHIM_CUDA_SRC) $(SHIM_TRANSPORT_SRC) $(SHIM_DIR)/cuda_transport.h \
                   $(SHIM_DIR)/gpu_properties.h $(INC_DIR)/cuda_protocol.h
 	$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
-		-o $@ $(SHIM_CUDA_SRC) $(SHIM_TRANSPORT_SRC) -lpthread
+		-o $@ $(SHIM_CUDA_SRC) $(SHIM_TRANSPORT_SRC) -ldl -lpthread
+	@echo "[SHIM] $@"
+
+$(SHIM_CUDART_LIB): $(SHIM_CUDART_SRC) $(SHIM_DIR)/gpu_properties.h $(INC_DIR)/cuda_protocol.h
+	$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
+		-o $@ $(SHIM_CUDART_SRC) -ldl
 	@echo "[SHIM] $@"
 
 $(SHIM_NVML_LIB): $(SHIM_NVML_SRC) $(SHIM_TRANSPORT_SRC) $(SHIM_DIR)/cuda_transport.h \
                   $(SHIM_DIR)/gpu_properties.h $(INC_DIR)/cuda_protocol.h
 	$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
 		-o $@ $(SHIM_NVML_SRC) $(SHIM_TRANSPORT_SRC) -lpthread
+	@echo "[SHIM] $@"
+
+$(SHIM_CUBLAS_LIB): $(SHIM_CUBLAS_SRC) $(SHIM_DIR)/gpu_properties.h
+	@if [ -f "$(SHIM_DIR)/cublas_version.lds" ]; then \
+		$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
+			-Wl,--version-script=$(SHIM_DIR)/cublas_version.lds \
+			-o $@ $(SHIM_CUBLAS_SRC) -ldl; \
+		echo "[SHIM] $@ (with version script)"; \
+	else \
+		$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
+			-o $@ $(SHIM_CUBLAS_SRC) -ldl; \
+		echo "[SHIM] $@ (without version script - may need symbol versioning)"; \
+	fi
+
+$(SHIM_CUBLASLT_LIB): $(SHIM_CUBLASLT_SRC) $(SHIM_DIR)/gpu_properties.h
+	$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
+		-o $@ $(SHIM_CUBLASLT_SRC) -ldl
 	@echo "[SHIM] $@"
 
 # ---- Compile rules ----------------------------------------------------------
@@ -192,8 +224,9 @@ install: host
 	@echo ""
 	@echo "To deploy guest shim libraries into a VM:"
 	@echo "  make guest"
-	@echo "  scp guest-shim/libvgpu-cuda.so guest-shim/libvgpu-nvml.so \\"
-	@echo "      guest-shim/install.sh <guest-vm>:/tmp/vgpu/"
+	@echo "  scp guest-shim/libvgpu-cuda.so.1 guest-shim/libvgpu-cudart.so \\"
+	@echo "      guest-shim/libvgpu-cublas.so.12 guest-shim/libvgpu-cublasLt.so.12 \\"
+	@echo "      guest-shim/libvgpu-nvml.so guest-shim/install.sh <guest-vm>:/tmp/vgpu/"
 	@echo "  ssh <guest-vm> 'sudo /tmp/vgpu/install.sh --with-ollama'"
 
 # ---- Database migration shortcut -------------------------------------------
@@ -206,7 +239,7 @@ migrate:
 clean:
 	rm -f $(P3_OBJS) $(MEDIATOR_OBJ) $(CONFIG_OBJ) $(ADMIN_OBJ) $(CUDA_OBJ) $(CUDA_EXEC_OBJ)
 	rm -f $(MEDIATOR_BIN) $(ADMIN_BIN) $(CLIENT_BIN)
-	rm -f $(SHIM_CUDA_LIB) $(SHIM_NVML_LIB)
+	rm -f $(SHIM_CUDA_LIB) $(SHIM_CUDART_LIB) $(SHIM_NVML_LIB) $(SHIM_CUBLAS_LIB) $(SHIM_CUBLASLT_LIB)
 	@echo "Clean."
 
 # ---- Help -------------------------------------------------------------------

@@ -2831,8 +2831,19 @@ static void init_gpu_defaults(void);
 static CUresult ensure_connected(void)
 {
     /* Fast path — transport already live */
-    if (g_transport) return CUDA_SUCCESS;
-    if (!g_device_found) return CUDA_ERROR_NOT_INITIALIZED;
+    if (g_transport) {
+        fprintf(stderr, "[libvgpu-cuda] ensure_connected() FAST PATH: transport already live (pid=%d)\n", (int)getpid());
+        fflush(stderr);
+        return CUDA_SUCCESS;
+    }
+    if (!g_device_found) {
+        fprintf(stderr, "[libvgpu-cuda] ensure_connected() ERROR: device not found (pid=%d)\n", (int)getpid());
+        fflush(stderr);
+        return CUDA_ERROR_NOT_INITIALIZED;
+    }
+
+    fprintf(stderr, "[libvgpu-cuda] ensure_connected() CALLED: initializing transport to VGPU-STUB (pid=%d)\n", (int)getpid());
+    fflush(stderr);
 
     /* Slow path — initialize transport under mutex (once) */
     ensure_mutex_init();
@@ -2841,11 +2852,17 @@ static CUresult ensure_connected(void)
     /* Double-check after acquiring lock */
     if (g_transport) {
         pthread_mutex_unlock(&g_mutex);
+        fprintf(stderr, "[libvgpu-cuda] ensure_connected() SUCCESS: transport initialized by another thread (pid=%d)\n", (int)getpid());
+        fflush(stderr);
         return CUDA_SUCCESS;
     }
 
+    fprintf(stderr, "[libvgpu-cuda] ensure_connected() INITIALIZING: calling cuda_transport_init() (pid=%d)\n", (int)getpid());
+    fflush(stderr);
     int rc = cuda_transport_init(&g_transport);
     if (rc != 0) {
+        fprintf(stderr, "[libvgpu-cuda] ensure_connected() FAILED: cuda_transport_init() returned %d (pid=%d)\n", rc, (int)getpid());
+        fflush(stderr);
         pthread_mutex_unlock(&g_mutex);
         fprintf(stderr, "[libvgpu-cuda] ensure_connected() transport init failed"
                         " — check resource0 permissions and mediator\n");
@@ -3125,11 +3142,34 @@ CUresult cuGetProcAddress(const char *symbol, void **funcPtr,
      * This ensures we find functions in our shim even if they're not in the global scope. */
     static void *shim_handle = NULL;
     if (!shim_handle) {
-        /* Get handle to our own shim library */
-        shim_handle = dlopen("/usr/lib64/libvgpu-cuda.so", RTLD_LAZY);
+        /* Get handle to our own shim library - try multiple paths */
+        const char *paths[] = {
+            "/opt/vgpu/lib/libvgpu-cuda.so.1",
+            "/opt/vgpu/lib/libvgpu-cuda.so",
+            "/usr/lib64/libvgpu-cuda.so.1",
+            "/usr/lib64/libvgpu-cuda.so",
+            NULL
+        };
+        for (int i = 0; paths[i] && !shim_handle; i++) {
+            shim_handle = dlopen(paths[i], RTLD_LAZY);
+            if (shim_handle) {
+                char log_path[256];
+                int path_len = snprintf(log_path, sizeof(log_path),
+                                       "[libvgpu-cuda] cuGetProcAddress: loaded shim from %s\n",
+                                       paths[i]);
+                if (path_len > 0 && path_len < (int)sizeof(log_path)) {
+                    syscall(__NR_write, 2, log_path, path_len);
+                }
+                break;
+            }
+        }
         if (!shim_handle) {
             /* Fallback: try to find ourselves via RTLD_DEFAULT */
             shim_handle = dlopen(NULL, RTLD_LAZY);
+            if (shim_handle) {
+                const char *fallback_msg = "[libvgpu-cuda] cuGetProcAddress: using RTLD_DEFAULT fallback\n";
+                syscall(__NR_write, 2, fallback_msg, 60);
+            }
         }
     }
     
@@ -4288,12 +4328,34 @@ CUresult cuCtxDestroy(CUcontext ctx)
 
 CUresult cuCtxSetCurrent(CUcontext ctx)
 {
-    fprintf(stderr, "[libvgpu-cuda] CALLED: cuCtxSetCurrent(ctx=%p)\n", ctx);
-    fflush(stderr);
+    /* CRITICAL: Log FIRST using syscall to see if this is called during GGML init */
+    const char *msg = "[libvgpu-cuda] cuCtxSetCurrent() CALLED: ctx=%p\n";
+    char buf[128];
+    int len = snprintf(buf, sizeof(buf), msg, ctx);
+    if (len > 0 && len < (int)sizeof(buf)) {
+        syscall(__NR_write, 2, buf, len);
+    }
+    
+    /* CRITICAL: During init phase, don't call ensure_init() - just set context locally */
+    if (g_in_init_phase) {
+        g_current_ctx = ctx;
+        const char *success_msg = "[libvgpu-cuda] cuCtxSetCurrent() SUCCESS (init phase, local): ctx=%p\n";
+        char success_buf[128];
+        int success_len = snprintf(success_buf, sizeof(success_buf), success_msg, ctx);
+        if (success_len > 0 && success_len < (int)sizeof(success_buf)) {
+            syscall(__NR_write, 2, success_buf, success_len);
+        }
+        return CUDA_SUCCESS;
+    }
+    
     CUresult rc = ensure_init();
     if (rc != CUDA_SUCCESS) {
-        fprintf(stderr, "[libvgpu-cuda] cuCtxSetCurrent ensure_init() failed: %d\n", rc);
-        fflush(stderr);
+        const char *error_msg = "[libvgpu-cuda] cuCtxSetCurrent ensure_init() failed: %d\n";
+        char error_buf[128];
+        int error_len = snprintf(error_buf, sizeof(error_buf), error_msg, rc);
+        if (error_len > 0 && error_len < (int)sizeof(error_buf)) {
+            syscall(__NR_write, 2, error_buf, error_len);
+        }
         return rc;
     }
 
@@ -4321,8 +4383,20 @@ CUresult cuCtxSetCurrent(CUcontext ctx)
 
 CUresult cuCtxGetCurrent(CUcontext *pctx)
 {
+    /* CRITICAL: Log FIRST using syscall to see if this is called during GGML init */
+    const char *msg = "[libvgpu-cuda] cuCtxGetCurrent() CALLED\n";
+    syscall(__NR_write, 2, msg, 48);
+    
     if (!pctx) return CUDA_ERROR_INVALID_VALUE;
     *pctx = g_current_ctx;
+    
+    const char *success_msg = "[libvgpu-cuda] cuCtxGetCurrent() SUCCESS: returning ctx=%p\n";
+    char buf[128];
+    int len = snprintf(buf, sizeof(buf), success_msg, g_current_ctx);
+    if (len > 0 && len < (int)sizeof(buf)) {
+        syscall(__NR_write, 2, buf, len);
+    }
+    
     return CUDA_SUCCESS;
 }
 
@@ -4653,6 +4727,14 @@ CUresult cuMemHostGetDevicePointer(CUdeviceptr *pdptr, void *p, unsigned int fla
 CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
                           size_t byteCount)
 {
+    char log_msg[256];
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cuda] cuMemcpyHtoD() CALLED: dst=0x%llx size=%zu bytes (pid=%d)\n",
+                          (unsigned long long)dstDevice, byteCount, (int)getpid());
+    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+        syscall(__NR_write, 2, log_msg, log_len);
+    }
+
     CUresult rc = ensure_connected();
     if (rc != CUDA_SUCCESS) return rc;
     if (!srcHost && byteCount > 0) return CUDA_ERROR_INVALID_VALUE;
@@ -4662,11 +4744,23 @@ CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
     CUDA_PACK_U64(args, 0, (uint64_t)dstDevice);
     CUDA_PACK_U64(args, 2, (uint64_t)byteCount);
 
-    return (CUresult)cuda_transport_call(g_transport,
+    rc = (CUresult)cuda_transport_call(g_transport,
                                           CUDA_CALL_MEMCPY_HTOD,
                                           args, 4,
                                           srcHost, (uint32_t)byteCount,
                                           &result, NULL, 0, NULL);
+
+    if (rc == CUDA_SUCCESS) {
+        char success_msg[128];
+        int success_len = snprintf(success_msg, sizeof(success_msg),
+                                  "[libvgpu-cuda] cuMemcpyHtoD() SUCCESS: forwarded to host (pid=%d)\n",
+                                  (int)getpid());
+        if (success_len > 0 && success_len < (int)sizeof(success_msg)) {
+            syscall(__NR_write, 2, success_msg, success_len);
+        }
+    }
+
+    return rc;
 }
 
 CUresult cuMemcpyHtoD(CUdeviceptr dstDevice, const void *srcHost,
@@ -4678,6 +4772,14 @@ CUresult cuMemcpyHtoD(CUdeviceptr dstDevice, const void *srcHost,
 CUresult cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
                           size_t byteCount)
 {
+    char log_msg[256];
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cuda] cuMemcpyDtoH() CALLED: src=0x%llx size=%zu bytes (pid=%d)\n",
+                          (unsigned long long)srcDevice, byteCount, (int)getpid());
+    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+        syscall(__NR_write, 2, log_msg, log_len);
+    }
+
     CUresult rc = ensure_connected();
     if (rc != CUDA_SUCCESS) return rc;
     if (!dstHost && byteCount > 0) return CUDA_ERROR_INVALID_VALUE;
@@ -4688,13 +4790,25 @@ CUresult cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
     CUDA_PACK_U64(args, 0, (uint64_t)srcDevice);
     CUDA_PACK_U64(args, 2, (uint64_t)byteCount);
 
-    return (CUresult)cuda_transport_call(g_transport,
+    rc = (CUresult)cuda_transport_call(g_transport,
                                           CUDA_CALL_MEMCPY_DTOH,
                                           args, 4,
                                           NULL, 0,
                                           &result,
                                           dstHost, (uint32_t)byteCount,
                                           &recv_len);
+
+    if (rc == CUDA_SUCCESS) {
+        char success_msg[128];
+        int success_len = snprintf(success_msg, sizeof(success_msg),
+                                  "[libvgpu-cuda] cuMemcpyDtoH() SUCCESS: forwarded to host, received %u bytes (pid=%d)\n",
+                                  recv_len, (int)getpid());
+        if (success_len > 0 && success_len < (int)sizeof(success_msg)) {
+            syscall(__NR_write, 2, success_msg, success_len);
+        }
+    }
+
+    return rc;
 }
 
 CUresult cuMemcpyDtoH(void *dstHost, CUdeviceptr srcDevice,
@@ -4968,6 +5082,15 @@ CUresult cuLaunchKernel(CUfunction f,
                          void **kernelParams,
                          void **extra)
 {
+    char log_msg[256];
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cuda] cuLaunchKernel() CALLED: grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u (pid=%d)\n",
+                          gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
+                          sharedMemBytes, kernelParams ? 1 : 0, (int)getpid());
+    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+        syscall(__NR_write, 2, log_msg, log_len);
+    }
+
     CUresult rc = ensure_connected();
     if (rc != CUDA_SUCCESS) return rc;
 
@@ -5036,6 +5159,24 @@ CUresult cuLaunchKernel(CUfunction f,
                                         NULL, 0,
                                         payload, (uint32_t)payload_size,
                                         &result, NULL, 0, NULL);
+
+    if (rc == CUDA_SUCCESS) {
+        char success_msg[128];
+        int success_len = snprintf(success_msg, sizeof(success_msg),
+                                  "[libvgpu-cuda] cuLaunchKernel() SUCCESS: forwarded to host (pid=%d)\n",
+                                  (int)getpid());
+        if (success_len > 0 && success_len < (int)sizeof(success_msg)) {
+            syscall(__NR_write, 2, success_msg, success_len);
+        }
+    } else {
+        char error_msg[128];
+        int error_len = snprintf(error_msg, sizeof(error_msg),
+                                "[libvgpu-cuda] cuLaunchKernel() FAILED: rc=%d (pid=%d)\n",
+                                rc, (int)getpid());
+        if (error_len > 0 && error_len < (int)sizeof(error_msg)) {
+            syscall(__NR_write, 2, error_msg, error_len);
+        }
+    }
 
     free(payload);
     return rc;
@@ -5643,3 +5784,4 @@ ssize_t write(int fd, const void *buf, size_t count)
     
     return real_write ? real_write(fd, buf, count) : -1;
 }
+#endif /* #if 0 - malloc interception disabled */

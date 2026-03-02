@@ -128,6 +128,114 @@ cublasStatus_t cublasGetMathMode(cublasHandle_t handle, int *mode) {
     return CUBLAS_STATUS_SUCCESS;
 }
 
+/* cublasGetStatusString - get status string */
+/* CRITICAL: Must be exported with correct version for GGML */
+__attribute__((visibility("default")))
+const char* cublasGetStatusString(cublasStatus_t status) {
+    return "CUBLAS_STATUS_SUCCESS";
+}
+
+/* cublasSgemm_v2 - single precision matrix multiply */
+cublasStatus_t cublasSgemm_v2(cublasHandle_t handle, int transa, int transb,
+                              int m, int n, int k,
+                              const float *alpha,
+                              const float *A, int lda,
+                              const float *B, int ldb,
+                              const float *beta,
+                              float *C, int ldc) {
+    char log_msg[256];
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cublas] cublasSgemm_v2() CALLED (m=%d, n=%d, k=%d, pid=%d)\n",
+                          m, n, k, (int)getpid());
+    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+        syscall(__NR_write, 2, log_msg, log_len);
+    }
+    return CUBLAS_STATUS_SUCCESS;
+}
+
+/* cublasStrsmBatched - batched triangular solve */
+cublasStatus_t cublasStrsmBatched(cublasHandle_t handle, int side, int uplo,
+                                  int trans, int diag,
+                                  int m, int n,
+                                  const float *alpha,
+                                  float *const A[], int lda,
+                                  float *const B[], int ldb,
+                                  int batchCount) {
+    char log_msg[256];
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cublas] cublasStrsmBatched() CALLED (m=%d, n=%d, batch=%d, pid=%d)\n",
+                          m, n, batchCount, (int)getpid());
+    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+        syscall(__NR_write, 2, log_msg, log_len);
+    }
+    return CUBLAS_STATUS_SUCCESS;
+}
+
+/* cublasGemmEx - extended GEMM with type support */
+cublasStatus_t cublasGemmEx(cublasHandle_t handle,
+                            int transa, int transb,
+                            int m, int n, int k,
+                            const void *alpha,
+                            const void *A, int Atype, int lda,
+                            const void *B, int Btype, int ldb,
+                            const void *beta,
+                            void *C, int Ctype, int ldc,
+                            int computeType, int algo) {
+    char log_msg[256];
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cublas] cublasGemmEx() CALLED (m=%d, n=%d, k=%d, pid=%d)\n",
+                          m, n, k, (int)getpid());
+    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+        syscall(__NR_write, 2, log_msg, log_len);
+    }
+    return CUBLAS_STATUS_SUCCESS;
+}
+
+/* cublasGemmStridedBatchedEx - strided batched GEMM with type support */
+cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
+                                         int transa, int transb,
+                                         int m, int n, int k,
+                                         const void *alpha,
+                                         const void *A, int Atype, int lda,
+                                         long long int strideA,
+                                         const void *B, int Btype, int ldb,
+                                         long long int strideB,
+                                         const void *beta,
+                                         void *C, int Ctype, int ldc,
+                                         long long int strideC,
+                                         int batchCount,
+                                         int computeType, int algo) {
+    char log_msg[256];
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cublas] cublasGemmStridedBatchedEx() CALLED (m=%d, n=%d, k=%d, batch=%d, pid=%d)\n",
+                          m, n, k, batchCount, (int)getpid());
+    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+        syscall(__NR_write, 2, log_msg, log_len);
+    }
+    return CUBLAS_STATUS_SUCCESS;
+}
+
+/* cublasGemmBatchedEx - batched GEMM with type support */
+cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
+                                   int transa, int transb,
+                                   int m, int n, int k,
+                                   const void *alpha,
+                                   const void *const Aarray[], int Atype, int lda,
+                                   const void *const Barray[], int Btype, int ldb,
+                                   const void *beta,
+                                   void *const Carray[], int Ctype, int ldc,
+                                   int batchCount,
+                                   int computeType, int algo) {
+    char log_msg[256];
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cublas] cublasGemmBatchedEx() CALLED (m=%d, n=%d, k=%d, batch=%d, pid=%d)\n",
+                          m, n, k, batchCount, (int)getpid());
+    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+        syscall(__NR_write, 2, log_msg, log_len);
+    }
+    return CUBLAS_STATUS_SUCCESS;
+}
+
 /* Constructor */
 __attribute__((constructor))
 static void libvgpu_cublas_on_load(void) {

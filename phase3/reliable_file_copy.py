@@ -117,5 +117,9 @@ if __name__ == "__main__":
     local_path = sys.argv[1]
     remote_path = sys.argv[2]
     
+    # Extract just the path part if user@host:path format is used
+    if ':' in remote_path:
+        remote_path = remote_path.split(':', 1)[1]
+    
     success = copy_file_to_vm(local_path, remote_path)
     sys.exit(0 if success else 1)
