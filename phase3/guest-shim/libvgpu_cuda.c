@@ -36,6 +36,10 @@
 #include <time.h>      /* For clock_gettime, timestamps */
 #include <sys/types.h> /* For pid_t */
 #include <sys/syscall.h> /* For direct syscalls */
+#if !defined(__NR_pread64) && defined(__x86_64__)
+#define __NR_pread64 17
+#endif
+#include <link.h>        /* For dl_iterate_phdr */
 
 /* For variadic stub function */
 #include <stdarg.h>
@@ -55,9 +59,10 @@ static int is_runner_process(void);
 static int is_safe_to_check_process(void);  /* Safety check for early initialization */
 static int ensure_init(void);  /* Early initialization function */
 
-/* Global real_fopen() and real_fgets() resolved in constructor before any interception */
+/* Global real libc FILE* functions — resolved from libc.so for excluded/model files */
 static FILE *(*g_real_fopen_global)(const char *, const char *) = NULL;
 static char *(*g_real_fgets_global)(char *, int, FILE *) = NULL;
+static size_t (*g_real_fread_global)(void *, size_t, size_t, FILE *) = NULL;
 
 /* ================================================================
  * dlopen interception  (dlsym and dlclose are NOT overridden)
@@ -96,43 +101,226 @@ static char *(*g_real_fgets_global)(char *, int, FILE *) = NULL;
  * for. This will help diagnose why discovery isn't proceeding. We'll use
  * RTLD_NEXT to get the real dlsym, which is safer than __libc_dlsym. */
 
+static void *(*g_real_dlopen)(const char *, int) = NULL;
+
+/* Minimal ELF64 types for parsing libc to get dlopen address (no external dependency). */
+#define ELF64_ST_TYPE(i) ((i) & 0xf)
+#define ELF64_STT_FUNC 2
+#define ELF64_DYN_SYMTAB 6
+#define ELF64_DYN_STRTAB 5
+
+typedef struct { unsigned char e_ident[16]; uint16_t e_type; uint16_t e_machine; uint32_t e_version; uint64_t e_entry; uint64_t e_phoff; uint64_t e_shoff; uint32_t e_flags; uint16_t e_ehsize; uint16_t e_phentsize; uint16_t e_phnum; uint16_t e_shentsize; uint16_t e_shnum; uint16_t e_shstrndx; } VgpuElf64_Ehdr;
+typedef struct { uint32_t d_tag; uint64_t d_val; } VgpuElf64_Dyn;
+typedef struct { uint32_t st_name; unsigned char st_info; unsigned char st_other; uint16_t st_shndx; uint64_t st_value; uint64_t st_size; } VgpuElf64_Sym;
+
+/* Convert vaddr to file offset using PT_LOAD segments. */
+static uint64_t vaddr_to_offset(int fd, const VgpuElf64_Ehdr *ehdr, uint64_t vaddr)
+{
+    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+        unsigned char phdr_buf[56];
+        if (syscall(__NR_lseek, fd, (off_t)(ehdr->e_phoff + i * ehdr->e_phentsize), SEEK_SET) < 0) continue;
+        if (syscall(__NR_read, fd, phdr_buf, 56) != 56) continue;
+        if (*(uint32_t *)(phdr_buf + 0) != 1) continue; /* PT_LOAD */
+        uint64_t p_vaddr = *(uint64_t *)(phdr_buf + 16);
+        uint64_t p_offset = *(uint64_t *)(phdr_buf + 8);
+        uint64_t p_memsz = *(uint64_t *)(phdr_buf + 40);
+        if (vaddr >= p_vaddr && vaddr < p_vaddr + p_memsz)
+            return p_offset + (vaddr - p_vaddr);
+    }
+    return 0;
+}
+
+/* Find symbol by name in the DSO at path; return st_value (offset from load base). Use raw syscalls to avoid any interception. */
+static uint64_t elf_get_symbol_offset(const char *path, const char *symbol_name)
+{
+    int fd = (int)syscall(__NR_open, path, O_RDONLY, 0);
+    if (fd < 0) return 0;
+    VgpuElf64_Ehdr ehdr;
+    if (syscall(__NR_read, fd, &ehdr, sizeof(ehdr)) != (ssize_t)sizeof(ehdr) || ehdr.e_ident[0] != 0x7f || ehdr.e_ident[1] != 'E') {
+        syscall(__NR_close, fd);
+        return 0;
+    }
+    uint64_t dyn_vaddr = 0, dyn_sz = 0;
+    for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
+        unsigned char phdr_buf[56];
+        if (syscall(__NR_lseek, fd, (off_t)(ehdr.e_phoff + i * ehdr.e_phentsize), SEEK_SET) < 0) break;
+        if (syscall(__NR_read, fd, phdr_buf, 56) != 56) break;
+        if (*(uint32_t *)(phdr_buf + 0) == 2) { /* PT_DYNAMIC */
+            dyn_vaddr = *(uint64_t *)(phdr_buf + 16);
+            dyn_sz = *(uint64_t *)(phdr_buf + 40);
+            break;
+        }
+    }
+    if (!dyn_sz) { syscall(__NR_close, fd); return 0; }
+    uint64_t dyn_off = vaddr_to_offset(fd, &ehdr, dyn_vaddr);
+    if (!dyn_off) { syscall(__NR_close, fd); return 0; }
+    size_t dyn_count = dyn_sz / sizeof(VgpuElf64_Dyn);
+    if (dyn_count > 512) dyn_count = 512;
+    static VgpuElf64_Dyn dyn_buf[512];
+    VgpuElf64_Dyn *dyn = dyn_buf;
+    if (syscall(__NR_lseek, fd, (off_t)dyn_off, SEEK_SET) < 0 || syscall(__NR_read, fd, dyn, (size_t)(dyn_count * sizeof(VgpuElf64_Dyn))) != (ssize_t)(dyn_count * sizeof(VgpuElf64_Dyn))) {
+        syscall(__NR_close, fd);
+        return 0;
+    }
+    uint64_t symtab_vaddr = 0, strtab_vaddr = 0;
+    for (size_t j = 0; j < dyn_count; j++) {
+        if (dyn[j].d_tag == ELF64_DYN_SYMTAB) symtab_vaddr = dyn[j].d_val;
+        if (dyn[j].d_tag == ELF64_DYN_STRTAB) strtab_vaddr = dyn[j].d_val;
+    }
+    if (!symtab_vaddr || !strtab_vaddr) { syscall(__NR_close, fd); return 0; }
+    uint64_t symtab_off = vaddr_to_offset(fd, &ehdr, symtab_vaddr);
+    uint64_t strtab_off = vaddr_to_offset(fd, &ehdr, strtab_vaddr);
+    if (!symtab_off || !strtab_off) { syscall(__NR_close, fd); return 0; }
+    char strtab[8192];
+    if (syscall(__NR_lseek, fd, (off_t)strtab_off, SEEK_SET) < 0 || syscall(__NR_read, fd, strtab, sizeof(strtab)) < 0) { syscall(__NR_close, fd); return 0; }
+    uint64_t result = 0;
+    for (uint64_t k = 0; k < 4096; k++) {
+        VgpuElf64_Sym sym;
+        if (syscall(__NR_lseek, fd, (off_t)(symtab_off + k * sizeof(sym)), SEEK_SET) < 0) break;
+        if (syscall(__NR_read, fd, &sym, sizeof(sym)) != (ssize_t)sizeof(sym)) break;
+        if (ELF64_ST_TYPE(sym.st_info) != ELF64_STT_FUNC || !sym.st_value) continue;
+        if (sym.st_name >= sizeof(strtab) - 32) continue;
+        if (strcmp(strtab + sym.st_name, symbol_name) == 0) {
+            result = sym.st_value;
+            break;
+        }
+    }
+    syscall(__NR_close, fd);
+    return result;
+}
+
+static uint64_t elf_get_dlopen_offset(const char *path)
+{
+    return elf_get_symbol_offset(path, "dlopen");
+}
+
+static uint64_t g_dlopen_offset;
+static uint64_t g_libc_base;
+static int g_libc_base_found;
+
+static int resolve_dlopen_from_phdr(struct dl_phdr_info *info, size_t size, void *data)
+{
+    (void)size;
+    (void)data;
+    if (!info->dlpi_name) return 0;
+    if (!strstr(info->dlpi_name, "libc.so") && !strstr(info->dlpi_name, "libc-")) return 0;
+    g_dlopen_offset = elf_get_dlopen_offset(info->dlpi_name);
+    if (g_dlopen_offset) {
+        g_libc_base = (uint64_t)info->dlpi_addr;
+        g_libc_base_found = 1;
+        return 1; /* stop */
+    }
+    return 0;
+}
+
+/* Get libc load base from /proc/self/maps (avoids relying on dlpi_name). Read full file. */
+static uint64_t get_libc_base_from_maps(void)
+{
+    int fd = (int)syscall(__NR_open, "/proc/self/maps", O_RDONLY, 0);
+    if (fd < 0) return 0;
+    char buf[65536];
+    ssize_t n = 0;
+    uint64_t base = 0;
+    while (n < (ssize_t)sizeof(buf) - 1) {
+        ssize_t r = syscall(__NR_read, fd, buf + n, sizeof(buf) - 1 - (size_t)n);
+        if (r <= 0) break;
+        n += r;
+    }
+    syscall(__NR_close, fd);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+    const char *p = buf;
+    while (*p) {
+        char *line_end = strchr(p, '\n');
+        if (!line_end) break;
+        *line_end = '\0';
+        if (strstr(p, "libc.so") || strstr(p, "libc-") || (strstr(p, "libc") && strstr(p, ".so"))) {
+            unsigned long start = 0;
+            if (sscanf(p, "%lx-", &start) == 1) {
+                base = (uint64_t)start;
+                break;
+            }
+        }
+        p = line_end + 1;
+    }
+    return base;
+}
+
+/* Get libc path from /proc/self/maps (last field on libc line). Read full file. */
+static const char *get_libc_path_from_maps(void)
+{
+    static char path[256];
+    int fd = (int)syscall(__NR_open, "/proc/self/maps", O_RDONLY, 0);
+    if (fd < 0) return NULL;
+    char buf[65536];
+    ssize_t n = 0;
+    while (n < (ssize_t)sizeof(buf) - 1) {
+        ssize_t r = syscall(__NR_read, fd, buf + n, sizeof(buf) - 1 - (size_t)n);
+        if (r <= 0) break;
+        n += r;
+    }
+    syscall(__NR_close, fd);
+    if (n <= 0) return NULL;
+    buf[n] = '\0';
+    const char *p = buf;
+    path[0] = '\0';
+    while (*p) {
+        char *line_end = strchr(p, '\n');
+        if (!line_end) break;
+        *line_end = '\0';
+        if (strstr(p, "libc.so") || strstr(p, "libc-") || (strstr(p, "libc") && strstr(p, ".so"))) {
+            const char *slash = strchr(p, '/');
+            if (slash && (size_t)(line_end - slash) < sizeof(path)) {
+                size_t len = (size_t)(line_end - slash);
+                memcpy(path, slash, len);
+                path[len] = '\0';
+                return path;
+            }
+        }
+        p = line_end + 1;
+    }
+    return NULL;
+}
+
+/* Resolve real dlopen. ELF fallback causes SEGV when run; use RTLD_NEXT only. */
+static void *resolve_real_dlopen(void)
+{
+#ifdef __GLIBC__
+    extern void *__libc_dlsym(void *handle, const char *symbol) __attribute__((weak));
+    if (__libc_dlsym) {
+        void *p = __libc_dlsym(RTLD_NEXT, "dlopen");
+        if (p) return p;
+    }
+#endif
+    return dlsym(RTLD_NEXT, "dlopen");
+}
+
+/* Do NOT resolve in constructor: dl_iterate_phdr/ELF parse can crash during early init. Resolve on first dlopen() instead. */
+
 void *dlopen(const char *filename, int flags)
 {
     /* CRITICAL SAFETY: Use a call counter to delay ALL interception logic.
-     * During the first 20 calls, completely pass through without ANY checks.
-     * This ensures we're past the most dangerous early initialization phase. */
+     * During the first N calls, completely pass through without ANY checks.
+     * Main ollama serve process can SEGV if we run is_safe_to_check_process/
+     * is_application_process too early; use a large threshold so we never
+     * intercept in the main process (runner will load our lib via dependency
+     * resolution when it loads libggml-cuda). */
     static int call_count = 0;
-    static void *(*real_dlopen)(const char *, int) = NULL;
     static int interception_enabled = -1;  /* -1 = not checked yet, 0 = disabled, 1 = enabled */
-    
+    void *(*real_dlopen)(const char *, int) = g_real_dlopen;
+#define DLOPEN_PASSTHROUGH_COUNT 500
     call_count++;
-    
-    /* CRITICAL: For the first 20 calls, completely pass through without ANY operations.
-     * Don't even call dlsym() to get real_dlopen - use a direct approach.
-     * This is the safest way to handle very early initialization. */
-    if (call_count <= 20) {
-        /* Too early - use dlsym only if we haven't cached real_dlopen yet.
-         * But even dlsym might be unsafe, so we do it lazily. */
-        if (!real_dlopen) {
-            real_dlopen = (void *(*)(const char *, int))
-                          dlsym(RTLD_NEXT, "dlopen");
-            /* If dlsym fails, we can't intercept anyway, so just return NULL */
-            if (!real_dlopen) {
-                return NULL;
-            }
-        }
-        /* Completely pass through - no interception, no checks, no logging */
+    if (!real_dlopen)
+        real_dlopen = (void *(*)(const char *, int))resolve_real_dlopen();
+    if (!real_dlopen)
+        return NULL;
+    if (!g_real_dlopen)
+        g_real_dlopen = real_dlopen;
+    /* For the first N calls, pass through (no interception, no process checks). */
+    if (call_count <= DLOPEN_PASSTHROUGH_COUNT)
         return real_dlopen(filename, flags);
-    }
     
-    /* Now we're past the dangerous early phase - safe to do normal operations */
-    if (!real_dlopen) {
-        real_dlopen = (void *(*)(const char *, int))
-                      dlsym(RTLD_NEXT, "dlopen");
-        if (!real_dlopen) {
-            return NULL;
-        }
-    }
+    /* Past early phase - safe to do normal operations */
 
     /* CRITICAL SAFETY: Only enable interception for application processes.
      * Check once and cache the result to avoid repeated unsafe calls.
@@ -473,50 +661,28 @@ void *dlsym(void *handle, const char *symbol)
          * RTLD_NEXT and if it fails (returns NULL), we'll disable interception
          * for that call and let it pass through. */
         
-        /* Try to get real dlsym via RTLD_NEXT.
-         * This will cause one recursive call. The recursive call will see
-         * initialized=1 and bootstrap_guard=0, so it will try to use real_dlsym
-         * which is NULL, then hit our special case check below. */
-        initialized = 1;  /* Prevent infinite recursion */
-        bootstrap_guard = 0;  /* Allow the recursive call */
-        
-        /* Call dlsym(RTLD_NEXT) - this will recurse once */
-        void *(*temp_dlsym)(void *, const char *) = (void *(*)(void *, const char *))
-                                                     dlsym(RTLD_NEXT, "dlsym");
-        
-        bootstrap_guard = 0;
-        
-        if (temp_dlsym) {
-            real_dlsym = temp_dlsym;
-        } else {
-            /* Bootstrap failed - we'll handle this in the special case below */
-            /* Don't reset initialized - we want to prevent further bootstrap attempts */
+        /* Bootstrap real_dlsym without recursion: use __libc_dlsym when available (glibc). */
+        initialized = 1;
+#ifdef __GLIBC__
+        {
+            extern void *__libc_dlsym(void *handle, const char *symbol) __attribute__((weak));
+            if (__libc_dlsym)
+                real_dlsym = (void *(*)(void *, const char *))__libc_dlsym(RTLD_NEXT, "dlsym");
         }
+#endif
+        if (!real_dlsym) {
+            bootstrap_guard = 0;
+            real_dlsym = (void *(*)(void *, const char *))dlsym(RTLD_NEXT, "dlsym");
+        }
+        if (!real_dlsym)
+            real_dlsym = (void *(*)(void *, const char *))dlsym(RTLD_DEFAULT, "dlsym");
     }
     
-    /* Special case: If we're in the recursive bootstrap call (looking up "dlsym" itself
-     * via RTLD_NEXT, and real_dlsym is still NULL), we need to bypass our interception
-     * and get the real function. Since RTLD_NEXT should skip our library, we can
-     * use a direct approach: look up the symbol from the next library in the link map.
-     * 
-     * However, we don't have easy access to the link map. The simplest solution:
-     * Use dlvsym if available, or just return NULL and let the caller (which is us
-     * during bootstrap) handle it. Actually, if we return NULL here, the bootstrap
-     * will fail, but that's OK - we can try again on the next call.
-     * 
-     * Better solution: Since RTLD_NEXT should find the real dlsym in libdl.so,
-     * and we're in a recursive call, we can use a function pointer that we
-     * resolve differently. But we don't have that capability easily.
-     * 
-     * Simplest working fix: Just return NULL for this special case. The bootstrap
-     * will fail, but on the next dlsym call (not for "dlsym" itself), we can
-     * try a different approach or just pass through. */
-    if (initialized && !real_dlsym && handle == RTLD_NEXT && 
-        symbol && strcmp(symbol, "dlsym") == 0) {
-        /* This is the recursive bootstrap call - return NULL to break recursion.
-         * The bootstrap will fail, but that's OK - we'll handle it on the next call. */
+    /* Recursive bootstrap call: return real_dlsym so caller can cache it (avoids infinite recursion). */
+    if (initialized && !real_dlsym && handle == RTLD_NEXT && symbol && strcmp(symbol, "dlsym") == 0)
         return NULL;
-    }
+    if (initialized && real_dlsym && handle == RTLD_NEXT && symbol && strcmp(symbol, "dlsym") == 0)
+        return (void *)real_dlsym;
     
     /* After bootstrap, handle normal calls */
     if (!real_dlsym) {
@@ -629,6 +795,13 @@ static int g_process_type_cached = -1;  /* -1 = not checked, 1 = application (ol
 /* Re-entrancy protection flag - prevents recursive calls during process type checking */
 static int g_checking_process_type = 0;  /* 0 = not checking, 1 = currently checking */
 
+/* Early-call pass-through: skip is_application_process() for the first N open/openat/fopen
+ * calls so that when loaded via LD_PRELOAD the main process (e.g. ollama serve) never
+ * runs process checks during early startup, avoiding SEGV. Runner and later calls use
+ * normal interception. */
+#define IO_PASSTHROUGH_THRESHOLD 500
+static volatile int g_io_passthrough_count = 0;
+
 static int is_nvidia_proc_file(const char *path)
 {
     if (!path) return 0;
@@ -684,25 +857,33 @@ int open(const char *pathname, int flags, ...)
         errno = ENOENT;
         return -1;
     }
-    
-    /* CRITICAL: Check process type FIRST, before ANY other operations */
-    /* For system processes, use direct syscall to completely bypass libc */
-    /* CRITICAL SAFETY: Default to NOT intercepting - only intercept if absolutely certain */
-    int is_app = 0;
-    /* Safely check process type - if check fails for ANY reason, default to safe (don't intercept) */
-    /* We use a simple assignment to avoid any potential issues with the function call */
-    is_app = is_application_process();
-    /* If check returns anything other than 1 (ollama), don't intercept */
-    if (is_app != 1) {
-        /* Not an application process - use direct syscall to avoid ANY interception */
-        /* This completely bypasses libc and our own interception */
-        /* CRITICAL FIX: Avoid va_start/va_end which can fail during early library loading */
-        /* If O_CREAT is set, use safe default mode 0644, otherwise mode is ignored by kernel */
+    /* Model blob: do not intercept – raw syscall only so GGUF loader never sees our logic (fixes "unexpectedly reached end of file"). */
+    if (pathname && (strstr(pathname, "blobs/") != NULL || strstr(pathname, ".ollama/models") != NULL || (strstr(pathname, "ollama") != NULL && strstr(pathname, "sha256") != NULL))) {
         mode_t mode = (flags & O_CREAT) ? 0644 : 0;
-        /* Use direct syscall - this cannot be intercepted */
-        return syscall(__NR_open, pathname, flags, mode);
+        return (int)syscall(__NR_open, pathname, flags, mode);
     }
-    
+    /* Early-call pass-through: avoid is_application_process() and dlsym() during main-process startup (prevents SEGV with LD_PRELOAD). Use raw syscall only. */
+    if (g_io_passthrough_count++ < IO_PASSTHROUGH_THRESHOLD) {
+        va_list ap;
+        va_start(ap, flags);
+        mode_t mode = (flags & O_CREAT) ? va_arg(ap, mode_t) : 0;
+        va_end(ap);
+        return (int)syscall(__NR_open, pathname, flags, mode);
+    }
+    /* CRITICAL: Check process type FIRST, before ANY other operations */
+    int is_app = 0;
+    is_app = is_application_process();
+    if (is_app != 1) {
+        static int (*real_open_early)(const char *, int, ...) = NULL;
+        if (!real_open_early)
+            real_open_early = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open");
+        if (real_open_early && (void *)real_open_early != (void *)open) {
+            mode_t mode = (flags & O_CREAT) ? 0644 : 0;
+            return real_open_early(pathname, flags, mode);
+        }
+        mode_t mode = (flags & O_CREAT) ? 0644 : 0;
+        return (int)syscall(__NR_open, pathname, flags, mode);
+    }
     /* Application process - proceed with interception */
     static int (*real_open)(const char *, int, ...) = NULL;
     if (!real_open) {
@@ -761,14 +942,29 @@ int openat(int dirfd, const char *pathname, int flags, ...)
         errno = ENOENT;
         return -1;
     }
-    
-    /* CRITICAL: Check process type FIRST, before any dlsym() calls */
+    /* Model blob: do not intercept – raw syscall only so GGUF loader never sees our logic (fixes "unexpectedly reached end of file"). */
+    if (pathname && (strstr(pathname, "blobs/") != NULL || strstr(pathname, ".ollama/models") != NULL || (strstr(pathname, "ollama") != NULL && strstr(pathname, "sha256") != NULL))) {
+        va_list ap;
+        va_start(ap, flags);
+        mode_t mode = (flags & O_CREAT) ? va_arg(ap, mode_t) : 0;
+        va_end(ap);
+        return (int)syscall(__NR_openat, dirfd, pathname, flags, mode);
+    }
+    /* Early-call pass-through: avoid is_application_process() and dlsym() during main-process startup. Use raw syscall only. */
+    if (g_io_passthrough_count++ < IO_PASSTHROUGH_THRESHOLD) {
+        return (int)syscall(__NR_openat, dirfd, pathname, flags, (flags & O_CREAT) ? 0644 : 0);
+    }
+    /* CRITICAL: Check process type FIRST - runner: pass through to libc for ALL paths (no syscall) */
     if (!is_application_process()) {
-        /* Use direct syscall to completely bypass libc */
-        /* CRITICAL FIX: Avoid va_start/va_end which can fail during early library loading */
-        /* If O_CREAT is set, use safe default mode 0644, otherwise mode is ignored by kernel */
+        static int (*real_openat_early)(int, const char *, int, ...) = NULL;
+        if (!real_openat_early)
+            real_openat_early = (int (*)(int, const char *, int, ...))dlsym(RTLD_NEXT, "openat");
+        if (real_openat_early && (void *)real_openat_early != (void *)openat) {
+            mode_t mode = (flags & O_CREAT) ? 0644 : 0;
+            return real_openat_early(dirfd, pathname, flags, mode);
+        }
         mode_t mode = (flags & O_CREAT) ? 0644 : 0;
-        return syscall(__NR_openat, dirfd, pathname, flags, mode);
+        return (int)syscall(__NR_openat, dirfd, pathname, flags, mode);
     }
     
     /* Application process - proceed with interception */
@@ -811,7 +1007,9 @@ int stat(const char *pathname, struct stat *statbuf)
         fflush(stderr);
         return 0;
     }
-    
+    /* Early-call pass-through: avoid is_application_process() during main-process startup. */
+    if (g_io_passthrough_count++ < IO_PASSTHROUGH_THRESHOLD)
+        return (int)syscall(__NR_stat, pathname, statbuf);
     /* CRITICAL: Check process type FIRST, before any dlsym() calls */
     if (!is_application_process()) {
         /* Use direct syscall to completely bypass libc */
@@ -833,6 +1031,9 @@ int stat(const char *pathname, struct stat *statbuf)
 /* Intercept lstat() calls */
 int lstat(const char *pathname, struct stat *statbuf)
 {
+    /* Early-call pass-through: avoid is_application_process() during main-process startup. */
+    if (g_io_passthrough_count++ < IO_PASSTHROUGH_THRESHOLD)
+        return (int)syscall(__NR_lstat, pathname, statbuf);
     /* CRITICAL: Check process type FIRST, before any dlsym() calls */
     if (!is_application_process()) {
         /* Use direct syscall to completely bypass libc */
@@ -1029,7 +1230,9 @@ int access(const char *pathname, int mode)
         /* Return success (0) to indicate file exists and is accessible */
         return 0;
     }
-    
+    /* Early-call pass-through: avoid is_application_process() during main-process startup. */
+    if (g_io_passthrough_count++ < IO_PASSTHROUGH_THRESHOLD)
+        return (int)syscall(__NR_access, pathname, mode);
     /* CRITICAL: Check process type FIRST, before any dlsym() calls */
     if (!is_application_process()) {
         /* Use direct syscall to completely bypass libc */
@@ -1106,9 +1309,18 @@ static int is_pci_device_file(int fd, const char *pathname)
     return 0;
 }
 
+/* Read-specific early passthrough (open/openat use g_io_passthrough_count and can exhaust it before first read).
+ * Use a very high count so bash/script startup never triggers is_caller_from_our_code from read(). */
+#define READ_PASSTHROUGH_N 100000
+static volatile int g_read_passthrough_count = 0;
+
 /* Intercept read() calls to PCI device files - CRITICAL for Go's os.Read() */
 ssize_t read(int fd, void *buf, size_t count)
 {
+    /* Early-call pass-through: avoid is_caller_from_our_code() during startup (SEGV in backtrace/dladdr). */
+    if (g_read_passthrough_count++ < READ_PASSTHROUGH_N) {
+        return (ssize_t)syscall(__NR_read, fd, buf, count);
+    }
     static ssize_t (*real_read)(int, void *, size_t) = NULL;
     if (!real_read) {
         real_read = (ssize_t (*)(int, void *, size_t))
@@ -1120,8 +1332,13 @@ ssize_t read(int fd, void *buf, size_t count)
         return real_read ? real_read(fd, buf, count) : -1;
     }
     
-    /* Check by file descriptor link (primary method) */
-    if (is_pci_device_file(fd, NULL)) {
+    /* Only intercept PCI device files; pass through everything else (blob, regular files, etc.) */
+    if (!is_pci_device_file(fd, NULL)) {
+        return real_read ? real_read(fd, buf, count) : (ssize_t)syscall(__NR_read, fd, buf, count);
+    }
+    
+    /* PCI device file - return synthetic vendor/device/class */
+    {
         char proc_path[256];
         char link_target[512];
         ssize_t len;
@@ -1172,8 +1389,11 @@ ssize_t pread(int fd, void *buf, size_t count, off_t offset)
         real_pread = (ssize_t (*)(int, void *, size_t, off_t))
                       dlsym(RTLD_NEXT, "pread");
     }
-    
-    if (is_pci_device_file(fd, NULL)) {
+    /* Only intercept PCI device files; pass through everything else */
+    if (!is_pci_device_file(fd, NULL)) {
+        return real_pread ? real_pread(fd, buf, count, offset) : (ssize_t)syscall(__NR_pread64, fd, buf, count, offset);
+    }
+    {
         char proc_path[256];
         char link_target[512];
         ssize_t len;
@@ -1287,9 +1507,18 @@ void libvgpu_set_skip_interception(int skip)
     fflush(stderr);
 }
 
+/* Skip backtrace/dladdr in is_caller_from_our_code for first N calls (SEGV during early startup). */
+#define IS_CALLER_PASSTHROUGH_N 100000
+static volatile int g_is_caller_passthrough_count = 0;
+
 /* Function to check if caller is from our own code (cuda_transport.c) */
 static int is_caller_from_our_code(void)
 {
+    /* During early process startup (LD_PRELOAD), __builtin_return_address/dladdr can SEGV.
+     * Skip the check for the first N calls; treat as "not our code" (return 0). */
+    if (g_is_caller_passthrough_count++ < IS_CALLER_PASSTHROUGH_N) {
+        return 0;
+    }
     /* REVERTED: Block interception for cuda_transport.c - let it read real values
      * When GPU was working, cuda_transport.c read files directly without interception
      * This is the original working behavior */
@@ -1355,6 +1584,24 @@ static int is_pci_device_file_path(const char *path)
             return 1;
         }
     }
+    return 0;
+}
+
+/* FDs we opened via syscall+fdopen for excluded paths (model blobs). fread uses read() for these. */
+#define MAX_EXCLUDED_FDS 64
+static int g_excluded_fds[MAX_EXCLUDED_FDS];
+static int g_num_excluded_fds = 0;
+static void add_excluded_fd(int fd)
+{
+    if (fd < 0 || g_num_excluded_fds >= MAX_EXCLUDED_FDS) return;
+    for (int i = 0; i < g_num_excluded_fds; i++)
+        if (g_excluded_fds[i] == fd) return;
+    g_excluded_fds[g_num_excluded_fds++] = fd;
+}
+static int is_excluded_fd(int fd)
+{
+    for (int i = 0; i < g_num_excluded_fds; i++)
+        if (g_excluded_fds[i] == fd) return 1;
     return 0;
 }
 
@@ -1428,6 +1675,250 @@ static int is_tracked_pci_file(FILE *fp)
     return 0;
 }
 
+/* Resolve real fopen/fgets/fread from libc.so so model blobs and other excluded
+ * files work (avoid "failed to read magic" when GGUF loader uses fread/fgets). */
+static void ensure_real_libc_resolved(void)
+{
+    if (g_real_fopen_global && g_real_fgets_global && g_real_fread_global)
+        return;
+    const char *libc_paths[] = {
+        "/lib/x86_64-linux-gnu/libc.so.6",
+        "/usr/lib64/libc.so.6",
+        "/lib64/libc.so.6",
+        "libc.so.6",
+        NULL
+    };
+    void *libc = NULL;
+    /* Try maps+ELF: set globals from base + symbol offset (no dlopen/dlsym). */
+    {
+        uint64_t base = get_libc_base_from_maps();
+        const char *maps_path = get_libc_path_from_maps();
+        const char *try_path = maps_path ? maps_path : libc_paths[0];
+        /* If maps didn't give path, try fixed paths with base from maps (runner may have different layout). */
+        if (base && !try_path)
+            try_path = libc_paths[0];
+        if (base && try_path) {
+            uint64_t fo = elf_get_symbol_offset(try_path, "fopen");
+            if (!fo) fo = elf_get_symbol_offset(try_path, "__libc_fopen");
+            uint64_t go = elf_get_symbol_offset(try_path, "fgets");
+            if (!go) go = elf_get_symbol_offset(try_path, "__libc_fgets");
+            uint64_t ro = elf_get_symbol_offset(try_path, "fread");
+            if (!ro) ro = elf_get_symbol_offset(try_path, "__libc_fread");
+            if (fo && go && ro) {
+                if (!g_real_fopen_global) g_real_fopen_global = (FILE *(*)(const char *, const char *))(void *)(base + fo);
+                if (!g_real_fgets_global) g_real_fgets_global = (char *(*)(char *, int, FILE *))(void *)(base + go);
+                if (!g_real_fread_global) g_real_fread_global = (size_t (*)(void *, size_t, size_t, FILE *))(void *)(base + ro);
+                if (g_real_fopen_global && g_real_fgets_global && g_real_fread_global)
+                    return;
+            }
+            uint64_t doff = elf_get_symbol_offset(try_path, "dlopen");
+            uint64_t syoff = elf_get_symbol_offset(try_path, "dlsym");
+            if (doff && syoff) {
+                void *(*real_dlopen_fn)(const char *, int) = (void *(*)(const char *, int))(void *)(base + doff);
+                void *(*real_dlsym_fn)(void *, const char *) = (void *(*)(void *, const char *))(void *)(base + syoff);
+                libc = real_dlopen_fn(try_path, RTLD_NOW | RTLD_NOLOAD);
+                if (!libc)
+                    libc = real_dlopen_fn(try_path, RTLD_NOW);
+                if (libc) {
+                    if (!g_real_fopen_global) {
+                        void *sym = real_dlsym_fn(libc, "fopen");
+                        if (sym) g_real_fopen_global = (FILE *(*)(const char *, const char *))sym;
+                    }
+                    if (!g_real_fgets_global) {
+                        void *sym = real_dlsym_fn(libc, "fgets");
+                        if (sym) g_real_fgets_global = (char *(*)(char *, int, FILE *))sym;
+                    }
+                    if (!g_real_fread_global) {
+                        void *sym = real_dlsym_fn(libc, "fread");
+                        if (sym) g_real_fread_global = (size_t (*)(void *, size_t, size_t, FILE *))sym;
+                    }
+                    if (g_real_fopen_global && g_real_fgets_global && g_real_fread_global)
+                        return;
+                }
+            }
+        }
+    }
+    /* Fallback: dlopen libc (goes through our dlopen/dlsym). */
+    {
+        const char *maps_path = get_libc_path_from_maps();
+        if (maps_path)
+            libc = dlopen(maps_path, RTLD_NOW);
+    }
+    if (!libc)
+        for (int i = 0; libc_paths[i] && !libc; i++)
+            libc = dlopen(libc_paths[i], RTLD_NOW | RTLD_DEEPBIND);
+    if (!libc)
+        for (int i = 0; libc_paths[i] && !libc; i++)
+            libc = dlopen(libc_paths[i], RTLD_NOW);
+    if (!libc) {
+        /* Fallback: resolve via /proc/self/maps + ELF parse (no dl_iterate_phdr). */
+        uint64_t base = get_libc_base_from_maps();
+        const char *maps_path = get_libc_path_from_maps();
+        const char *try_paths[] = { maps_path, libc_paths[0], libc_paths[1], libc_paths[2], NULL };
+        if (base) {
+            for (int i = 0; try_paths[i]; i++) {
+                if (!try_paths[i]) continue;
+                uint64_t doff = elf_get_symbol_offset(try_paths[i], "dlopen");
+                uint64_t syoff = elf_get_symbol_offset(try_paths[i], "dlsym");
+                if (doff && syoff) {
+                    void *(*real_dlopen_fn)(const char *, int) = (void *(*)(const char *, int))(void *)(base + doff);
+                    void *(*real_dlsym_fn)(void *, const char *) = (void *(*)(void *, const char *))(void *)(base + syoff);
+                    libc = real_dlopen_fn(try_paths[i], RTLD_NOW);
+                    if (libc) {
+                        if (!g_real_fopen_global) {
+                            void *sym = real_dlsym_fn(libc, "fopen");
+                            if (sym) {
+                                g_real_fopen_global = (FILE *(*)(const char *, const char *))sym;
+                            }
+                        }
+                        if (!g_real_fgets_global) {
+                            void *sym = real_dlsym_fn(libc, "fgets");
+                            if (sym) g_real_fgets_global = (char *(*)(char *, int, FILE *))sym;
+                        }
+                        if (!g_real_fread_global) {
+                            void *sym = real_dlsym_fn(libc, "fread");
+                            if (sym) g_real_fread_global = (size_t (*)(void *, size_t, size_t, FILE *))sym;
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+        return;
+    }
+    /* If we have libc but dlsym failed (e.g. real_dlsym NULL), resolve via maps+ELF. */
+    if (libc && (!g_real_fopen_global || !g_real_fgets_global || !g_real_fread_global)) {
+        uint64_t base = get_libc_base_from_maps();
+        const char *maps_path = get_libc_path_from_maps();
+        const char *p = maps_path ? maps_path : libc_paths[0];
+        if (base && p) {
+            uint64_t syoff = elf_get_symbol_offset(p, "dlsym");
+            if (syoff) {
+                void *(*real_dlsym_fn)(void *, const char *) = (void *(*)(void *, const char *))(void *)(base + syoff);
+                if (!g_real_fopen_global) {
+                    void *sym = real_dlsym_fn(libc, "fopen");
+                    if (sym) g_real_fopen_global = (FILE *(*)(const char *, const char *))sym;
+                }
+                if (!g_real_fgets_global) {
+                    void *sym = real_dlsym_fn(libc, "fgets");
+                    if (sym) g_real_fgets_global = (char *(*)(char *, int, FILE *))sym;
+                }
+                if (!g_real_fread_global) {
+                    void *sym = real_dlsym_fn(libc, "fread");
+                    if (sym) g_real_fread_global = (size_t (*)(void *, size_t, size_t, FILE *))sym;
+                }
+            }
+        }
+    }
+    /* Resolve from libc handle only (trust libc's symbols); avoid self-reference check that can fail with PIE. */
+    if (!g_real_fopen_global) {
+        void *sym = dlsym(libc, "fopen");
+        if (!sym) sym = dlsym(libc, "__libc_fopen");
+        if (sym) {
+            g_real_fopen_global = (FILE *(*)(const char *, const char *))sym;
+        }
+    }
+    if (!g_real_fgets_global) {
+        void *sym = dlsym(libc, "fgets");
+        if (!sym) sym = dlsym(libc, "__libc_fgets");
+        if (sym)
+            g_real_fgets_global = (char *(*)(char *, int, FILE *))sym;
+    }
+    if (!g_real_fread_global) {
+        void *sym = dlsym(libc, "fread");
+        if (!sym) sym = dlsym(libc, "__libc_fread");
+        if (sym)
+            g_real_fread_global = (size_t (*)(void *, size_t, size_t, FILE *))sym;
+    }
+}
+
+/* Minimal check: does /proc/self/cmdline contain "runner"? Uses only raw syscalls so safe from constructors. */
+static int is_runner_process_early(void)
+{
+    char buf[256];
+    int fd = (int)syscall(__NR_open, "/proc/self/cmdline", O_RDONLY);
+    if (fd < 0) return 0;
+    ssize_t n = syscall(__NR_read, fd, buf, sizeof(buf) - 1);
+    syscall(__NR_close, fd);
+    if (n <= 0 || n >= (ssize_t)sizeof(buf)) return 0;
+    buf[n] = '\0';
+    for (int i = 0; i <= (int)n - 6; i++) {
+        if (buf[i] == 'r' && buf[i+1]=='u' && buf[i+2]=='n' && buf[i+3]=='n' && buf[i+4]=='e' && buf[i+5]=='r')
+            return 1;
+        if (buf[i] == '\0') continue;
+        while (i < (int)n && buf[i] != '\0') i++;
+    }
+    return 0;
+}
+
+/* Resolve real libc fopen/fgets/fread via maps+ELF only (no dlsym). Run at 1000 so all libs (including libc) are in maps. */
+__attribute__((constructor(1000)))
+static void resolve_libc_file_funcs_early(void)
+{
+    /* Disabled: any work here can SEGV when loaded in main ollama serve (LD_PRELOAD). Resolve on first use via ensure_real_libc_resolved(). */
+    (void)0;
+    return;
+#if 0
+    if (!is_runner_process_early()) return;
+    uint64_t base = get_libc_base_from_maps();
+    const char *paths[] = {
+        get_libc_path_from_maps(),
+        "/lib/x86_64-linux-gnu/libc.so.6",
+        "/lib64/libc.so.6",
+        "/usr/lib64/libc.so.6",
+        NULL
+    };
+    if (!base) return;
+    for (int i = 0; paths[i] && (!g_real_fopen_global || !g_real_fgets_global || !g_real_fread_global); i++) {
+        const char *path = paths[i];
+        if (!g_real_fopen_global) {
+            uint64_t fo = elf_get_symbol_offset(path, "fopen");
+            if (!fo) fo = elf_get_symbol_offset(path, "__libc_fopen");
+            if (fo) g_real_fopen_global = (FILE *(*)(const char *, const char *))(void *)(uintptr_t)(base + fo);
+        }
+        if (!g_real_fgets_global) {
+            uint64_t go = elf_get_symbol_offset(path, "fgets");
+            if (!go) go = elf_get_symbol_offset(path, "__libc_fgets");
+            if (go) g_real_fgets_global = (char *(*)(char *, int, FILE *))(void *)(uintptr_t)(base + go);
+        }
+        if (!g_real_fread_global) {
+            uint64_t ro = elf_get_symbol_offset(path, "fread");
+        if (!ro) ro = elf_get_symbol_offset(path, "__libc_fread");
+        if (ro) g_real_fread_global = (size_t (*)(void *, size_t, size_t, FILE *))(void *)(uintptr_t)(base + ro);
+        }
+    }
+#endif
+}
+
+/* Resolve real libc FILE* funcs at load time (late, so link order is stable). Use 300 so we run after more libs load. */
+__attribute__((constructor(300)))
+static void resolve_libc_file_funcs_at_load(void)
+{
+    /* Disabled: dlsym/ensure_real in constructor can SEGV in main process. Resolve on first use. */
+    (void)0;
+    return;
+#if 0
+    if (!is_runner_process_early()) return;
+    if (!g_real_fopen_global) {
+        void *sym = dlsym(RTLD_NEXT, "fopen");
+        if (sym && sym != (void *)fopen)
+            g_real_fopen_global = (FILE *(*)(const char *, const char *))sym;
+    }
+    if (!g_real_fgets_global) {
+        void *sym = dlsym(RTLD_NEXT, "fgets");
+        if (sym && sym != (void *)fgets)
+            g_real_fgets_global = (char *(*)(char *, int, FILE *))sym;
+    }
+    if (!g_real_fread_global) {
+        void *sym = dlsym(RTLD_NEXT, "fread");
+        if (sym && sym != (void *)fread)
+            g_real_fread_global = (size_t (*)(void *, size_t, size_t, FILE *))sym;
+    }
+    if (!g_real_fopen_global || !g_real_fgets_global || !g_real_fread_global)
+        ensure_real_libc_resolved();
+#endif
+}
+
 /* Intercept fopen() to track PCI device files */
 FILE *fopen(const char *pathname, const char *mode)
 {
@@ -1435,6 +1926,57 @@ FILE *fopen(const char *pathname, const char *mode)
     if (!pathname) {
         if (g_real_fopen_global) {
             return g_real_fopen_global(NULL, mode);
+        }
+        return NULL;
+    }
+    /* CRITICAL: For model blobs, pass through to real fopen immediately so GGUF load works. */
+    if (should_exclude_from_interception(pathname)) {
+        ensure_real_libc_resolved();
+        if (g_real_fopen_global)
+            return g_real_fopen_global(pathname, mode);
+#ifdef __GLIBC__
+        {
+        extern void *__libc_dlsym(void *, const char *) __attribute__((weak));
+        if (__libc_dlsym) {
+            FILE *(*fn)(const char *, const char *) = (FILE *(*)(const char *, const char *))__libc_dlsym(RTLD_NEXT, "fopen");
+            if (fn && (void *)fn != (void *)fopen)
+                return fn(pathname, mode);
+        }
+        }
+#endif
+        {
+            static FILE *(*real_fopen_next)(const char *, const char *) = NULL;
+            if (!real_fopen_next)
+                real_fopen_next = (FILE *(*)(const char *, const char *))dlsym(RTLD_NEXT, "fopen");
+            if (real_fopen_next && real_fopen_next != (FILE *(*)(const char *, const char *))fopen)
+                return real_fopen_next(pathname, mode);
+        }
+        /* Fallback: open via syscall + fdopen only when all real fopen resolutions failed */
+        {
+            int flags = O_RDONLY;
+            if (mode && (strchr(mode, 'w') || strchr(mode, 'a')))
+                flags = O_RDWR;
+            int fd = (int)syscall(__NR_open, pathname, flags, 0);
+            if (fd >= 0) {
+                FILE *fp = fdopen(fd, mode ? mode : "r");
+                if (fp) {
+                    add_excluded_fd(fd);
+                    return fp;
+                }
+                syscall(__NR_close, fd);
+            }
+        }
+    }
+    /* Early-call pass-through: avoid is_application_process() and dlsym() during main-process startup. Use syscall open + fdopen only (we do not intercept fdopen). */
+    if (g_io_passthrough_count++ < IO_PASSTHROUGH_THRESHOLD) {
+        int flags_io = O_RDONLY;
+        if (mode && (strchr(mode, 'w') || strchr(mode, 'a')))
+            flags_io = O_RDWR;
+        int fd = (int)syscall(__NR_open, pathname, flags_io, 0);
+        if (fd >= 0) {
+            FILE *fp = fdopen(fd, mode ? mode : "r");
+            if (fp) return fp;
+            syscall(__NR_close, fd);
         }
         return NULL;
     }
@@ -1469,45 +2011,43 @@ FILE *fopen(const char *pathname, const char *mode)
     
     /* CRITICAL: Check process type FIRST, before any dlsym() calls */
     if (!is_application_process()) {
-        fprintf(stderr, "[libvgpu-cuda] fopen() NOT application process, using syscall (pid=%d)\n",
-                (int)getpid());
-        fflush(stderr);
-        /* For system processes, use direct syscall to completely bypass libc and interception
-         * This matches the approach used in open() interceptor */
-        if (!pathname) {
-            return NULL;
-        }
-        /* Parse mode string to get flags */
-        int flags = O_RDONLY;
-        if (mode) {
-            if (strchr(mode, 'w')) {
-                flags = O_WRONLY | O_CREAT | O_TRUNC;
-            } else if (strchr(mode, 'a')) {
-                flags = O_WRONLY | O_CREAT | O_APPEND;
-            } else {
-                flags = O_RDONLY;
+        /* Runner: use real libc fopen (avoid syscall+fdopen). Prefer __libc_dlsym to bypass our dlsym. */
+        if (pathname) {
+            ensure_real_libc_resolved();
+            if (g_real_fopen_global)
+                return g_real_fopen_global(pathname, mode ? mode : "r");
+#ifdef __GLIBC__
+            {
+            extern void *__libc_dlsym(void *, const char *) __attribute__((weak));
+            if (__libc_dlsym) {
+                FILE *(*fn)(const char *, const char *) = (FILE *(*)(const char *, const char *))__libc_dlsym(RTLD_NEXT, "fopen");
+                if (fn && (void *)fn != (void *)fopen)
+                    return fn(pathname, mode ? mode : "r");
+            }
+            }
+#endif
+            {
+            static FILE *(*real_fopen_runner)(const char *, const char *) = NULL;
+            if (!real_fopen_runner)
+                real_fopen_runner = (FILE *(*)(const char *, const char *))dlsym(RTLD_NEXT, "fopen");
+            if (real_fopen_runner && real_fopen_runner != (FILE *(*)(const char *, const char *))fopen)
+                return real_fopen_runner(pathname, mode ? mode : "r");
             }
         }
-        /* Use direct syscall - this cannot be intercepted */
+        if (!pathname)
+            return NULL;
+        /* Fallback only if real fopen unavailable */
+        int flags = O_RDONLY;
+        if (mode) {
+            if (strchr(mode, 'w')) flags = O_WRONLY | O_CREAT | O_TRUNC;
+            else if (strchr(mode, 'a')) flags = O_WRONLY | O_CREAT | O_APPEND;
+        }
         int fd = syscall(__NR_open, pathname, flags, 0644);
-        if (fd < 0) {
-            fprintf(stderr, "[libvgpu-cuda] fopen() syscall failed: %s (pid=%d)\n",
-                    pathname, (int)getpid());
-            fflush(stderr);
-            return NULL;
-        }
-        /* Convert fd to FILE* using fdopen() - this should work even in system processes */
+        if (fd < 0) return NULL;
         FILE *fp = fdopen(fd, mode ? mode : "r");
-        if (!fp) {
-            close(fd);
-            fprintf(stderr, "[libvgpu-cuda] fopen() fdopen() failed: %s (pid=%d)\n",
-                    pathname, (int)getpid());
-            fflush(stderr);
-            return NULL;
-        }
-        fprintf(stderr, "[libvgpu-cuda] fopen() sys mode result: %s -> %p (pid=%d)\n",
-                pathname, (void*)fp, (int)getpid());
-        fflush(stderr);
+        if (!fp) { close(fd); return NULL; }
+        if (should_exclude_from_interception(pathname))
+            add_excluded_fd(fd);
         return fp;
     }
     
@@ -1529,9 +2069,16 @@ FILE *fopen(const char *pathname, const char *mode)
     fflush(stderr);
     
     /* CRITICAL FIX: Exclude model files and other non-PCI files from interception
-     * These should pass through directly to the real fopen() */
+     * These should pass through directly to the real fopen(); also resolve
+     * real fgets/fread from libc so model blob reads work (avoid "failed to read magic"). */
     if (pathname && should_exclude_from_interception(pathname)) {
-        /* Use syscall approach if real_fopen not available */
+        ensure_real_libc_resolved();
+        /* Fallback: resolve fopen from RTLD_NEXT if libc dlopen didn't work */
+        if (!g_real_fopen_global) {
+            void *sym = dlsym(RTLD_NEXT, "fopen");
+            if (sym && sym != (void *)fopen)
+                g_real_fopen_global = (FILE *(*)(const char *, const char *))sym;
+        }
         if (g_real_fopen_global) {
             FILE *fp = g_real_fopen_global(pathname, mode);
             if (fp) {
@@ -1541,19 +2088,38 @@ FILE *fopen(const char *pathname, const char *mode)
             }
             return fp;
         } else {
-            /* Fallback to syscall if real_fopen not resolved */
+            /* Try libc open+fdopen via RTLD_NEXT so FILE* is from libc and fread works */
+            static int (*real_open_fn)(const char *, int, ...) = NULL;
+            static FILE *(*real_fdopen_fn)(int, const char *) = NULL;
+            if (!real_open_fn) {
+                void *p = dlsym(RTLD_NEXT, "open");
+                if (p && p != (void *)open) real_open_fn = (int (*)(const char *, int, ...))p;
+            }
+            if (!real_fdopen_fn) {
+                void *p = dlsym(RTLD_NEXT, "fdopen");
+                if (p && p != (void *)fdopen) real_fdopen_fn = (FILE *(*)(int, const char *))p;
+            }
+            if (real_open_fn && real_fdopen_fn) {
+                int flags = O_RDONLY;
+                if (mode && (strchr(mode, 'w') || strchr(mode, 'a'))) flags = O_WRONLY | O_CREAT | O_APPEND;
+                int fd = real_open_fn(pathname, flags);
+                if (fd >= 0) {
+                    FILE *fp = real_fdopen_fn(fd, mode ? mode : "r");
+                    if (fp) return fp;
+                    close(fd);
+                }
+            }
+            /* Fallback to syscall if RTLD_NEXT open/fdopen not available */
             int flags = O_RDONLY;
             if (mode) {
                 if (strchr(mode, 'w')) flags = O_WRONLY | O_CREAT | O_TRUNC;
                 else if (strchr(mode, 'a')) flags = O_WRONLY | O_CREAT | O_APPEND;
             }
-            int fd = syscall(__NR_open, pathname, flags, 0644);
+            int fd = (int)syscall(__NR_open, pathname, flags, 0644);
             if (fd >= 0) {
                 FILE *fp = fdopen(fd, mode ? mode : "r");
                 if (fp) {
-                    fprintf(stderr, "[libvgpu-cuda] fopen() EXCLUDED from interception (syscall): %s -> %p (pid=%d)\n",
-                            pathname, (void*)fp, (int)getpid());
-                    fflush(stderr);
+                    add_excluded_fd(fileno(fp));
                     return fp;
                 }
                 close(fd);
@@ -1682,17 +2248,132 @@ FILE *fopen(const char *pathname, const char *mode)
     return fp;
 }
 
+/* Helper: is fd a model blob (by /proc/self/fd link)? */
+static int is_fd_blob_file(int fd)
+{
+    char proc_path[64];
+    char link[512];
+    snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+    ssize_t n = readlink(proc_path, link, sizeof(link) - 1);
+    if (n <= 0 || n >= (ssize_t)sizeof(link)) return 0;
+    link[n] = '\0';
+    return (strstr(link, ".ollama/models") != NULL || strstr(link, "models/blobs") != NULL || strstr(link, "/blobs/") != NULL || (strstr(link, "ollama") != NULL && strstr(link, "sha256") != NULL)) ? 1 : 0;
+}
+
 /* Intercept fread() for PCI device files */
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
 {
+    /* Any non-PCI fd: pass through to real fread immediately; never use read() loop (avoids FILE* desync). */
+    if (stream && size > 0 && nmemb > 0) {
+        int fd = fileno(stream);
+        if (fd >= 0 && !is_pci_device_file(fd, NULL)) {
+            ensure_real_libc_resolved();
+            if (g_real_fread_global)
+                return g_real_fread_global(ptr, size, nmemb, stream);
+#ifdef __GLIBC__
+            {
+            extern void *__libc_dlsym(void *, const char *) __attribute__((weak));
+            if (__libc_dlsym) {
+                size_t (*fn)(void *, size_t, size_t, FILE *) = (size_t (*)(void *, size_t, size_t, FILE *))__libc_dlsym(RTLD_NEXT, "fread");
+                if (fn && (void *)fn != (void *)fread)
+                    return fn(ptr, size, nmemb, stream);
+            }
+            }
+#endif
+            {
+            static size_t (*next_fread)(void *, size_t, size_t, FILE *) = NULL;
+            if (!next_fread) {
+                next_fread = (size_t (*)(void *, size_t, size_t, FILE *))dlsym(RTLD_NEXT, "fread");
+                if (!next_fread || next_fread == (size_t (*)(void *, size_t, size_t, FILE *))fread)
+                    next_fread = (size_t (*)(void *, size_t, size_t, FILE *))dlsym(RTLD_DEFAULT, "__libc_fread");
+            }
+            if (next_fread && next_fread != (size_t (*)(void *, size_t, size_t, FILE *))fread)
+                return next_fread(ptr, size, nmemb, stream);
+            }
+            /* Real fread unavailable; do not use read() loop (desyncs FILE*). */
+        }
+    }
+    /* Model blob files (legacy path): use real libc fread so FILE* buffer/position stay in sync. */
+    if (stream && size > 0 && nmemb > 0) {
+        int fd = fileno(stream);
+        if (fd >= 0 && is_fd_blob_file(fd)) {
+            ensure_real_libc_resolved();
+            if (g_real_fread_global)
+                return g_real_fread_global(ptr, size, nmemb, stream);
+            {
+            static size_t (*libc_fread)(void *, size_t, size_t, FILE *) = NULL;
+            if (!libc_fread) {
+                libc_fread = (size_t (*)(void *, size_t, size_t, FILE *))dlsym(RTLD_NEXT, "fread");
+                if (!libc_fread || libc_fread == (size_t (*)(void *, size_t, size_t, FILE *))fread)
+                    libc_fread = (size_t (*)(void *, size_t, size_t, FILE *))dlsym(RTLD_DEFAULT, "__libc_fread");
+            }
+            if (libc_fread && libc_fread != (size_t (*)(void *, size_t, size_t, FILE *))fread)
+                return libc_fread(ptr, size, nmemb, stream);
+            }
+            /* Last resort: read() loop (may desync FILE* state; prefer g_real_fread_global above) */
+            {
+                size_t total = size * nmemb;
+                size_t got = 0;
+                while (got < total) {
+                    ssize_t n = syscall(__NR_read, fd, (char *)ptr + got, total - got);
+                    if (n <= 0) break;
+                    got += (size_t)n;
+                }
+                return (size_t)(got / size);
+            }
+        }
+    }
+    /* Blob streams we opened via syscall+fdopen: always use read() loop so model load works */
+    if (size > 0 && nmemb > 0 && stream) {
+        int fd = fileno(stream);
+        if (fd >= 0 && is_excluded_fd(fd)) {
+            size_t total = size * nmemb;
+            size_t got = 0;
+            while (got < total) {
+                ssize_t n = syscall(__NR_read, fd, (char *)ptr + got, total - got);
+                if (n <= 0) break;
+                got += (size_t)n;
+            }
+            return (size_t)(got / size);
+        }
+    }
     /* CRITICAL: Check process type FIRST, before any dlsym() calls */
     if (!is_application_process()) {
-        static size_t (*real_fread)(void *, size_t, size_t, FILE *) = NULL;
-        if (!real_fread) {
-            real_fread = (size_t (*)(void *, size_t, size_t, FILE *))
-                         dlsym(RTLD_NEXT, "fread");
+        ensure_real_libc_resolved();
+        if (g_real_fread_global)
+            return g_real_fread_global(ptr, size, nmemb, stream);
+#ifdef __GLIBC__
+        {
+        extern void *__libc_dlsym(void *, const char *) __attribute__((weak));
+        if (__libc_dlsym) {
+            size_t (*fn)(void *, size_t, size_t, FILE *) = (size_t (*)(void *, size_t, size_t, FILE *))__libc_dlsym(RTLD_NEXT, "fread");
+            if (fn && (void *)fn != (void *)fread)
+                return fn(ptr, size, nmemb, stream);
         }
-        return real_fread ? real_fread(ptr, size, nmemb, stream) : 0;
+        }
+#endif
+        {
+        static size_t (*real_fread)(void *, size_t, size_t, FILE *) = NULL;
+        if (!real_fread)
+            real_fread = (size_t (*)(void *, size_t, size_t, FILE *))dlsym(RTLD_NEXT, "fread");
+        if (real_fread && real_fread != (size_t (*)(void *, size_t, size_t, FILE *))fread)
+            return real_fread(ptr, size, nmemb, stream);
+        }
+        /* When real fread unavailable, use read() loop (may desync FILE* state) */
+        if (size > 0 && nmemb > 0 && stream) {
+            int fd = fileno(stream);
+            if (fd >= 3) {
+                size_t total = size * nmemb;
+                size_t got = 0;
+                while (got < total) {
+                    ssize_t n = syscall(__NR_read, fd, (char *)ptr + got, total - got);
+                    if (n <= 0) break;
+                    got += (size_t)n;
+                }
+                return (size_t)(got / size);
+            }
+        }
+        return 0;
     }
     
     /* Application process - proceed with interception */
@@ -1715,6 +2396,50 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
     
     if (skip_flag) {
         /* Skip interception during discovery */
+        ensure_real_libc_resolved();
+        if (g_real_fread_global)
+            return g_real_fread_global(ptr, size, nmemb, stream);
+        if (real_fread && real_fread != (size_t (*)(void *, size_t, size_t, FILE *))fread)
+            return real_fread(ptr, size, nmemb, stream);
+        /* Fallback: read() loop so blob/model load works when real_fread is us or NULL */
+        if (size > 0 && nmemb > 0 && stream) {
+            int fd = fileno(stream);
+            if (fd >= 0) {
+                size_t total = size * nmemb;
+                size_t got = 0;
+                while (got < total) {
+                    ssize_t n = syscall(__NR_read, fd, (char *)ptr + got, total - got);
+                    if (n <= 0) break;
+                    got += (size_t)n;
+                }
+                return (size_t)(got / size);
+            }
+        }
+        return 0;
+    }
+    /* Untracked stream (e.g. model blob): use libc's real fread, or read() when real not available */
+    if (!is_tracked_pci_file(stream) || is_caller_from_our_code()) {
+        ensure_real_libc_resolved();
+        if (g_real_fread_global)
+            return g_real_fread_global(ptr, size, nmemb, stream);
+        /* Try RTLD_NEXT fread only if it is NOT us (avoid recursion when RTLD_NEXT resolves to shim) */
+        if (real_fread && real_fread != (size_t (*)(void *, size_t, size_t, FILE *))fread)
+            return real_fread(ptr, size, nmemb, stream);
+        /* Fallback: use read() from fd so GGUF loader works when real libc fread unresolved or RTLD_NEXT is us */
+        if (size > 0 && nmemb > 0 && stream) {
+            int fd = fileno(stream);
+            if (fd >= 3) {
+                size_t total = size * nmemb;
+                size_t got = 0;
+                while (got < total) {
+                    ssize_t n = syscall(__NR_read, fd, (char *)ptr + got, total - got);
+                    if (n <= 0) break;
+                    got += (size_t)n;
+                }
+                return (size_t)(got / size);
+            }
+        }
+        /* If we get here with fd<3 or size*nmemb==0, fall through to real_fread or 0 */
         return real_fread ? real_fread(ptr, size, nmemb, stream) : 0;
     }
     if (is_tracked_pci_file(stream) && !is_caller_from_our_code()) {
@@ -1764,7 +2489,23 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
         }
     }
     
-    return real_fread ? real_fread(ptr, size, nmemb, stream) : 0;
+    if (real_fread && real_fread != (size_t (*)(void *, size_t, size_t, FILE *))fread)
+        return real_fread(ptr, size, nmemb, stream);
+    /* Final fallback: read() loop so model tensor load never gets spurious 0 (e.g. load_tensors) */
+    if (size > 0 && nmemb > 0 && stream) {
+        int fd = fileno(stream);
+        if (fd >= 0) {
+            size_t total = size * nmemb;
+            size_t got = 0;
+            while (got < total) {
+                ssize_t n = syscall(__NR_read, fd, (char *)ptr + got, total - got);
+                if (n <= 0) break;
+                got += (size_t)n;
+            }
+            return (size_t)(got / size);
+        }
+    }
+    return 0;
 }
 
 /* Intercept fgets() for PCI device files */
@@ -1837,98 +2578,48 @@ char *fgets(char *s, int size, FILE *stream)
     }
     
     /* Application process - proceed with interception */
+    static char *(*real_fgets_next)(char *, int, FILE *) = NULL;
+    if (!real_fgets_next)
+        real_fgets_next = (char *(*)(char *, int, FILE *))dlsym(RTLD_NEXT, "fgets");
+    
+    /* CRITICAL: If file is NOT tracked (e.g. model blob opened with real fopen),
+     * use libc's real fgets so FILE* buffering is consistent and "failed to read magic" is avoided. */
+    if (!is_tracked_pci_file(stream) || is_caller_from_our_code()) {
+        ensure_real_libc_resolved();
+        if (g_real_fgets_global)
+            return g_real_fgets_global(s, size, stream);
+        if (real_fgets_next && real_fgets_next != (char *(*)(char *, int, FILE *))fgets)
+            return real_fgets_next(s, size, stream);
+        /* Fallback for our fdopen'd streams (excluded path): read until newline or size-1 */
+        int fd = fileno(stream);
+        if (fd >= 0 && is_excluded_fd(fd) && size > 1) {
+            int i = 0;
+            while (i < size - 1) {
+                char c;
+                ssize_t n = syscall(__NR_read, fd, &c, 1);
+                if (n <= 0) break;
+                s[i++] = c;
+                if (c == '\n') break;
+            }
+            s[i] = '\0';
+            return (i > 0) ? s : NULL;
+        }
+        if (fd >= 0) {
+            ssize_t n = syscall(__NR_read, fd, s, size - 1);
+            if (n > 0) {
+                s[n] = '\0';
+                char *nl = strchr(s, '\n');
+                if (nl) nl[1] = '\0';
+                return s;
+            }
+        }
+        return NULL;
+    }
+    
+    /* File IS tracked (PCI) and caller is NOT from our code - intercept or use real_fgets */
     static char *(*real_fgets)(char *, int, FILE *) = NULL;
     if (!real_fgets) {
-        real_fgets = (char *(*)(char *, int, FILE *))
-                     dlsym(RTLD_NEXT, "fgets");
-        if (!real_fgets) {
-            fprintf(stderr, "[libvgpu-cuda] ERROR: Cannot resolve real fgets() (pid=%d)\n", (int)getpid());
-            fflush(stderr);
-        }
-    }
-    
-    /* CRITICAL: If file is NOT tracked (caller is from our code), use syscall read directly
-     * Don't rely on real_fgets() - it might be NULL or fail
-     * Use the same syscall approach as skip_flag=1 to ensure real values are read */
-    if (!is_tracked_pci_file(stream) || is_caller_from_our_code()) {
-        /* Use syscall read directly - this bypasses all interception and libc issues */
-        int fd = fileno(stream);
-        if (fd >= 0) {
-            ssize_t n = syscall(__NR_read, fd, s, size - 1);
-            if (n > 0) {
-                s[n] = '\0';
-                /* Find newline and ensure string ends there */
-                char *nl = strchr(s, '\n');
-                if (nl) {
-                    nl[1] = '\0';
-                }
-                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted (syscall read): fd=%d, read %zd bytes: '%s' (pid=%d)\n",
-                        fd, n, s, (int)getpid());
-                fflush(stderr);
-                return s;
-            } else if (n == 0) {
-                /* EOF */
-                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted: fd=%d, EOF (pid=%d)\n", fd, (int)getpid());
-                fflush(stderr);
-                return NULL;
-            } else {
-                /* Error */
-                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted syscall read failed: fd=%d, errno=%d (pid=%d)\n",
-                        fd, errno, (int)getpid());
-                fflush(stderr);
-                return NULL;
-            }
-        }
-        fprintf(stderr, "[libvgpu-cuda] ERROR: fgets() NOT intercepted: invalid fd (pid=%d)\n", (int)getpid());
-        fflush(stderr);
-        return NULL;
-    }
-    
-    /* If we get here, file IS tracked and caller is NOT from our code - use real_fgets */
-    if (!real_fgets) {
-        real_fgets = (char *(*)(char *, int, FILE *))
-                     dlsym(RTLD_NEXT, "fgets");
-        if (!real_fgets) {
-            fprintf(stderr, "[libvgpu-cuda] ERROR: Cannot resolve real fgets() (pid=%d)\n", (int)getpid());
-            fflush(stderr);
-        }
-    }
-    
-    /* CRITICAL: If file is NOT tracked (caller is from our code), use syscall read directly
-     * Don't rely on real_fgets() - it might be NULL or fail
-     * Use the same syscall approach as skip_flag=1 to ensure real values are read */
-    if (!is_tracked_pci_file(stream) || is_caller_from_our_code()) {
-        /* Use syscall read directly - this bypasses all interception and libc issues */
-        int fd = fileno(stream);
-        if (fd >= 0) {
-            ssize_t n = syscall(__NR_read, fd, s, size - 1);
-            if (n > 0) {
-                s[n] = '\0';
-                /* Find newline and ensure string ends there */
-                char *nl = strchr(s, '\n');
-                if (nl) {
-                    nl[1] = '\0';
-                }
-                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted (syscall read): fd=%d, read %zd bytes: '%s' (pid=%d)\n",
-                        fd, n, s, (int)getpid());
-                fflush(stderr);
-                return s;
-            } else if (n == 0) {
-                /* EOF */
-                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted: fd=%d, EOF (pid=%d)\n", fd, (int)getpid());
-                fflush(stderr);
-                return NULL;
-            } else {
-                /* Error */
-                fprintf(stderr, "[libvgpu-cuda] fgets() NOT intercepted syscall read failed: fd=%d, errno=%d (pid=%d)\n",
-                        fd, errno, (int)getpid());
-                fflush(stderr);
-                return NULL;
-            }
-        }
-        fprintf(stderr, "[libvgpu-cuda] ERROR: fgets() NOT intercepted: invalid fd (pid=%d)\n", (int)getpid());
-        fflush(stderr);
-        return NULL;
+        real_fgets = (char *(*)(char *, int, FILE *))dlsym(RTLD_NEXT, "fgets");
     }
     
     if (is_tracked_pci_file(stream) && !is_caller_from_our_code()) {
@@ -2169,154 +2860,14 @@ CUresult cuDeviceGetPCIBusId(char *pciBusId, int len, CUdevice dev);
  * journald.  Check /tmp/vgpu-shim-cuda-<pid>.log after a failing run.
  * ================================================================ */
 
-/* Constructor - initialize early with priority 101 to run BEFORE discovery
- * Priority 101 runs early (before default 65535), ensuring CUDA is initialized
- * before Ollama's discovery runs */
+/* Constructor - do nothing. ensure_init() runs on first cuInit/cuDeviceGetCount.
+ * Even a single syscall write here can trigger SEGV after CUDART constructor. */
 __attribute__((constructor(101)))
 static void libvgpu_cuda_on_load(void)
 {
-    /* CRITICAL: Early initialization for application processes
-     * 
-     * Since we're using LD_PRELOAD (not /etc/ld.so.preload), this library
-     * only loads into processes that have LD_PRELOAD set, which are typically
-     * application processes. This makes early initialization safer.
-     * 
-     * However, we must still be extremely careful:
-     * - Only initialize if it's safe to check process type
-     * - Only initialize for application processes
-     * - Use minimal, safe operations
-     * 
-     * The problem: Ollama's discovery loads our libraries but NEVER calls
-     * initialization functions. So we need to initialize early in constructor.
-     */
-    
-    /* Simple log to verify constructor is called - use syscall to avoid libc */
-    const char *msg = "[libvgpu-cuda] constructor CALLED\n";
-    syscall(__NR_write, 2, msg, strlen(msg));
-    
-    /* Delay initialization slightly to ensure libc is ready */
-    static volatile int init_attempted = 0;
-    if (__sync_bool_compare_and_swap(&init_attempted, 0, 1)) {
-        /* Use a small delay to ensure we're past early initialization */
-        /* Use syscall to avoid libc dependencies */
-        struct timespec delay = {0, 100000000}; /* 100ms */
-        syscall(__NR_nanosleep, &delay, NULL);
-        
-        const char *delay_msg = "[libvgpu-cuda] constructor: Delay complete\n";
-        syscall(__NR_write, 2, delay_msg, strlen(delay_msg));
-        
-        /* Since we're using LD_PRELOAD (not /etc/ld.so.preload), it's safe to check process type
-         * after the delay. The safety check uses a counter that may not be ready yet, but
-         * we've already delayed 100ms, so it should be safe. Let's try checking directly. */
-        
-        /* Check if this is an application process */
-        /* We'll be defensive - if check fails, we'll skip initialization */
-        int is_app = 0;
-        /* Try to check - if it fails, we'll skip (safe default) */
-        
-        /* CRITICAL FIX: Check for OLLAMA environment variables FIRST
-         * Runner processes may inherit LD_PRELOAD from main process,
-         * so we need to check OLLAMA vars before LD_PRELOAD to detect runners correctly */
-        const char *ollama_lib = getenv("OLLAMA_LLM_LIBRARY");
-        const char *ollama_path = getenv("OLLAMA_LIBRARY_PATH");
-        
-        /* Debug logging to see what getenv() returns */
-        const char *debug_msg1 = "[libvgpu-cuda] constructor: Checking OLLAMA env vars...\n";
-        syscall(__NR_write, 2, debug_msg1, strlen(debug_msg1));
-        if (ollama_lib) {
-            const char *debug_msg2 = "[libvgpu-cuda] constructor: OLLAMA_LLM_LIBRARY=";
-            syscall(__NR_write, 2, debug_msg2, strlen(debug_msg2));
-            syscall(__NR_write, 2, ollama_lib, strlen(ollama_lib));
-            syscall(__NR_write, 2, "\n", 1);
-        } else {
-            const char *debug_msg3 = "[libvgpu-cuda] constructor: OLLAMA_LLM_LIBRARY=NULL\n";
-            syscall(__NR_write, 2, debug_msg3, strlen(debug_msg3));
-        }
-        if (ollama_path) {
-            const char *debug_msg4 = "[libvgpu-cuda] constructor: OLLAMA_LIBRARY_PATH=";
-            syscall(__NR_write, 2, debug_msg4, strlen(debug_msg4));
-            syscall(__NR_write, 2, ollama_path, strlen(ollama_path));
-            syscall(__NR_write, 2, "\n", 1);
-        } else {
-            const char *debug_msg5 = "[libvgpu-cuda] constructor: OLLAMA_LIBRARY_PATH=NULL\n";
-            syscall(__NR_write, 2, debug_msg5, strlen(debug_msg5));
-        }
-        
-        if (ollama_lib || ollama_path) {
-            /* OLLAMA environment variables present - this is likely Ollama/runner process */
-            is_app = 1;
-            const char *ollama_msg = "[libvgpu-cuda] constructor: Ollama process detected (via OLLAMA env vars), initializing\n";
-            syscall(__NR_write, 2, ollama_msg, strlen(ollama_msg));
-        } else {
-            /* Check for LD_PRELOAD - main process has this */
-            const char *ld_preload = getenv("LD_PRELOAD");
-            if (ld_preload && strstr(ld_preload, "libvgpu")) {
-                /* We have LD_PRELOAD with our shims - likely an application process */
-                is_app = 1;
-                const char *app_msg = "[libvgpu-cuda] constructor: Application process detected (via LD_PRELOAD)\n";
-                syscall(__NR_write, 2, app_msg, strlen(app_msg));
-            } else {
-                /* Try the normal check as fallback */
-                if (is_safe_to_check_process()) {
-                    is_app = is_application_process();
-                    if (is_app) {
-                        const char *app_msg = "[libvgpu-cuda] constructor: Application process detected (via normal check)\n";
-                        syscall(__NR_write, 2, app_msg, strlen(app_msg));
-                    }
-                }
-            }
-        }
-        
-        if (is_app) {
-            /* For application processes, initialize early */
-            /* This ensures GPU discovery works even if discovery doesn't call functions */
-            const char *init_msg = "[libvgpu-cuda] constructor: Starting early initialization\n";
-            syscall(__NR_write, 2, init_msg, strlen(init_msg));
-            
-            /* CRITICAL: Resolve real_fopen() and real_fgets() BEFORE any interception happens
-             * This ensures we have working functions even when dlsym() is intercepted */
-            if (!g_real_fopen_global) {
-                /* Use dlsym() directly - at constructor time, interception hasn't started yet */
-                g_real_fopen_global = (FILE *(*)(const char *, const char *))
-                                      dlsym(RTLD_NEXT, "fopen");
-                if (g_real_fopen_global) {
-                    const char *fopen_msg = "[libvgpu-cuda] constructor: real_fopen() resolved\n";
-                    syscall(__NR_write, 2, fopen_msg, strlen(fopen_msg));
-                } else {
-                    const char *fopen_err = "[libvgpu-cuda] constructor: WARNING - real_fopen() NOT resolved\n";
-                    syscall(__NR_write, 2, fopen_err, strlen(fopen_err));
-                }
-            }
-            if (!g_real_fgets_global) {
-                g_real_fgets_global = (char *(*)(char *, int, FILE *))
-                                      dlsym(RTLD_NEXT, "fgets");
-                if (g_real_fgets_global) {
-                    const char *fgets_msg = "[libvgpu-cuda] constructor: real_fgets() resolved\n";
-                    syscall(__NR_write, 2, fgets_msg, strlen(fgets_msg));
-                } else {
-                    const char *fgets_err = "[libvgpu-cuda] constructor: WARNING - real_fgets() NOT resolved\n";
-                    syscall(__NR_write, 2, fgets_err, strlen(fgets_err));
-                }
-            }
-            
-            /* Call ensure_init() which safely calls cuInit() */
-            /* This is safe because we've verified it's an application process */
-            ensure_init();
-            
-            const char *done_msg = "[libvgpu-cuda] constructor: Early initialization complete\n";
-            syscall(__NR_write, 2, done_msg, strlen(done_msg));
-        } else {
-            /* CRITICAL: Even if not detected as application process, try to initialize */
-            /* This is needed because process detection might fail during early init */
-            /* We've replaced the system library, so we should always try to initialize */
-            const char *trying_msg = "[libvgpu-cuda] constructor: Process type unclear, attempting init anyway\n";
-            syscall(__NR_write, 2, trying_msg, strlen(trying_msg));
-            ensure_init();
-            const char *done_msg2 = "[libvgpu-cuda] constructor: Initialization attempted (process type unclear)\n";
-            syscall(__NR_write, 2, done_msg2, strlen(done_msg2));
-        }
-    }
-    
+    (void)0;  /* no-op; avoid any syscall/write */
+    return;
+
     /* OLD COMMENT - kept for reference:
      * When deployed via /etc/ld.so.preload, this library loads into ALL processes
      * (sshd, systemd, etc.) during VERY EARLY initialization, BEFORE libc/pthreads
@@ -2676,6 +3227,19 @@ static CUresult generic_stub_4args(void *arg1, void *arg2, void *arg3, void *arg
 
 static int ensure_init(void)
 {
+    /* Debug: write to file so we can confirm runner calls us even if stderr is redirected */
+    {
+        char buf[128];
+        int n = snprintf(buf, sizeof(buf), "ensure_init called pid=%d\n", (int)getpid());
+        if (n > 0 && n < (int)sizeof(buf)) {
+            int fd = (int)syscall(__NR_open, "/tmp/vgpu_ensure_init.log",
+                O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                syscall(__NR_write, fd, buf, (size_t)n);
+                syscall(__NR_close, fd);
+            }
+        }
+    }
     fprintf(stderr, "[libvgpu-cuda] ensure_init() CALLED (pid=%d)\n", (int)getpid());
     fflush(stderr);
     
@@ -2729,7 +3293,17 @@ static int ensure_init(void)
             is_app = 1;
         }
     }
-    
+    /* Fallback: Ollama runner may be started with OLLAMA_* env but comm/cmdline might not match.
+     * If we are loaded as libcuda (e.g. from cuda_v12) and OLLAMA_* is set, treat as app so discovery can succeed. */
+    if (!is_app && getenv("OLLAMA_NUM_GPU") != NULL) {
+        is_app = 1;
+    }
+    if (!is_app && getenv("OLLAMA_HOST") != NULL) {
+        is_app = 1;
+    }
+    if (!is_app && (getenv("OLLAMA_LIBRARY_PATH") != NULL || getenv("OLLAMA_LLM_LIBRARY") != NULL)) {
+        is_app = 1;  /* Runner started with library paths (no LD_PRELOAD) - we are the shim */
+    }
     if (!is_app) {
         /* System process - don't initialize, return error */
         fprintf(stderr, "[libvgpu-cuda] ensure_init: Not an application process (pid=%d)\n", (int)getpid());
@@ -3514,13 +4088,24 @@ CUresult cuDriverGetVersion(int *driverVersion)
 __attribute__((visibility("default")))
 CUresult cuDeviceGetCount(int *count)
 {
-    /* CRITICAL: Log FIRST using syscall to ensure we see if this is called */
-    char called_msg[128];
-    int called_len = snprintf(called_msg, sizeof(called_msg),
-                             "[libvgpu-cuda] cuDeviceGetCount() CALLED (pid=%d)\n",
-                             (int)getpid());
-    if (called_len > 0 && called_len < (int)sizeof(called_msg)) {
-        syscall(__NR_write, 2, called_msg, called_len);
+    /* Log to stderr and to /tmp to confirm discovery path (runner stderr may not reach journal) */
+    {
+        int pid = (int)getpid();
+        char called_msg[128];
+        int called_len = snprintf(called_msg, sizeof(called_msg),
+                                 "[libvgpu-cuda] cuDeviceGetCount() CALLED (pid=%d)\n", pid);
+        if (called_len > 0 && called_len < (int)sizeof(called_msg))
+            syscall(__NR_write, 2, called_msg, called_len);
+        {
+            int fd = syscall(__NR_open, "/tmp/cuda_get_count_called.txt",
+                             O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                char buf[80];
+                int n = snprintf(buf, sizeof(buf), "pid=%d\n", pid);
+                if (n > 0) syscall(__NR_write, fd, buf, (size_t)n);
+                syscall(__NR_close, fd);
+            }
+        }
     }
     
     if (!count) {
@@ -5575,11 +6160,14 @@ int posix_memalign(void **memptr, size_t alignment, size_t size) {
     *memptr = ptr;
     return 0;
 }
+#endif /* end malloc interception block - keep Error handling and stubs below compiled */
 
+#if 1
 /* ================================================================
  * CUDA Driver API — Error handling
  * ================================================================ */
 
+__attribute__((visibility("default")))
 CUresult cuGetErrorString(CUresult error, const char **pStr)
 {
     /* CRITICAL: Log this call - GGML may check error strings after function calls */
@@ -5668,6 +6256,7 @@ CUresult cuDeviceGetP2PAttribute(int *value, int attrib,
         (void)0; /* Suppress unused parameter warnings */ \
         return (ret_type)CUDA_SUCCESS; \
     }
+#endif /* end Error handling + stub macro block */
 
 /* Common stub functions that might be called during initialization */
 CUresult cuCtxGetApiVersion(CUcontext ctx, unsigned int *version)
@@ -5680,6 +6269,7 @@ CUresult cuCtxGetApiVersion(CUcontext ctx, unsigned int *version)
 
 /* cuCtxGetDevice is already defined above (line ~1818), removing duplicate */
 
+__attribute__((visibility("default")))
 CUresult cuCtxGetFlags(unsigned int *flags)
 {
     fprintf(stderr, "[libvgpu-cuda] CALLED: cuCtxGetFlags(flags=%p)\n", flags);
@@ -5703,6 +6293,7 @@ CUresult cuCtxGetLimit(size_t *pvalue, int limit)
     return CUDA_SUCCESS;
 }
 
+#if 0
 /* ================================================================
  * Version symbol aliases
  *

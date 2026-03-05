@@ -8,12 +8,13 @@ import subprocess
 import sys
 import os
 
-VM_USER = "test-11"
-VM_HOST = "10.25.33.111"
-VM_PASSWORD = "test-11"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+from vm_config import VM_USER, VM_HOST, VM_PASSWORD, REMOTE_PHASE3
+
 LOCAL_FILE = "guest-shim/libvgpu_cudart.c"
-VM_FILE = "/home/test-11/phase3/guest-shim/libvgpu_cudart.c"
-VM_DIR = "/home/test-11/phase3/guest-shim"
+VM_FILE = REMOTE_PHASE3 + "/guest-shim/libvgpu_cudart.c"
+VM_DIR = REMOTE_PHASE3 + "/guest-shim"
 
 def run_vm_command(cmd):
     """Run a command on the VM using connect_vm.py"""

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Deploy code to VM using scp with pexpect for password authentication
+Deploy code to VM using scp with pexpect for password authentication.
+Uses vm_config.py (test-3@10.25.33.11). For full deploy + install use deploy_to_test3.py.
 """
 import sys
 import pexpect
 import os
 
-VM_HOST = "10.25.33.111"
-VM_USER = "test-11"
-VM_PASSWORD = "Calvin@123"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+from vm_config import VM_USER, VM_HOST, VM_PASSWORD
 
 def deploy_directory(local_path, remote_path):
     """Deploy a directory to VM using scp"""
@@ -43,13 +44,13 @@ def deploy_directory(local_path, remote_path):
         return False
 
 if __name__ == "__main__":
-    # Deploy the entire phase3 directory
-    local_phase3 = "/home/david/Downloads/gpu/phase3"
-    remote_home = "/home/test-11"
-    
+    # Deploy the entire phase3 directory to VM home (result: ~/phase3)
+    local_phase3 = SCRIPT_DIR
+    remote_home = f"/home/{VM_USER}"
+
     if not os.path.exists(local_phase3):
         print(f"Error: {local_phase3} does not exist")
         sys.exit(1)
-    
+
     success = deploy_directory(local_phase3, remote_home)
     sys.exit(0 if success else 1)

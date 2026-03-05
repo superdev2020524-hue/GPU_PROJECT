@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Connect to VM using pexpect for password authentication
+Connect to VM using pexpect for password authentication.
+Target VM is read from vm_config.py (test-3@10.25.33.11 by default).
 """
 import sys
+import os
 import pexpect
 
-VM_HOST = "10.25.33.111"
-VM_USER = "test-11"
-VM_PASSWORD = "Calvin@123"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+from vm_config import VM_HOST, VM_USER, VM_PASSWORD
 
 def connect_and_run_command(command):
     """Connect to VM and run a command"""
@@ -29,10 +31,10 @@ def connect_and_run_command(command):
                 print("Connected successfully!")
                 print(f"Running command: {command}")
                 child.sendline(command)
-                # Handle sudo password prompt if needed - loop until we get a prompt
+                # Handle sudo password prompt if needed - loop until we get a prompt (long timeout for builds)
                 while True:
                     try:
-                        index = child.expect(['password:', 'Password:', r'\[sudo\] password', r'\$', '#', pexpect.EOF, pexpect.TIMEOUT], timeout=30)
+                        index = child.expect(['password:', 'Password:', r'\[sudo\] password', r'\$', '#', pexpect.EOF, pexpect.TIMEOUT], timeout=360)
                         if index in [0, 1, 2]:  # password prompt
                             child.sendline(VM_PASSWORD)
                         elif index in [3, 4]:  # command prompt

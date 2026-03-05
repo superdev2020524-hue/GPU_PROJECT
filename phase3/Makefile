@@ -98,12 +98,15 @@ SHIM_CUDART_LIB    = $(SHIM_DIR)/libvgpu-cudart.so
 SHIM_NVML_LIB      = $(SHIM_DIR)/libvgpu-nvml.so
 SHIM_CUBLAS_LIB    = $(SHIM_DIR)/libvgpu-cublas.so.12
 SHIM_CUBLASLT_LIB  = $(SHIM_DIR)/libvgpu-cublasLt.so.12
+SHIM_EXEC_INJECT_SRC = $(SHIM_DIR)/libvgpu_exec_inject.c
+SHIM_EXEC_INJECT_LIB = $(SHIM_DIR)/libvgpu-exec-inject.so
 SHIM_INCLUDES      = -I$(INC_DIR) -I$(SHIM_DIR)
+OLLAMA_WRAPPER_BIN = ollama_vgpu_wrapper
 
 # ============================================================================
 # Targets
 # ============================================================================
-.PHONY: all host guest client clean install migrate help
+.PHONY: all host guest client clean install migrate help ollama-wrapper
 
 all: host
 
@@ -114,7 +117,7 @@ host: $(MEDIATOR_BIN) $(ADMIN_BIN)
 	@echo "  $(ADMIN_BIN)        — admin CLI"
 	@echo ""
 
-guest: $(SHIM_CUDA_LIB) $(SHIM_CUDART_LIB) $(SHIM_NVML_LIB) $(SHIM_CUBLAS_LIB) $(SHIM_CUBLASLT_LIB)
+guest: $(SHIM_EXEC_INJECT_LIB) $(SHIM_CUDA_LIB) $(SHIM_CUDART_LIB) $(SHIM_NVML_LIB) $(SHIM_CUBLAS_LIB) $(SHIM_CUBLASLT_LIB)
 	@echo ""
 	@echo "Guest shim libraries built:"
 	@echo "  $(SHIM_CUDA_LIB)    — CUDA Driver API shim (replaces libcuda.so.1)"
@@ -132,6 +135,19 @@ guest: $(SHIM_CUDA_LIB) $(SHIM_CUDART_LIB) $(SHIM_NVML_LIB) $(SHIM_CUBLAS_LIB) $
 
 client: $(CLIENT_BIN)
 	@echo "Guest binary built: $(CLIENT_BIN)"
+
+# ---- Ollama vGPU wrapper (C binary, no shell) --------------------------------
+$(OLLAMA_WRAPPER_BIN): ollama_vgpu_wrapper.c
+	$(CC) $(CFLAGS) -o $@ $<
+	@echo "Built $@ — install as /usr/local/bin/ollama on guest VM (back up ollama.real first)."
+
+OLLAMA_REAL_WRAPPER_BIN = ollama_real_wrapper
+$(OLLAMA_REAL_WRAPPER_BIN): ollama_real_wrapper.c
+	$(CC) $(CFLAGS) -o $@ $<
+	@echo "Built $@ — install as /usr/local/bin/ollama.real on guest VM (real binary must be at ollama.real.bin)."
+
+ollama-wrapper: $(OLLAMA_WRAPPER_BIN)
+ollama-real-wrapper: $(OLLAMA_REAL_WRAPPER_BIN)
 
 # ---- Mediator ---------------------------------------------------------------
 $(MEDIATOR_BIN): $(MEDIATOR_OBJ) $(P3_OBJS) $(CONFIG_OBJ) $(CUDA_OBJ) $(CUDA_EXEC_OBJ)
@@ -158,6 +174,10 @@ $(SHIM_CUDA_LIB): $(SHIM_CUDA_SRC) $(SHIM_TRANSPORT_SRC) $(SHIM_DIR)/cuda_transp
 $(SHIM_CUDART_LIB): $(SHIM_CUDART_SRC) $(SHIM_DIR)/gpu_properties.h $(INC_DIR)/cuda_protocol.h
 	$(CC) -shared -fPIC $(CFLAGS) $(SHIM_INCLUDES) \
 		-o $@ $(SHIM_CUDART_SRC) -ldl
+	@echo "[SHIM] $@"
+
+$(SHIM_EXEC_INJECT_LIB): $(SHIM_EXEC_INJECT_SRC)
+	$(CC) -shared -fPIC $(CFLAGS) -I$(SHIM_DIR) -o $@ $(SHIM_EXEC_INJECT_SRC) -ldl
 	@echo "[SHIM] $@"
 
 $(SHIM_NVML_LIB): $(SHIM_NVML_SRC) $(SHIM_TRANSPORT_SRC) $(SHIM_DIR)/cuda_transport.h \
@@ -239,7 +259,7 @@ migrate:
 clean:
 	rm -f $(P3_OBJS) $(MEDIATOR_OBJ) $(CONFIG_OBJ) $(ADMIN_OBJ) $(CUDA_OBJ) $(CUDA_EXEC_OBJ)
 	rm -f $(MEDIATOR_BIN) $(ADMIN_BIN) $(CLIENT_BIN)
-	rm -f $(SHIM_CUDA_LIB) $(SHIM_CUDART_LIB) $(SHIM_NVML_LIB) $(SHIM_CUBLAS_LIB) $(SHIM_CUBLASLT_LIB)
+	rm -f $(SHIM_EXEC_INJECT_LIB) $(SHIM_CUDA_LIB) $(SHIM_CUDART_LIB) $(SHIM_NVML_LIB) $(SHIM_CUBLAS_LIB) $(SHIM_CUBLASLT_LIB)
 	@echo "Clean."
 
 # ---- Help -------------------------------------------------------------------

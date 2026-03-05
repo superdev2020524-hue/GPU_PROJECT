@@ -363,118 +363,12 @@ static void init_driver_api_functions(void) {
 /* Forward declaration */
 cudaError_t cudaGetDeviceCount(int *count);
 
-/* Constructor - initialize early with priority 101 to run BEFORE discovery
- * Priority 101 runs early (before default 65535), ensuring device count
- * is set before Ollama's discovery runs */
+/* Constructor - do nothing. Init is lazy on first cudaGetDeviceCount/cuInit from app.
+ * Even minimal syscall/write here can trigger SEGV when Go runtime is not ready yet. */
 __attribute__((constructor(101)))
 static void libvgpu_cudart_on_load(void) {
-    /* Log to both stderr and file to ensure we see it */
-    const char *msg = "[libvgpu-cudart] constructor CALLED (initializing Runtime API shim)\n";
-    syscall(__NR_write, 2, msg, 68);
-    
-    /* Also write to file for debugging */
-    int fd = syscall(__NR_open, "/tmp/libvgpu-cudart-constructor.log", 
-                     O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd >= 0) {
-        syscall(__NR_write, fd, msg, 68);
-        const char *pid_msg = "[libvgpu-cudart] constructor: pid=";
-        syscall(__NR_write, fd, pid_msg, 42);
-        char pid_str[32];
-        int pid = syscall(__NR_getpid);
-        int len = 0;
-        int tmp = pid;
-        do { tmp /= 10; len++; } while (tmp);
-        tmp = pid;
-        for (int i = len - 1; i >= 0; i--) {
-            pid_str[i] = '0' + (tmp % 10);
-            tmp /= 10;
-        }
-        pid_str[len] = '\n';
-        syscall(__NR_write, fd, pid_str, len + 1);
-        syscall(__NR_close, fd);
-    }
-    
-    /* Initialize Driver API function pointers */
-    init_driver_api_functions();
-    
-    /* CRITICAL FIX: Use the function pointer from init_driver_api_functions() if available.
-     * If that failed, try direct dlsym on the Driver API shim library handle.
-     * Since both shims are loaded via LD_PRELOAD, the Driver API shim should be available. */
-    typedef CUresult (*cuInit_func_t)(unsigned int);
-    cuInit_func_t cuInit_func = NULL;
-    
-    /* Method 1: Use function pointer from init_driver_api_functions() if it was found */
-    CUresult rc = CUDA_ERROR_INVALID_VALUE;
-    int cuInit_called = 0;
-    
-    if (real_cuInit) {
-        rc = real_cuInit(0);
-        cuInit_called = 1;
-        const char *found_msg = "[libvgpu-cudart] constructor: cuInit() called via function pointer\n";
-        syscall(__NR_write, 2, found_msg, 70);
-    } else {
-        /* Method 2: Try calling cuInit() directly as external function
-         * This works because both shims are in the same process and
-         * Driver API shim is loaded first via LD_PRELOAD */
-        rc = cuInit(0);
-        cuInit_called = 1;
-        const char *found_msg = "[libvgpu-cudart] constructor: cuInit() called directly as external function\n";
-        syscall(__NR_write, 2, found_msg, 78);
-    }
-    
-    if (cuInit_called) {
-        const char *init_msg = "[libvgpu-cudart] constructor: cuInit() called, rc=%d\n";
-        char msg_buf[100];
-        int msg_len = snprintf(msg_buf, sizeof(msg_buf), init_msg, (int)rc);
-        if (msg_len > 0 && msg_len < (int)sizeof(msg_buf)) {
-            syscall(__NR_write, 2, msg_buf, msg_len);
-        }
-        
-        /* CRITICAL: After cuInit(), proactively verify device count is available.
-         * This ensures that if ggml_backend_cuda_init calls cudaGetDeviceCount()
-         * first, it will find a device and proceed. */
-        int device_count = 0;
-        CUresult count_rc = CUDA_ERROR_INVALID_VALUE;
-        
-        /* Method 1: Use function pointer from init_driver_api_functions() if available */
-        if (real_cuDeviceGetCount) {
-            count_rc = real_cuDeviceGetCount(&device_count);
-        } else {
-            /* Method 2: Try calling cuDeviceGetCount() directly as external function */
-            count_rc = cuDeviceGetCount(&device_count);
-        }
-        
-        if (count_rc == CUDA_SUCCESS || count_rc == 0) {
-            const char *count_msg = "[libvgpu-cudart] constructor: cuDeviceGetCount() called, rc=%d, count=%d\n";
-            char count_buf[100];
-            int count_len = snprintf(count_buf, sizeof(count_buf), count_msg, (int)count_rc, device_count);
-            if (count_len > 0 && count_len < (int)sizeof(count_buf)) {
-                syscall(__NR_write, 2, count_buf, count_len);
-            }
-        } else {
-            const char *warn_msg = "[libvgpu-cudart] constructor: cuDeviceGetCount not found\n";
-            syscall(__NR_write, 2, warn_msg, 60);
-        }
-        
-        /* CRITICAL: Also call Runtime API cudaGetDeviceCount() directly
-         * to ensure device count is available if checked internally */
-        int device_count_runtime = 0;
-        cudaError_t runtime_count_rc = cudaGetDeviceCount(&device_count_runtime);
-        const char *runtime_count_msg = "[libvgpu-cudart] constructor: cudaGetDeviceCount() called, rc=%d, count=%d\n";
-        char runtime_count_buf[100];
-        int runtime_count_len = snprintf(runtime_count_buf, sizeof(runtime_count_buf), 
-                                          runtime_count_msg, (int)runtime_count_rc, device_count_runtime);
-        if (runtime_count_len > 0 && runtime_count_len < (int)sizeof(runtime_count_buf)) {
-            syscall(__NR_write, 2, runtime_count_buf, runtime_count_len);
-        }
-    } else {
-        /* cuInit() call failed - log warning */
-        const char *warn_msg = "[libvgpu-cudart] constructor: cuInit() call failed\n";
-        syscall(__NR_write, 2, warn_msg, 55);
-    }
-    
-    const char *ready_msg = "[libvgpu-cudart] constructor: Runtime API shim ready\n";
-    syscall(__NR_write, 2, ready_msg, 58);
+    (void)0;  /* no-op; avoid any syscall/write during library load */
+    return;
 }
 
 /* ================================================================
@@ -537,13 +431,24 @@ cudaError_t cudaRuntimeGetVersion(int *runtimeVersion) {
 cudaError_t cudaGetDeviceCount(int *count) {
     /* CRITICAL: Log FIRST using syscall to see if this is called */
     char log_msg[128];
-    int log_len = snprintf(log_msg, sizeof(log_msg), 
-                          "[libvgpu-cudart] cudaGetDeviceCount() CALLED (pid=%d)\n", 
+    int log_len = snprintf(log_msg, sizeof(log_msg),
+                          "[libvgpu-cudart] cudaGetDeviceCount() CALLED (pid=%d)\n",
                           (int)getpid());
     if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
-    
+    /* Debug file for discovery trace (same pattern as libvgpu_cuda cuDeviceGetCount) */
+    {
+        int fd = syscall(__NR_open, "/tmp/cudart_get_count_called.txt",
+                         O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            char buf[80];
+            int n = snprintf(buf, sizeof(buf), "pid=%d\n", (int)getpid());
+            if (n > 0) syscall(__NR_write, fd, buf, (size_t)n);
+            syscall(__NR_close, fd);
+        }
+    }
+
     if (!count) return cudaErrorInvalidValue;
     
     /* Return immediately with count=1, no Driver API call needed */

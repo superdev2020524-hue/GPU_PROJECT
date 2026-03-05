@@ -261,54 +261,14 @@ __attribute__((unused)) static int is_ollama_process_safe(void)
     return 0;
 }
 
-/* Constructor - initialize early with priority 101 to run BEFORE discovery
- * Priority 101 runs early (before default 65535), ensuring NVML is initialized
- * before Ollama's discovery runs */
+/* Constructor - do nothing. Init is lazy on first nvmlDeviceGetCount_v2() / nvmlInit_v2().
+ * Even a single syscall write here can trigger SEGV after other constructors. */
 __attribute__((constructor(101)))
 static void libvgpu_nvml_on_load(void)
 {
-    /* CRITICAL: Initialize NVML early for Ollama discovery
-     * 
-     * Similar to CUDA shim, we need to initialize NVML early
-     * so that discovery can find devices. If we wait for Ollama
-     * to call nvmlInit_v2(), discovery might timeout waiting.
-     * 
-     * We use the same safe initialization approach as CUDA:
-     * 1. Check for LD_PRELOAD to identify application processes
-     * 2. Delay briefly to ensure libc is ready
-     * 3. Initialize NVML if safe
-     */
-    
-    /* Simple log to verify constructor is called - use syscall to avoid libc */
-    const char *msg = "[libvgpu-nvml] constructor CALLED (initializing early for discovery)\n";
-    syscall(__NR_write, 2, msg, strlen(msg));
-    
-    /* Check if we have LD_PRELOAD - indicates application process */
-    const char *ld_preload = getenv("LD_PRELOAD");
-    if (!ld_preload || !strstr(ld_preload, "libvgpu")) {
-        /* Not an application process or shims not loaded - skip initialization */
-        return;
-    }
-    
-    /* Delay briefly to ensure libc is ready */
-    usleep(100000);  /* 100ms delay */
-    
-    /* Initialize NVML early - this makes discovery work */
-    nvmlInit_v2();
-    
-    /* CRITICAL: Call nvmlDeviceGetCount_v2() early so discovery knows there's a GPU
-     * Discovery uses NVML device count to decide if it should load libggml-cuda.so
-     * If device count is 0, discovery won't load the library
-     * By calling it here, we ensure discovery sees count=1 before it tries to load */
-    unsigned int device_count = 0;
-    nvmlDeviceGetCount_v2(&device_count);
-    /* Log the result for debugging - use simple syscall writes (no snprintf in constructor) */
-    const char *msg1 = "[libvgpu-nvml] constructor: nvmlDeviceGetCount_v2() called early, count=";
-    syscall(__NR_write, 2, msg1, strlen(msg1));
-    /* Write count as single digit (we know it's 1) */
-    const char *count_str = (device_count == 1) ? "1\n" : "0\n";
-    syscall(__NR_write, 2, count_str, strlen(count_str));
-    
+    (void)0;  /* no-op; avoid any syscall/write */
+    return;
+
     /* OLD COMMENT - kept for reference:
      * When deployed via /etc/ld.so.preload, this library loads into ALL processes
      * (sshd, systemd, etc.) during VERY EARLY initialization, BEFORE libc/pthreads
@@ -546,6 +506,19 @@ nvmlReturn_t nvmlDeviceGetCount(unsigned int *deviceCount)
 
 nvmlReturn_t nvmlDeviceGetCount_v2(unsigned int *deviceCount)
 {
+    /* Debug: write to file so we can confirm discovery path even if stderr is redirected */
+    {
+        char buf[80];
+        int n = snprintf(buf, sizeof(buf), "nvmlDeviceGetCount_v2 called pid=%d\n", (int)getpid());
+        if (n > 0 && n < (int)sizeof(buf)) {
+            int fd = (int)syscall(__NR_open, "/tmp/nvml_get_count_called.txt",
+                O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                syscall(__NR_write, fd, buf, (size_t)n);
+                syscall(__NR_close, fd);
+            }
+        }
+    }
     fprintf(stderr, "[libvgpu-nvml] nvmlDeviceGetCount_v2() CALLED (pid=%d)\n", (int)getpid());
     fflush(stderr);
     

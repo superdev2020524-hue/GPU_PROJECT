@@ -9,7 +9,7 @@ import os
 import base64
 import subprocess
 
-def copy_file_to_vm(local_path, remote_path, vm_user="test-11", vm_host="10.25.33.111"):
+def copy_file_to_vm(local_path, remote_path, vm_user=None, vm_host=None):
     """Copy a file from local filesystem to VM."""
     
     if not os.path.exists(local_path):
@@ -141,7 +141,7 @@ print(f"File copied: {{len(data)}} bytes written to {remote_path}")
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: copy_file_to_vm.py <local_path> <remote_path>")
-        print("Example: copy_file_to_vm.py guest-shim/libvgpu_cuda.c /home/test-11/phase3/guest-shim/libvgpu_cuda.c")
+        print("Example: copy_file_to_vm.py guest-shim/libvgpu_cuda.c /home/test-3/phase3/guest-shim/libvgpu_cuda.c")
         sys.exit(1)
     
     local_path = sys.argv[1]

@@ -20,7 +20,7 @@ NC='\033[0m' # No Color
 if [ -f /sys/bus/pci/devices/0000:00:05.0/vendor ]; then
     echo -e "${YELLOW}Running on VM (guest)${NC}"
     IS_VM=1
-    VM_IP="10.25.33.111"
+    VM_IP="10.25.33.11"
     HOST_IP="10.25.33.10"
 else
     echo -e "${YELLOW}Running on host${NC}"
@@ -49,7 +49,7 @@ fi
 echo ""
 echo "Step 2: Run a compute-intensive Ollama query..."
 if [ "$IS_VM" = "1" ]; then
-    ssh -o StrictHostKeyChecking=no test-11@${VM_IP} "timeout 30 ollama run llama3.2:1b 'Calculate 123*456 and show your work step by step' 2>&1 | tail -10" || true
+    ssh -o StrictHostKeyChecking=no test-3@${VM_IP} "timeout 30 ollama run llama3.2:1b 'Calculate 123*456 and show your work step by step' 2>&1 | tail -10" || true
 else
     timeout 30 ollama run llama3.2:1b 'Calculate 123*456 and show your work step by step' 2>&1 | tail -10 || true
 fi
@@ -73,7 +73,7 @@ fi
 echo ""
 echo "Step 4: Check VM logs for CUDA transport calls..."
 if [ "$IS_VM" = "1" ]; then
-    ssh -o StrictHostKeyChecking=no test-11@${VM_IP} "journalctl -u ollama.service --since '2 minutes ago' --no-pager | grep -E 'cuda_transport_call|CUDA_CALL_LAUNCH|CUDA_CALL_MEMCPY' | tail -10" || {
+    ssh -o StrictHostKeyChecking=no test-3@${VM_IP} "journalctl -u ollama.service --since '2 minutes ago' --no-pager | grep -E 'cuda_transport_call|CUDA_CALL_LAUNCH|CUDA_CALL_MEMCPY' | tail -10" || {
         echo -e "${YELLOW}No transport call logs found in VM${NC}"
     }
 else

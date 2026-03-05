@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
-Reliable file copy to VM using chunked base64 transfer.
-Writes base64 data to a temp file on VM, then decodes it.
+DEPRECATED for large / critical files.
+
+This script previously corrupted some transfers because chunks were echoed with
+double quotes (`echo "<chunk>"`), allowing the shell to mangle certain bytes.
+
+For **libvgpu_cuda.c** and other important files, use:
+    python3 transfer_libvgpu_cuda.py
+
+That script:
+- Sends base64 chunks safely (single-quoted, with proper escaping).
+- Reconstructs the file on the VM.
+- Verifies SHA-256 local vs VM before installing.
+
+This file is kept only for historical reference; do not use it for the CUDA shim.
 """
 
 import sys
@@ -10,7 +22,7 @@ import base64
 import subprocess
 import tempfile
 
-def copy_file_to_vm(local_path, remote_path, vm_user="test-11", vm_host="10.25.33.111"):
+def copy_file_to_vm(local_path, remote_path, vm_user=None, vm_host=None):
     """Copy a file from local filesystem to VM using chunked base64."""
     
     if not os.path.exists(local_path):
@@ -111,7 +123,8 @@ os.unlink("{temp_file}")
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: reliable_file_copy.py <local_path> <remote_path>")
-        print("Example: reliable_file_copy.py guest-shim/libvgpu_cuda.c /home/test-11/phase3/guest-shim/libvgpu_cuda.c")
+        print("Example: reliable_file_copy.py guest-shim/libvgpu_cuda.c /home/test-3/phase3/guest-shim/libvgpu_cuda.c")
+        print("Prefer: python3 deploy_to_test3.py  (SCP-based, no chunked transfer)")
         sys.exit(1)
     
     local_path = sys.argv[1]

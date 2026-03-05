@@ -3,11 +3,12 @@
 Run install.sh on VM with sudo password handling
 """
 import sys
+import os
 import pexpect
 
-VM_HOST = "10.25.33.111"
-VM_USER = "test-11"
-VM_PASSWORD = "Calvin@123"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+from vm_config import VM_USER, VM_HOST, VM_PASSWORD
 
 def run_command_with_sudo(command):
     """Run a command on VM that requires sudo"""
