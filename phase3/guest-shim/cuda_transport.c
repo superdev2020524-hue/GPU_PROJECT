@@ -49,6 +49,13 @@
 #include "cuda_transport.h"
 #include "cuda_protocol.h"
 
+/* When VGPU_DEBUG is unset, skip per-call and verbose discovery logging to avoid inference delay. */
+static int vgpu_debug_logging(void) {
+    static int cached = -1;
+    if (cached < 0) cached = (getenv("VGPU_DEBUG") != NULL) ? 1 : 0;
+    return cached;
+}
+
 /* Forward declaration */
 static void call_libvgpu_set_skip_interception(int skip);
 
@@ -180,18 +187,17 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
      * This ensures files are read with real values, not intercepted values
      * This is needed because find_vgpu_device() might be called directly
      * without going through cuda_transport_init() or cuda_transport_discover() */
-    write(2, "[cuda-transport] FORCE: find_vgpu_device() STARTED - setting skip flag\n", 72);
     call_libvgpu_set_skip_interception(1);
-    write(2, "[cuda-transport] FORCE: Skip flag set to 1 in find_vgpu_device()\n", 65);
-    
+    if (vgpu_debug_logging()) {
+        write(2, "[cuda-transport] FORCE: find_vgpu_device() STARTED - setting skip flag\n", 72);
+        write(2, "[cuda-transport] FORCE: Skip flag set to 1 in find_vgpu_device()\n", 65);
+    }
     int device_count = 0;
-    fprintf(stderr, "[cuda-transport] DEBUG: Starting device scan...\n");
-    fflush(stderr);
+    if (vgpu_debug_logging()) { fprintf(stderr, "[cuda-transport] DEBUG: Starting device scan...\n"); fflush(stderr); }
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
         device_count++;
-        
-        fprintf(stderr, "[cuda-transport] DEBUG: Scanning device %d: %s\n", device_count, entry->d_name);
+        if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: Scanning device %d: %s\n", device_count, entry->d_name);
 
         snprintf(pci_path, sizeof(pci_path),
                  "/sys/bus/pci/devices/%s", entry->d_name);
@@ -201,53 +207,56 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
         snprintf(attr_path, sizeof(attr_path), "%s/vendor", pci_path);
         fp = fopen(attr_path, "r");
         if (!fp) {
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Cannot open vendor: %s\n", entry->d_name, strerror(errno));
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Cannot open vendor: %s\n", entry->d_name, strerror(errno));
             continue;
         }
         if (fgets(line, sizeof(line), fp)) {
             sscanf(line, "%x", &vendor);
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Read vendor: 0x%04x (line: %s)", entry->d_name, vendor, line);
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Read vendor: 0x%04x (line: %s)", entry->d_name, vendor, line);
         } else {
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Failed to read vendor line\n", entry->d_name);
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Failed to read vendor line\n", entry->d_name);
         }
         fclose(fp);
 
         snprintf(attr_path, sizeof(attr_path), "%s/device", pci_path);
         fp = fopen(attr_path, "r");
         if (!fp) {
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Cannot open device: %s\n", entry->d_name, strerror(errno));
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Cannot open device: %s\n", entry->d_name, strerror(errno));
             continue;
         }
         if (fgets(line, sizeof(line), fp)) {
             sscanf(line, "%x", &device);
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Read device: 0x%04x (line: %s)", entry->d_name, device, line);
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Read device: 0x%04x (line: %s)", entry->d_name, device, line);
         } else {
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Failed to read device line\n", entry->d_name);
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Failed to read device line\n", entry->d_name);
         }
         fclose(fp);
 
         snprintf(attr_path, sizeof(attr_path), "%s/class", pci_path);
         fp = fopen(attr_path, "r");
         if (!fp) {
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Cannot open class: %s\n", entry->d_name, strerror(errno));
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Cannot open class: %s\n", entry->d_name, strerror(errno));
             continue;
         }
         if (fgets(line, sizeof(line), fp)) {
             sscanf(line, "%x", &cls);
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Read class: 0x%06x (line: %s)", entry->d_name, cls, line);
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Read class: 0x%06x (line: %s)", entry->d_name, cls, line);
         } else {
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Failed to read class line\n", entry->d_name);
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] Failed to read class line\n", entry->d_name);
         }
         fclose(fp);
 
-        fprintf(stderr, "[cuda-transport] DEBUG: [%s] Final values: vendor=0x%04x device=0x%04x class=0x%06x\n",
-                entry->d_name, vendor, device, cls);
-        fflush(stderr);
-
+        if (vgpu_debug_logging()) {
+            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Final values: vendor=0x%04x device=0x%04x class=0x%06x\n",
+                    entry->d_name, vendor, device, cls);
+            fflush(stderr);
+        }
         int class_ok = ((cls & VGPU_CLASS_MASK) == VGPU_CLASS);
-        fprintf(stderr, "[cuda-transport] DEBUG: [%s] class_ok=%d (cls & mask=0x%06x, expected=0x%06x)\n",
-                entry->d_name, class_ok, (cls & VGPU_CLASS_MASK), VGPU_CLASS);
-        fflush(stderr);
+        if (vgpu_debug_logging()) {
+            fprintf(stderr, "[cuda-transport] DEBUG: [%s] class_ok=%d (cls & mask=0x%06x, expected=0x%06x)\n",
+                    entry->d_name, class_ok, (cls & VGPU_CLASS_MASK), VGPU_CLASS);
+            fflush(stderr);
+        }
 
         /*
          * Accept the device if:
@@ -264,26 +273,27 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
                                   (device == VGPU_DEVICE_ID);
         int legacy = class_ok && (vendor == 0x1234 || vendor == 0x1AF4);
         
-        fprintf(stderr, "[cuda-transport] DEBUG: [%s] Matching: exact=%d (vendor_match=%d device_match=%d) legacy=%d\n",
-                entry->d_name, exact, (vendor == VGPU_VENDOR_ID), (device == VGPU_DEVICE_ID), legacy);
-        fflush(stderr);
-        fprintf(stderr, "[cuda-transport] DEBUG: [%s] Expected: vendor=0x%04x device=0x%04x, got: vendor=0x%04x device=0x%04x\n",
-                entry->d_name, VGPU_VENDOR_ID, VGPU_DEVICE_ID, vendor, device);
-        fflush(stderr);
-
+        if (vgpu_debug_logging()) {
+            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Matching: exact=%d (vendor_match=%d device_match=%d) legacy=%d\n",
+                    entry->d_name, exact, (vendor == VGPU_VENDOR_ID), (device == VGPU_DEVICE_ID), legacy);
+            fflush(stderr);
+            fprintf(stderr, "[cuda-transport] DEBUG: [%s] Expected: vendor=0x%04x device=0x%04x, got: vendor=0x%04x device=0x%04x\n",
+                    entry->d_name, VGPU_VENDOR_ID, VGPU_DEVICE_ID, vendor, device);
+            fflush(stderr);
+        }
         if (!exact && !legacy) {
-            fprintf(stderr, "[cuda-transport] DEBUG: [%s] No match, continuing...\n", entry->d_name);
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: [%s] No match, continuing...\n", entry->d_name);
             continue;
         }
-        
-        fprintf(stderr, "[cuda-transport] DEBUG: [%s] *** MATCH FOUND! exact=%d legacy=%d ***\n",
-                entry->d_name, exact, legacy);
-
-        fprintf(stderr,
-                "[cuda-transport] Found VGPU-STUB at %s "
-                "(vendor=0x%04x device=0x%04x class=0x%06x match=%s)\n",
-                entry->d_name, vendor, device, cls,
-                exact ? "exact" : "legacy-qemu");
+        if (vgpu_debug_logging()) {
+            fprintf(stderr, "[cuda-transport] DEBUG: [%s] *** MATCH FOUND! exact=%d legacy=%d ***\n",
+                    entry->d_name, exact, legacy);
+            fprintf(stderr,
+                    "[cuda-transport] Found VGPU-STUB at %s "
+                    "(vendor=0x%04x device=0x%04x class=0x%06x match=%s)\n",
+                    entry->d_name, vendor, device, cls,
+                    exact ? "exact" : "legacy-qemu");
+        }
 
         snprintf(res0_path, res0_sz, "%s/resource0", pci_path);
         snprintf(res1_path, res1_sz, "%s/resource1", pci_path);
@@ -458,10 +468,11 @@ static int setup_shmem(cuda_transport_t *t)
     t->shmem_h2g  = (char *)shmem + shmem_size / 2;
     t->has_shmem  = 1;
 
-    fprintf(stderr, "[cuda-transport] Shared-memory registered: "
-            "gpa=0x%016llx size=%zu MB (G2H=%zu MB H2G=%zu MB)\n",
-            (unsigned long long)gpa,
-            shmem_size >> 20, (shmem_size / 2) >> 20, (shmem_size / 2) >> 20);
+    if (vgpu_debug_logging())
+        fprintf(stderr, "[cuda-transport] Shared-memory registered: "
+                "gpa=0x%016llx size=%zu MB (G2H=%zu MB H2G=%zu MB)\n",
+                (unsigned long long)gpa,
+                shmem_size >> 20, (shmem_size / 2) >> 20, (shmem_size / 2) >> 20);
     return 1;
 }
 
@@ -470,9 +481,8 @@ static int setup_shmem(cuda_transport_t *t)
  * ================================================================ */
 int cuda_transport_init(cuda_transport_t **tp)
 {
-    /* CRITICAL: Force immediate output to verify function is called */
-    write(2, "[cuda-transport] FORCE: cuda_transport_init() STARTED\n", 54);
-    
+    if (vgpu_debug_logging())
+        write(2, "[cuda-transport] FORCE: cuda_transport_init() STARTED\n", 54);
     char res0_path[512], res1_path[512];
     char pci_bdf[64] = {0};
     cuda_transport_t *t;
@@ -480,14 +490,16 @@ int cuda_transport_init(cuda_transport_t **tp)
     /* CRITICAL: Disable PCI file interception BEFORE calling find_vgpu_device()
      * This ensures we read real values from /sys, not intercepted values
      * Same fix as in cuda_transport_discover() */
-    write(2, "[cuda-transport] FORCE: About to set skip flag to 1\n", 52);
     call_libvgpu_set_skip_interception(1);
-    write(2, "[cuda-transport] FORCE: Skip flag SET to 1 (pid=", 48);
-    char pid_str[32];
-    snprintf(pid_str, sizeof(pid_str), "%d)\n", (int)getpid());
-    write(2, pid_str, strlen(pid_str));
-    fprintf(stderr, "[cuda-transport] DEBUG: cuda_transport_init() - Skip flag SET to 1 (pid=%d)\n", (int)getpid());
-    fflush(stderr);
+    if (vgpu_debug_logging()) {
+        write(2, "[cuda-transport] FORCE: About to set skip flag to 1\n", 52);
+        write(2, "[cuda-transport] FORCE: Skip flag SET to 1 (pid=", 48);
+        char pid_str[32];
+        snprintf(pid_str, sizeof(pid_str), "%d)\n", (int)getpid());
+        write(2, pid_str, strlen(pid_str));
+        fprintf(stderr, "[cuda-transport] DEBUG: cuda_transport_init() - Skip flag SET to 1 (pid=%d)\n", (int)getpid());
+        fflush(stderr);
+    }
 
     if (find_vgpu_device(res0_path, sizeof(res0_path),
                          res1_path, sizeof(res1_path),
@@ -539,8 +551,9 @@ int cuda_transport_init(cuda_transport_t **tp)
                             MAP_SHARED, t->bar1_fd, 0);
             if (t->bar1 != MAP_FAILED) {
                 t->has_bar1 = 1;
-                fprintf(stderr, "[cuda-transport] BAR1 mapped "
-                        "(16 MB legacy data region)\n");
+                if (vgpu_debug_logging())
+                    fprintf(stderr, "[cuda-transport] BAR1 mapped "
+                            "(16 MB legacy data region)\n");
             } else {
                 t->bar1 = NULL;
                 close(t->bar1_fd);
@@ -551,12 +564,11 @@ int cuda_transport_init(cuda_transport_t **tp)
 
     /* Re-enable interception after successful discovery */
     call_libvgpu_set_skip_interception(0);
-    
-    fprintf(stderr, "[cuda-transport] Connected to VGPU-STUB "
-            "(vm_id=%u, data_path=%s)\n",
-            t->vm_id,
-            t->has_shmem ? "shmem" : (t->has_bar1 ? "BAR1" : "BAR0-inline"));
-
+    if (vgpu_debug_logging())
+        fprintf(stderr, "[cuda-transport] Connected to VGPU-STUB "
+                "(vm_id=%u, data_path=%s)\n",
+                t->vm_id,
+                t->has_shmem ? "shmem" : (t->has_bar1 ? "BAR1" : "BAR0-inline"));
     *tp = t;
     return 0;
 }
@@ -667,11 +679,11 @@ static int do_single_cuda_call(cuda_transport_t *tp,
     time_t start;
     uint32_t status;
 
-    /* Log that we're sending a CUDA operation to VGPU-STUB */
-    fprintf(stderr, "[cuda-transport] SENDING to VGPU-STUB: call_id=0x%04x seq=%u args=%u data_len=%u (pid=%d)\n",
-            call_id, seq, num_args, send_len, (int)getpid());
-    fflush(stderr);
-
+    if (vgpu_debug_logging()) {
+        fprintf(stderr, "[cuda-transport] SENDING to VGPU-STUB: call_id=0x%04x seq=%u args=%u data_len=%u (pid=%d)\n",
+                call_id, seq, num_args, send_len, (int)getpid());
+        fflush(stderr);
+    }
     /* Write bulk data before writing metadata registers */
     write_bulk_data(tp, send_data, send_len);
 
@@ -686,10 +698,11 @@ static int do_single_cuda_call(cuda_transport_t *tp,
     for (uint32_t i = 0; i < n; i++)
         REG32(tp->bar0, REG_CUDA_ARGS_BASE + i * 4) = args[i];
 
-    /* Ring doorbell (single 4-byte MMIO write, one VM exit) */
-    fprintf(stderr, "[cuda-transport] RINGING DOORBELL: MMIO write to VGPU-STUB (call_id=0x%04x, pid=%d)\n",
-            call_id, (int)getpid());
-    fflush(stderr);
+    if (vgpu_debug_logging()) {
+        fprintf(stderr, "[cuda-transport] RINGING DOORBELL: MMIO write to VGPU-STUB (call_id=0x%04x, pid=%d)\n",
+                call_id, (int)getpid());
+        fflush(stderr);
+    }
     REG32(tp->bar0, REG_CUDA_DOORBELL) = 1;
 
     /* Poll for completion */
@@ -707,15 +720,15 @@ static int do_single_cuda_call(cuda_transport_t *tp,
         usleep(POLL_INTERVAL_US);
     }
 
-    /* Log completion */
-    if (status == STATUS_DONE) {
-        fprintf(stderr, "[cuda-transport] RECEIVED from VGPU-STUB: call_id=0x%04x seq=%u status=DONE (pid=%d)\n",
-                call_id, seq, (int)getpid());
-    } else {
-        fprintf(stderr, "[cuda-transport] RECEIVED from VGPU-STUB: call_id=0x%04x seq=%u status=ERROR (pid=%d)\n",
-                call_id, seq, (int)getpid());
+    if (vgpu_debug_logging()) {
+        if (status == STATUS_DONE)
+            fprintf(stderr, "[cuda-transport] RECEIVED from VGPU-STUB: call_id=0x%04x seq=%u status=DONE (pid=%d)\n",
+                    call_id, seq, (int)getpid());
+        else
+            fprintf(stderr, "[cuda-transport] RECEIVED from VGPU-STUB: call_id=0x%04x seq=%u status=ERROR (pid=%d)\n",
+                    call_id, seq, (int)getpid());
+        fflush(stderr);
     }
-    fflush(stderr);
 
     /* Read result registers */
     if (result) {
@@ -930,22 +943,22 @@ int cuda_transport_call(cuda_transport_t *tp,
                         void *recv_data, uint32_t recv_cap,
                         uint32_t *recv_len)
 {
-    /* CRITICAL: Use syscall to ensure log is written immediately */
-    char inv_msg[256];
-    int inv_len = snprintf(inv_msg, sizeof(inv_msg),
-                          "[cuda-transport] cuda_transport_call() INVOKED: call_id=0x%04x data_len=%u tp=%p bar0=%p (pid=%d)\n",
-                          call_id, send_len, (void*)tp, tp ? (void*)tp->bar0 : NULL, (int)getpid());
-    if (inv_len > 0 && inv_len < (int)sizeof(inv_msg)) {
-        syscall(__NR_write, 2, inv_msg, inv_len);
+    if (vgpu_debug_logging()) {
+        char inv_msg[256];
+        int inv_len = snprintf(inv_msg, sizeof(inv_msg),
+                              "[cuda-transport] cuda_transport_call() INVOKED: call_id=0x%04x data_len=%u tp=%p bar0=%p (pid=%d)\n",
+                              call_id, send_len, (void*)tp, tp ? (void*)tp->bar0 : NULL, (int)getpid());
+        if (inv_len > 0 && inv_len < (int)sizeof(inv_msg))
+            syscall(__NR_write, 2, inv_msg, inv_len);
     }
-    
     if (!tp || !tp->bar0) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-                              "[cuda-transport] ERROR: tp=%p bar0=%p (pid=%d)\n",
-                              (void*)tp, tp ? (void*)tp->bar0 : NULL, (int)getpid());
-        if (err_len > 0 && err_len < (int)sizeof(err_msg)) {
-            syscall(__NR_write, 2, err_msg, err_len);
+        if (vgpu_debug_logging()) {
+            char err_msg[128];
+            int err_len = snprintf(err_msg, sizeof(err_msg),
+                                  "[cuda-transport] ERROR: tp=%p bar0=%p (pid=%d)\n",
+                                  (void*)tp, tp ? (void*)tp->bar0 : NULL, (int)getpid());
+            if (err_len > 0 && err_len < (int)sizeof(err_msg))
+                syscall(__NR_write, 2, err_msg, err_len);
         }
         return 1;
     }
@@ -1050,40 +1063,34 @@ int cuda_transport_discover(void)
      * This ensures we read real values from /sys, not intercepted values
      * Based on documentation: when working, cuda_transport.c read real values directly */
     call_libvgpu_set_skip_interception(1);
-    fprintf(stderr, "[cuda-transport] DEBUG: Skip flag SET to 1 (pid=%d)\n", (int)getpid());
-    fflush(stderr);
-    
-    fprintf(stderr, "[cuda-transport] DEBUG: cuda_transport_discover() called, g_discovered_bdf='%s'\n", g_discovered_bdf);
-    fflush(stderr);
-    
+    if (vgpu_debug_logging()) {
+        fprintf(stderr, "[cuda-transport] DEBUG: Skip flag SET to 1 (pid=%d)\n", (int)getpid());
+        fprintf(stderr, "[cuda-transport] DEBUG: cuda_transport_discover() called, g_discovered_bdf='%s'\n", g_discovered_bdf);
+        fflush(stderr);
+    }
     /* CRITICAL: Clear g_discovered_bdf to ensure fresh scan every time
      * This prevents issues with stale values from previous calls */
     g_discovered_bdf[0] = '\0';
-    
     /* Fast path: if we already discovered a device, verify it still exists */
     if (g_discovered_bdf[0] != '\0') {
-        fprintf(stderr, "[cuda-transport] DEBUG: Fast path: g_discovered_bdf='%s', verifying...\n", g_discovered_bdf);
+        if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: Fast path: g_discovered_bdf='%s', verifying...\n", g_discovered_bdf);
         char verify_path[512];
         snprintf(verify_path, sizeof(verify_path),
                  "/sys/bus/pci/devices/%s/vendor", g_discovered_bdf);
         FILE *fp = fopen(verify_path, "r");
         if (fp) {
             fclose(fp);
-            fprintf(stderr, "[cuda-transport] DEBUG: Fast path: Device '%s' verified, returning success (SKIPPING SCAN!)\n", g_discovered_bdf);
-            /* Device still exists, return success */
+            if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: Fast path: Device '%s' verified, returning success (SKIPPING SCAN!)\n", g_discovered_bdf);
             return 0;
         }
-        fprintf(stderr, "[cuda-transport] DEBUG: Fast path: Device '%s' not found, clearing cache\n", g_discovered_bdf);
-        /* Device disappeared, clear cache and re-scan */
+        if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: Fast path: Device '%s' not found, clearing cache\n", g_discovered_bdf);
         g_discovered_bdf[0] = '\0';
     }
-    
-    fprintf(stderr, "[cuda-transport] DEBUG: Slow path: Starting device scan...\n");
-    /* Slow path: scan for device */
+    if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: Slow path: Starting device scan...\n");
     char res0[512], res1[512], bdf[64];
     int rc = find_vgpu_device(res0, sizeof(res0), res1, sizeof(res1),
                               bdf,  sizeof(bdf));
-    fprintf(stderr, "[cuda-transport] DEBUG: Slow path: find_vgpu_device() returned %d, g_discovered_bdf='%s'\n", rc, g_discovered_bdf);
+    if (vgpu_debug_logging()) fprintf(stderr, "[cuda-transport] DEBUG: Slow path: find_vgpu_device() returned %d, g_discovered_bdf='%s'\n", rc, g_discovered_bdf);
     
     /* Re-enable interception after discovery */
     call_libvgpu_set_skip_interception(0);

@@ -26,10 +26,10 @@ Modified `libvgpu_cuda.c` to:
 
 ## Deployment Status
 
-✅ **Code updated**: `libvgpu_cuda.c` modified with proper transport calls
-✅ **Library rebuilt**: `libvgpu-cuda.so.1` compiled successfully
-✅ **Library installed**: Updated in both `/usr/lib64/` and `/opt/vgpu/lib/`
-⚠️ **Testing**: Ollama service currently failing to start (exit code 127 - investigating)
+✅ **Code updated**: `libvgpu_cuda.c` now backs `cuMemCreate` / `cuMemMap` / `cuMemRelease` with real GPU allocations via `cuMemAlloc_v2` / `cuMemFree_v2`  
+✅ **Library rebuilt**: `libvgpu-cuda.so.1` compiled successfully (on test-3)  
+✅ **Library installed**: Deployed to `/opt/vgpu/lib/libvgpu-cuda.so.1` on **test-3@10.25.33.11** and `ollama` restarted (service active, runner sees CUDA0 H100)  
+⏳ **Testing:** Long `generate` re-test in progress using `ollama_vgpu_generate.py` (no time limit, 40-minute progress bar) to confirm the runner no longer exits with `exit status 2`.
 
 ## Next Steps
 

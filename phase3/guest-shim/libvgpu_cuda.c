@@ -769,6 +769,13 @@ static int              g_mutex_initialized = 0;  /* Track if mutex is initializ
  * completely bypass interception (pass through to real functions). */
 static int g_safe_to_check_process = 0;  /* 0 = not safe yet, 1 = safe to check */
 
+/* When VGPU_DEBUG is unset, skip verbose inference-path logging to avoid delay. */
+static int vgpu_debug_logging(void) {
+    static int cached = -1;
+    if (cached < 0) cached = (getenv("VGPU_DEBUG") != NULL) ? 1 : 0;
+    return cached;
+}
+
 /* Helper: Ensure mutex is initialized (lazy initialization)
  * CRITICAL: Do NOT use PTHREAD_MUTEX_INITIALIZER - it runs at library load time
  * and can crash during early initialization via /etc/ld.so.preload */
@@ -3406,18 +3413,14 @@ static CUresult ensure_connected(void)
 {
     /* Fast path — transport already live */
     if (g_transport) {
-        fprintf(stderr, "[libvgpu-cuda] ensure_connected() FAST PATH: transport already live (pid=%d)\n", (int)getpid());
-        fflush(stderr);
+        if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] ensure_connected() FAST PATH: transport already live (pid=%d)\n", (int)getpid()); fflush(stderr); }
         return CUDA_SUCCESS;
     }
     if (!g_device_found) {
-        fprintf(stderr, "[libvgpu-cuda] ensure_connected() ERROR: device not found (pid=%d)\n", (int)getpid());
-        fflush(stderr);
+        if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] ensure_connected() ERROR: device not found (pid=%d)\n", (int)getpid()); fflush(stderr); }
         return CUDA_ERROR_NOT_INITIALIZED;
     }
-
-    fprintf(stderr, "[libvgpu-cuda] ensure_connected() CALLED: initializing transport to VGPU-STUB (pid=%d)\n", (int)getpid());
-    fflush(stderr);
+    if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] ensure_connected() CALLED: initializing transport to VGPU-STUB (pid=%d)\n", (int)getpid()); fflush(stderr); }
 
     /* Slow path — initialize transport under mutex (once) */
     ensure_mutex_init();
@@ -3426,17 +3429,23 @@ static CUresult ensure_connected(void)
     /* Double-check after acquiring lock */
     if (g_transport) {
         pthread_mutex_unlock(&g_mutex);
-        fprintf(stderr, "[libvgpu-cuda] ensure_connected() SUCCESS: transport initialized by another thread (pid=%d)\n", (int)getpid());
-        fflush(stderr);
+        if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] ensure_connected() SUCCESS: transport initialized by another thread (pid=%d)\n", (int)getpid()); fflush(stderr); }
         return CUDA_SUCCESS;
     }
-
-    fprintf(stderr, "[libvgpu-cuda] ensure_connected() INITIALIZING: calling cuda_transport_init() (pid=%d)\n", (int)getpid());
-    fflush(stderr);
+    if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] ensure_connected() INITIALIZING: calling cuda_transport_init() (pid=%d)\n", (int)getpid()); fflush(stderr); }
+    /* Diagnostic: touch file so VM check can see runner reached ensure_connected */
+    {
+        int mfd = (int)syscall(__NR_open, "/tmp/vgpu_ensure_connected_called", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (mfd >= 0) {
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf), "pid=%d\n", (int)getpid());
+            if (n > 0) syscall(__NR_write, mfd, buf, (size_t)n);
+            syscall(__NR_close, mfd);
+        }
+    }
     int rc = cuda_transport_init(&g_transport);
     if (rc != 0) {
-        fprintf(stderr, "[libvgpu-cuda] ensure_connected() FAILED: cuda_transport_init() returned %d (pid=%d)\n", rc, (int)getpid());
-        fflush(stderr);
+        if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] ensure_connected() FAILED: cuda_transport_init() returned %d (pid=%d)\n", rc, (int)getpid()); fflush(stderr); }
         pthread_mutex_unlock(&g_mutex);
         fprintf(stderr, "[libvgpu-cuda] ensure_connected() transport init failed"
                         " — check resource0 permissions and mediator\n");
@@ -3452,11 +3461,11 @@ static CUresult ensure_connected(void)
     fetch_gpu_info();
 
     pthread_mutex_unlock(&g_mutex);
-
-    fprintf(stderr, "[libvgpu-cuda] ensure_connected() transport live"
-                    " (vm_id=%u bdf=%s)\n",
-            cuda_transport_vm_id(g_transport),
-            cuda_transport_pci_bdf(g_transport));
+    if (vgpu_debug_logging())
+        fprintf(stderr, "[libvgpu-cuda] ensure_connected() transport live"
+                        " (vm_id=%u bdf=%s)\n",
+                cuda_transport_vm_id(g_transport),
+                cuda_transport_pci_bdf(g_transport));
     return CUDA_SUCCESS;
 }
 
@@ -3563,8 +3572,9 @@ static CUresult rpc_simple(uint32_t call_id,
 {
     CUresult rc = ensure_connected();
     if (rc != CUDA_SUCCESS) {
-        fprintf(stderr, "[libvgpu-cuda] rpc_simple(call_id=0x%x) ensure_connected() failed: %d\n",
-                call_id, rc);
+        if (vgpu_debug_logging())
+            fprintf(stderr, "[libvgpu-cuda] rpc_simple(call_id=0x%x) ensure_connected() failed: %d\n",
+                    call_id, rc);
         return rc;
     }
     CUresult call_rc = (CUresult)cuda_transport_call(g_transport, call_id,
@@ -3572,8 +3582,9 @@ static CUresult rpc_simple(uint32_t call_id,
                                          NULL, 0, result,
                                          NULL, 0, NULL);
     if (call_rc != CUDA_SUCCESS) {
-        fprintf(stderr, "[libvgpu-cuda] rpc_simple(call_id=0x%x) transport_call failed: %d\n",
-                call_id, call_rc);
+        if (vgpu_debug_logging())
+            fprintf(stderr, "[libvgpu-cuda] rpc_simple(call_id=0x%x) transport_call failed: %d\n",
+                    call_id, call_rc);
     }
     return call_rc;
 }
@@ -3915,14 +3926,31 @@ CUresult cuMemCreate(CUmemGenericAllocationHandle *handle, size_t size,
 {
     fprintf(stderr, "[libvgpu-cuda] CALLED: cuMemCreate(handle=%p, size=%zu, flags=0x%llx)\n",
             handle, size, (unsigned long long)flags);
-    
+
     CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
-    if (!handle) return CUDA_ERROR_INVALID_VALUE;
-    
-    /* Return a dummy handle - actual allocation deferred to cuMemAlloc */
-    *handle = (CUmemGenericAllocationHandle)(uintptr_t)0x1000;
-    fprintf(stderr, "[libvgpu-cuda] cuMemCreate returning SUCCESS (dummy handle)\n");
+    if (rc != CUDA_SUCCESS) {
+        return rc;
+    }
+    if (!handle || size == 0) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    /* Allocate real memory on the physical GPU using cuMemAlloc_v2 and
+     * treat the resulting device pointer as the generic allocation handle.
+     * This keeps semantics simple for GGML's VMM usage while ensuring that
+     * the handle always refers to valid device memory. */
+    CUdeviceptr dev = 0;
+    rc = cuMemAlloc_v2(&dev, size);
+    if (rc != CUDA_SUCCESS) {
+        fprintf(stderr, "[libvgpu-cuda] cuMemCreate: cuMemAlloc_v2 failed (size=%zu, rc=%d)\n",
+                size, rc);
+        return rc;
+    }
+
+    *handle = (CUmemGenericAllocationHandle)(uintptr_t)dev;
+    fprintf(stderr, "[libvgpu-cuda] cuMemCreate SUCCESS: handle=0x%llx (devptr=0x%llx, size=%zu)\n",
+            (unsigned long long)(uintptr_t)(*handle),
+            (unsigned long long)dev, size);
     return CUDA_SUCCESS;
 }
 
@@ -4005,28 +4033,57 @@ CUresult cuMemAddressFree(CUdeviceptr ptr, size_t size)
 }
 
 CUresult cuMemMap(CUdeviceptr ptr, size_t size, size_t offset,
-                  CUmemGenericAllocationHandle handle __attribute__((unused)), unsigned long long flags)
+                  CUmemGenericAllocationHandle handle, unsigned long long flags)
 {
-    fprintf(stderr, "[libvgpu-cuda] CALLED: cuMemMap(ptr=0x%llx, size=%zu, offset=%zu, flags=0x%llx)\n",
-            (unsigned long long)ptr, size, offset, (unsigned long long)flags);
-    
+    fprintf(stderr, "[libvgpu-cuda] CALLED: cuMemMap(ptr=0x%llx, size=%zu, offset=%zu, handle=0x%llx, flags=0x%llx)\n",
+            (unsigned long long)ptr, size, offset,
+            (unsigned long long)(uintptr_t)handle,
+            (unsigned long long)flags);
+
     CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
-    
-    /* Always succeed - mapping deferred to actual memory ops */
-    fprintf(stderr, "[libvgpu-cuda] cuMemMap returning SUCCESS\n");
+    if (rc != CUDA_SUCCESS) {
+        return rc;
+    }
+    if (!handle) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    /* The actual allocation was performed by cuMemCreate (backed by
+     * cuMemAlloc_v2). We do not need to perform an additional mapping step
+     * in the remoted environment, so this is effectively a no-op that
+     * validates the handle. */
+    fprintf(stderr, "[libvgpu-cuda] cuMemMap SUCCESS (ptr=0x%llx, size=%zu, offset=%zu, handle=0x%llx)\n",
+            (unsigned long long)ptr, size, offset,
+            (unsigned long long)(uintptr_t)handle);
     return CUDA_SUCCESS;
 }
 
 CUresult cuMemRelease(CUmemGenericAllocationHandle handle)
 {
-    fprintf(stderr, "[libvgpu-cuda] CALLED: cuMemRelease(handle=%p)\n", handle);
-    
+    fprintf(stderr, "[libvgpu-cuda] CALLED: cuMemRelease(handle=0x%llx)\n",
+            (unsigned long long)(uintptr_t)handle);
+
     CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
-    
-    /* Always succeed - release deferred to actual memory ops */
-    fprintf(stderr, "[libvgpu-cuda] cuMemRelease returning SUCCESS\n");
+    if (rc != CUDA_SUCCESS) {
+        return rc;
+    }
+    if (!handle) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    /* Convert the generic allocation handle back to the device pointer and
+     * free it via cuMemFree_v2 so GPU memory is actually released on the
+     * host. */
+    CUdeviceptr dev = (CUdeviceptr)(uintptr_t)handle;
+    rc = cuMemFree_v2(dev);
+    if (rc != CUDA_SUCCESS) {
+        fprintf(stderr, "[libvgpu-cuda] cuMemRelease: cuMemFree_v2 failed (devptr=0x%llx, rc=%d)\n",
+                (unsigned long long)dev, rc);
+        return rc;
+    }
+
+    fprintf(stderr, "[libvgpu-cuda] cuMemRelease SUCCESS: devptr=0x%llx\n",
+            (unsigned long long)dev);
     return CUDA_SUCCESS;
 }
 
@@ -4723,8 +4780,7 @@ CUresult cuDevicePrimaryCtxRetain(CUcontext *pctx, CUdevice dev)
             }
             pthread_mutex_unlock(&g_mutex);
             
-            fprintf(stderr, "[libvgpu-cuda] cuDevicePrimaryCtxRetain SUCCESS (via RPC): pctx=%p\n", *pctx);
-            fflush(stderr);
+            if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] cuDevicePrimaryCtxRetain SUCCESS (via RPC): pctx=%p\n", *pctx); fflush(stderr); }
             return CUDA_SUCCESS;
         }
     }
@@ -4734,8 +4790,7 @@ CUresult cuDevicePrimaryCtxRetain(CUcontext *pctx, CUdevice dev)
     static CUcontext dummy_ctx = (CUcontext)(uintptr_t)0xDEADBEEF;
     *pctx = dummy_ctx;
     g_current_ctx = dummy_ctx;
-    fprintf(stderr, "[libvgpu-cuda] cuDevicePrimaryCtxRetain SUCCESS (dummy context, transport deferred): pctx=%p\n", *pctx);
-    fflush(stderr);
+    if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] cuDevicePrimaryCtxRetain SUCCESS (dummy context, transport deferred): pctx=%p\n", *pctx); fflush(stderr); }
     return CUDA_SUCCESS;
 #endif
 }
@@ -4863,8 +4918,7 @@ CUresult cuCtxCreate_v2(CUcontext *pctx, unsigned int flags, CUdevice dev)
             }
             pthread_mutex_unlock(&g_mutex);
             
-            fprintf(stderr, "[libvgpu-cuda] cuCtxCreate_v2 SUCCESS (via RPC): pctx=%p\n", *pctx);
-            fflush(stderr);
+            if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] cuCtxCreate_v2 SUCCESS (via RPC): pctx=%p\n", *pctx); fflush(stderr); }
             return CUDA_SUCCESS;
         }
     }
@@ -4873,8 +4927,7 @@ CUresult cuCtxCreate_v2(CUcontext *pctx, unsigned int flags, CUdevice dev)
     static CUcontext dummy_ctx = (CUcontext)(uintptr_t)0xDEADBEEF;
     *pctx = dummy_ctx;
     g_current_ctx = dummy_ctx;
-    fprintf(stderr, "[libvgpu-cuda] cuCtxCreate_v2 SUCCESS (dummy context, transport deferred): pctx=%p\n", *pctx);
-    fflush(stderr);
+    if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] cuCtxCreate_v2 SUCCESS (dummy context, transport deferred): pctx=%p\n", *pctx); fflush(stderr); }
     return CUDA_SUCCESS;
 }
 
@@ -4953,16 +5006,14 @@ CUresult cuCtxSetCurrent(CUcontext ctx)
         rc = rpc_simple(CUDA_CALL_CTX_SET_CURRENT, args, 2, &result);
         if (rc == CUDA_SUCCESS) {
             g_current_ctx = ctx;
-            fprintf(stderr, "[libvgpu-cuda] cuCtxSetCurrent SUCCESS (via RPC): ctx=%p\n", ctx);
-            fflush(stderr);
+            if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] cuCtxSetCurrent SUCCESS (via RPC): ctx=%p\n", ctx); fflush(stderr); }
             return CUDA_SUCCESS;
         }
     }
     
     /* Fallback: just set the context locally without RPC */
     g_current_ctx = ctx;
-    fprintf(stderr, "[libvgpu-cuda] cuCtxSetCurrent SUCCESS (local, transport deferred): ctx=%p\n", ctx);
-    fflush(stderr);
+    if (vgpu_debug_logging()) { fprintf(stderr, "[libvgpu-cuda] cuCtxSetCurrent SUCCESS (local, transport deferred): ctx=%p\n", ctx); fflush(stderr); }
     return CUDA_SUCCESS;
 }
 
@@ -5667,15 +5718,15 @@ CUresult cuLaunchKernel(CUfunction f,
                          void **kernelParams,
                          void **extra)
 {
-    char log_msg[256];
-    int log_len = snprintf(log_msg, sizeof(log_msg),
-                          "[libvgpu-cuda] cuLaunchKernel() CALLED: grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u (pid=%d)\n",
-                          gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
-                          sharedMemBytes, kernelParams ? 1 : 0, (int)getpid());
-    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
-        syscall(__NR_write, 2, log_msg, log_len);
+    if (vgpu_debug_logging()) {
+        char log_msg[256];
+        int log_len = snprintf(log_msg, sizeof(log_msg),
+                              "[libvgpu-cuda] cuLaunchKernel() CALLED: grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u (pid=%d)\n",
+                              gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
+                              sharedMemBytes, kernelParams ? 1 : 0, (int)getpid());
+        if (log_len > 0 && log_len < (int)sizeof(log_msg))
+            syscall(__NR_write, 2, log_msg, log_len);
     }
-
     CUresult rc = ensure_connected();
     if (rc != CUDA_SUCCESS) return rc;
 

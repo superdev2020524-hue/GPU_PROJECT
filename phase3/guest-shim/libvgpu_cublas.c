@@ -13,7 +13,13 @@
 #include <dlfcn.h>
 #include <sys/syscall.h>
 
-#define __NR_write 1
+#define __NR_write  1
+#ifndef __NR_open
+#define __NR_open   2
+#endif
+#ifndef __NR_close
+#define __NR_close  3
+#endif
 
 /* CUBLAS handle type */
 typedef void* cublasHandle_t;
@@ -40,7 +46,16 @@ cublasStatus_t cublasCreate_v2(cublasHandle_t *handle) {
     if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
-    
+    /* Diagnostic: if this file appears after generate, inference path is CUBLAS-first (B1) */
+    {
+        int mfd = (int)syscall(__NR_open, "/tmp/vgpu_cublas_called", 0x41 | 0x100 | 0x200, 0666); /* O_WRONLY|O_CREAT|O_TRUNC */
+        if (mfd >= 0) {
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf), "pid=%d\n", (int)getpid());
+            if (n > 0) syscall(__NR_write, mfd, buf, (size_t)n);
+            syscall(__NR_close, mfd);
+        }
+    }
     if (!handle) return CUBLAS_STATUS_INVALID_VALUE;
     
     /* Allocate a dummy handle - just use a static pointer */

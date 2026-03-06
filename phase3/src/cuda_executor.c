@@ -101,7 +101,13 @@ typedef struct {
     uint8_t       *mod_chunk_buf;   /* heap-allocated accumulation buffer */
     size_t         mod_chunk_alloc; /* allocated capacity in bytes        */
     size_t         mod_chunk_used;  /* bytes accumulated so far           */
+
+    /* HtoD progress: log every PROGRESS_LOG_INTERVAL bytes during model load */
+    uint64_t       htod_total_bytes;
+    uint64_t       htod_last_log_bytes;
 } vm_state_t;
+
+#define HTOD_PROGRESS_LOG_INTERVAL  (10 * 1024 * 1024)  /* 10 MB */
 
 /* ================================================================
  * Executor state
@@ -746,11 +752,23 @@ int cuda_executor_call(cuda_executor_t *exec,
         if (data && data_len > 0) {
             size_t copy_len = (size_t)byte_count;
             if (copy_len > data_len) copy_len = data_len;
-            fprintf(stderr, "[cuda-executor] cuMemcpyHtoD: dst=0x%llx size=%zu bytes (vm=%u)\n",
-                    (unsigned long long)host_dst, copy_len, call->vm_id);
+            /* Log only large transfers (>= 64KB) or failures to avoid flooding from many small copies */
+            const size_t log_threshold = 64 * 1024;
+            if (copy_len >= log_threshold) {
+                fprintf(stderr, "[cuda-executor] cuMemcpyHtoD: dst=0x%llx size=%zu bytes (vm=%u)\n",
+                        (unsigned long long)host_dst, copy_len, call->vm_id);
+            }
             rc = cuMemcpyHtoD(host_dst, data, copy_len);
             if (rc == CUDA_SUCCESS) {
-                fprintf(stderr, "[cuda-executor] cuMemcpyHtoD SUCCESS: data copied to physical GPU (vm=%u)\n", call->vm_id);
+                if (copy_len >= log_threshold)
+                    fprintf(stderr, "[cuda-executor] cuMemcpyHtoD SUCCESS: data copied to physical GPU (vm=%u)\n", call->vm_id);
+                /* Progress log: every 10 MB of HtoD transfer (model load) */
+                vm->htod_total_bytes += (uint64_t)copy_len;
+                if (vm->htod_total_bytes - vm->htod_last_log_bytes >= HTOD_PROGRESS_LOG_INTERVAL) {
+                    fprintf(stderr, "[cuda-executor] HtoD progress: %llu MB total (vm=%u)\n",
+                            (unsigned long long)(vm->htod_total_bytes / (1024 * 1024)), call->vm_id);
+                    vm->htod_last_log_bytes = vm->htod_total_bytes;
+                }
             } else {
                 fprintf(stderr, "[cuda-executor] cuMemcpyHtoD FAILED: rc=%d (vm=%u)\n", rc, call->vm_id);
             }
@@ -770,13 +788,17 @@ int cuda_executor_call(cuda_executor_t *exec,
 
         size_t copy_len = (size_t)byte_count;
         if (result_data && result_cap >= copy_len) {
-            fprintf(stderr, "[cuda-executor] cuMemcpyDtoH: src=0x%llx size=%zu bytes (vm=%u)\n",
-                    (unsigned long long)host_src, copy_len, call->vm_id);
+            const size_t log_threshold = 64 * 1024;
+            if (copy_len >= log_threshold) {
+                fprintf(stderr, "[cuda-executor] cuMemcpyDtoH: src=0x%llx size=%zu bytes (vm=%u)\n",
+                        (unsigned long long)host_src, copy_len, call->vm_id);
+            }
             rc = cuMemcpyDtoH(result_data, host_src, copy_len);
             if (rc == CUDA_SUCCESS) {
                 result->data_len = (uint32_t)copy_len;
                 if (result_len) *result_len = (uint32_t)copy_len;
-                fprintf(stderr, "[cuda-executor] cuMemcpyDtoH SUCCESS: data copied from physical GPU (vm=%u)\n", call->vm_id);
+                if (copy_len >= log_threshold)
+                    fprintf(stderr, "[cuda-executor] cuMemcpyDtoH SUCCESS: data copied from physical GPU (vm=%u)\n", call->vm_id);
             } else {
                 fprintf(stderr, "[cuda-executor] cuMemcpyDtoH FAILED: rc=%d (vm=%u)\n", rc, call->vm_id);
             }

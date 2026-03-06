@@ -2,6 +2,16 @@
 
 **Quick reference:** On a machine with CUDA toolkit: `export CMAKE_CUDA_ARCHITECTURES=90 && cd ollama && make -j $(nproc)`. Then from phase3: `python3 deploy_libggml_cuda_hopper.py /path/to/ollama/build/lib/ollama/libggml-cuda.so`.
 
+## What is sm_90?
+
+**sm_90** is NVIDIA’s **compute capability** code for the **Hopper** architecture (e.g. H100). In CUDA/CMake:
+
+- **Architecture 90** = Hopper = **compute capability 9.0**.
+- The H100 GPU is Hopper, so it requires a `libggml-cuda.so` built with **sm_90** (or `CMAKE_CUDA_ARCHITECTURES=90`).
+- Ollama’s default GGML CUDA build does **not** include 90 in its arch list (it has 50, 61, 70, 75, 80, 86, 89). So the bundled `.so` does not support H100; building with `CMAKE_CUDA_ARCHITECTURES=90` (and a CUDA toolkit that supports it, e.g. CUDA 11.8+ or 12.x) produces a library that **does** recognize and use the H100.
+
+**Summary:** Build the `.so` on your local machine with CUDA 12.4 (or 11.8+) and `CMAKE_CUDA_ARCHITECTURES=90`, then copy it to the VM’s `/usr/local/lib/ollama/cuda_v12/` and restart Ollama. After that, GPU detection works (device_count=2, library=CUDA, H100 80GB).
+
 ## Why this is needed
 
 On the test-3 vGPU guest, the bundled `libggml-cuda.so` (from Ollama's default build) was **not** compiled with support for compute capability 9.0 (Hopper / H100). That causes:
@@ -147,6 +157,21 @@ After replacing the library and restarting Ollama:
 `ls -la /usr/local/lib/ollama/cuda_v12/libggml-cuda.so` (check timestamp);  
 `sudo journalctl -u ollama -n 30 --no-pager | grep -E "inference compute|runner /info"` (expect library=CUDA);  
 `curl -s -m 60 'http://127.0.0.1:11434/api/generate' -d '{"model":"llama3.2:1b","prompt":"Hi","stream":false,"options":{"num_predict":2}}' | jq -r '.response // .error'` (expect text, not timeout); then `ollama ps`.
+
+---
+
+## Documents before and after (PHASE3 flow)
+
+**Before (why this is needed):**
+
+- **VM_TEST3_GPU_MODE_STATUS.md** – Sections “Why verification runners exit” and “Inference and model load”: the bundled `libggml-cuda.so` was not built with Hopper (sm_90), so second-pass init validation and inference hit `ggml_cuda_has_arch` and aborted. Discovery was fixed by skipping CUDA init validation, but inference still needed a Hopper-capable library.
+- **PHASE3_INFERENCE_ISSUES_AND_NEXT_STEPS.md** – D1: “Hopper (sm_90) missing in libggml-cuda.so”; fix is to build and deploy the Hopper lib.
+
+**This document:** Build `libggml-cuda.so` with CUDA 12.4 (or host with CUDA 11.8+) and `CMAKE_CUDA_ARCHITECTURES=90`, then deploy to the VM with `deploy_libggml_cuda_hopper.py`.
+
+**After (what to check once deployed):**
+
+- **VM_TEST3_GPU_MODE_STATUS.md** – “Verification record”: `journalctl -u ollama` shows “runner /info response” device_count=2, “inference compute” library=CUDA, NVIDIA H100 80GB. “Inference verification”: server uses 80 GiB VRAM for context; runners report device_count=2. “Verify” section in this doc: discovery, optional re-enable of init validation, and a short inference test.
 
 ---
 
