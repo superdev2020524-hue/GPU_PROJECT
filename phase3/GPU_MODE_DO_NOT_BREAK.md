@@ -106,7 +106,7 @@ If any of these fail, the executor sets `result->status` to the CUDA error and t
 2. **Mediator stderr:** Look for:
    - `[cuda-executor] cuMemAlloc FAILED: rc=<code> (vm=<id>)` — host `cuMemAlloc` failed (e.g. out of memory, or context/device issue).
    - `[cuda-executor] cuInit failed` / `No CUDA devices found` — host GPU or driver issue.
-3. **Context creation:** `ensure_vm_context` calls `cuCtxCreate`. If that fails (e.g. device in use, driver error), allocation will fail.
+3. **Context creation:** `ensure_vm_context` calls `cuCtxCreate` per VM. If that fails (e.g. device in use, driver error), allocation will fail. **Fix (do not revert):** In `cuda_executor.c`, use the **primary context** for MEM_ALLOC and all memory ops (MEM_FREE, MEMCPY_HTOD/DTOH/DTOD, MEMSET_*, MEM_GET_INFO): call `cuCtxSetCurrent(exec->primary_ctx)` instead of `ensure_vm_context(exec, vm)`. Then rebuild the mediator on the host.
 4. **VM id:** Guest and host must agree on `vm_id` (e.g. 13). The executor uses `find_or_create_vm(exec, vm_id)` so the VM is created on first use; no pre-registration needed.
 
 **Quick guest-side check (with VGPU_DEBUG=1):** Restart ollama with `VGPU_DEBUG=1`, run a short generate, then inspect journalctl for “SENDING to VGPU-STUB”, “RECEIVED … status=ERROR”, and “cudaMalloc() ERROR: transport call failed”. That confirms the request reaches the stub and the host is returning an error.

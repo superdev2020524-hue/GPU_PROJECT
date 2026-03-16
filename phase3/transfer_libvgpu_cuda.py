@@ -20,7 +20,7 @@ from vm_config import VM_USER, VM_HOST, VM_PASSWORD, REMOTE_PHASE3
 CHUNK_SIZE = 40000  # Stay under typical argv limits
 SOURCE = os.path.join(SCRIPT_DIR, "guest-shim", "libvgpu_cuda.c")
 
-def run_vm(cmd, timeout_sec=120):
+def run_vm(cmd, timeout_sec=900):
     """Run command on VM via connect_vm.py."""
     result = subprocess.run(
         [sys.executable, os.path.join(SCRIPT_DIR, "connect_vm.py"), cmd],
@@ -68,15 +68,7 @@ def main():
         return 1
 
     # Verify SHA256 on VM
-    ok, out, err = run_vm(
-        "python3 - << 'PYEOF'\n"
-        "import hashlib\n"
-        "p = '/tmp/libvgpu_cuda_new.c'\n"
-        "with open(p, 'rb') as f:\n"
-        "    d = f.read()\n"
-        "print('REMOTE_SHA256=' + hashlib.sha256(d).hexdigest())\n"
-        "PYEOF"
-    )
+    ok, out, err = run_vm("sha256sum /tmp/libvgpu_cuda_new.c | awk '{print \"REMOTE_SHA256=\" $1}'")
     if not ok:
         print("Remote SHA256 computation failed:", err or out)
         return 1
