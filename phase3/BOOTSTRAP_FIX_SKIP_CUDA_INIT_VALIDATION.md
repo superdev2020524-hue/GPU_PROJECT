@@ -22,7 +22,7 @@ Then rebuild the Ollama binary and install it on the VM.
   The patched `device.go`, `server.go`, and `discover/runner.go` were transferred to `/home/test-4/ollama/` via `transfer_ollama_go_patches.py`.  
   Check: `grep -A3 'func (d DeviceInfo) NeedsInitValidation' /home/test-4/ollama/ml/device.go` → should show `return d.Library == "ROCm"` only.
 
-- **Build on VM failed** because the VM has only Go 1.18; this Ollama tree needs Go 1.23+.
+- **Build on VM:** Use `/usr/local/go/bin/go` (Go 1.26.1) if present; default `go` may be 1.18. Always check with `go version` and `/usr/local/go/bin/go version` before concluding the VM cannot build.
 
 ## Which method is more effective: build on VM or locally?
 
@@ -31,7 +31,7 @@ Then rebuild the Ollama binary and install it on the VM.
 - **Build on VM** was used when the VM had a suitable Go (e.g. TEST-3 had **Go 1.26** at `/usr/local/go/bin/go`). Then `transfer_ollama_go_patches.py` does everything: transfer patched source → build on VM → install. One command, no copying the tree.
 - **Build locally** is the documented alternative when the VM does *not* have the right Go: apply patches locally (`apply_ollama_vgpu_patches.py`), run `go build -o ollama.bin .` on a machine with **Go 1.23+**, then `scp ollama.bin` to the VM and install (Option B in PHASE3_GPU_AND_TRANSPORT_STATUS.md).
 
-**For TEST-4 right now:** The VM has only **Go 1.18**; this Ollama tree needs **Go 1.23+**. So **building locally (or on any host with Go 1.23+)** is the more effective option. Building on the VM would require installing a newer Go on the VM first (e.g. from go.dev/dl), after which you could use the VM build path again.
+**For TEST-4:** Check for Go 1.23+ on the VM first: run `/usr/local/go/bin/go version` (often 1.26.x). If present, build on the VM with `cd /home/test-4/ollama && /usr/local/go/bin/go build -o ollama.bin .`. Do not assume the VM cannot build without checking.
 
 **Summary:** Prefer **local build** when the VM lacks the right Go version; prefer **VM build** when the VM already has Go 1.23+ (simpler, one script). The same pattern is used for guest shims: phase3 docs recommend building heavy artifacts (e.g. libvgpu-cuda.so.1) on a machine with more resources and copying the result to the VM to avoid OOM (see TRANSFER_LIBVGPU_CUDA_SCRIPT_INVESTIGATION.md, STATUS_FOR_NEW_VM_COMPLETE.md).
 

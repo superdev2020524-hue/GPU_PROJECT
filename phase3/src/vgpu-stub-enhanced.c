@@ -25,6 +25,19 @@
 #include "vgpu_protocol.h"
 #include "cuda_protocol.h"
 
+/* Ensure status_reg write is visible to vCPU thread (MMIO read). Use __sync_synchronize()
+ * (full barrier, no libatomic) so the QEMU build links without -latomic. */
+#define VGPU_STATUS_WRITE(s, v) do { \
+    (s)->status_reg = (v); \
+    (s)->bar1_status_mirror = (v); \
+    if ((s)->bar1_data) *(uint32_t *)((s)->bar1_data + (VGPU_BAR1_SIZE - 4)) = (v); \
+    __sync_synchronize(); \
+} while (0)
+#define VGPU_STATUS_READ(s) ({ \
+    __sync_synchronize(); \
+    (s)->status_reg; \
+})
+
 /* ----------------------------------------------------------------
  * QEMU type plumbing
  * ---------------------------------------------------------------- */
@@ -78,6 +91,7 @@ typedef struct VGPUStubState {
 
     /* --- BAR1 data region (16 MB, legacy fallback) ------------ */
     uint8_t *bar1_data;           /* malloced 16 MB region; NULL when shmem active */
+    uint32_t bar1_status_mirror;  /* last 4B of BAR1 for status; always valid for guest read */
 
     /* --- VHOST-style guest-pinned shared memory ---------------- */
     /* The guest shim allocates a large anonymous mmap, locks it,  */
@@ -246,7 +260,12 @@ static uint64_t vgpu_mmio_read(void *opaque, hwaddr addr, unsigned size)
             break;
 
         case VGPU_REG_STATUS:
-            val = s->status_reg;
+            val = VGPU_STATUS_READ(s);
+            /* Log BAR0 status when DONE/ERROR (MMIO mismatch diagnosis: stub returns 0x2, guest sees 0x1) */
+            if (val == VGPU_STATUS_DONE || val == VGPU_STATUS_ERROR) {
+                fprintf(stderr, "[vgpu] vm_id=%u: BAR0 STATUS read -> 0x%x\n", s->vm_id, (unsigned)val);
+                fflush(stderr);
+            }
             break;
 
         case VGPU_REG_POOL_ID:
@@ -537,7 +556,7 @@ static void vgpu_mmio_write(void *opaque, hwaddr addr,
                 if (size < VGPU_SHMEM_MIN_SIZE) {
                     fprintf(stderr, "[vgpu] vm_id=%u: shmem too small (%u B)\n",
                             s->vm_id, size);
-                    s->status_reg = VGPU_STATUS_ERROR;
+                    VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                     s->error_code = VGPU_ERR_INVALID_LENGTH;
                     break;
                 }
@@ -577,7 +596,7 @@ static void vgpu_mmio_write(void *opaque, hwaddr addr,
                             size / 2);
                     if (g2h)
                         cpu_physical_memory_unmap(g2h, g2h_len, false, g2h_len);
-                    s->status_reg = VGPU_STATUS_ERROR;
+                    VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                     s->error_code = VGPU_ERR_INVALID_REQUEST;
                     break;
                 }
@@ -594,7 +613,7 @@ static void vgpu_mmio_write(void *opaque, hwaddr addr,
                     cpu_physical_memory_unmap(g2h, size / 2, false, size / 2);
                     if (h2g)
                         cpu_physical_memory_unmap(h2g, h2g_len, true, h2g_len);
-                    s->status_reg = VGPU_STATUS_ERROR;
+                    VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                     s->error_code = VGPU_ERR_INVALID_REQUEST;
                     break;
                 }
@@ -613,7 +632,7 @@ static void vgpu_mmio_write(void *opaque, hwaddr addr,
                         size >> 20,
                         g2h, h2g);
 
-                s->status_reg = VGPU_STATUS_DONE;
+                VGPU_STATUS_WRITE(s, VGPU_STATUS_DONE);
                 s->error_code = VGPU_ERR_NONE;
 
             } else if ((uint32_t)val == 0) {
@@ -635,7 +654,7 @@ static void vgpu_mmio_write(void *opaque, hwaddr addr,
                     fprintf(stderr, "[vgpu] vm_id=%u: shmem released\n",
                             s->vm_id);
                 }
-                s->status_reg = VGPU_STATUS_DONE;
+                VGPU_STATUS_WRITE(s, VGPU_STATUS_DONE);
             }
             break;
         default:
@@ -675,18 +694,18 @@ static void vgpu_process_doorbell(VGPUStubState *s)
 
     /* Validate request length */
     if (s->request_len == 0) {
-        s->status_reg = VGPU_STATUS_ERROR;
+        VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
         s->error_code = VGPU_ERR_INVALID_LENGTH;
         return;
     }
     if (s->request_len > VGPU_REQ_BUFFER_SIZE) {
-        s->status_reg = VGPU_STATUS_ERROR;
+        VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
         s->error_code = VGPU_ERR_REQUEST_TOO_LARGE;
         return;
     }
 
     /* Mark device busy */
-    s->status_reg = VGPU_STATUS_BUSY;
+    VGPU_STATUS_WRITE(s, VGPU_STATUS_BUSY);
     s->error_code = VGPU_ERR_NONE;
     s->response_len = 0;
 
@@ -714,7 +733,7 @@ static void vgpu_process_doorbell(VGPUStubState *s)
 
     /* Still not connected? → error */
     if (s->mediator_fd < 0) {
-        s->status_reg = VGPU_STATUS_ERROR;
+        VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
         s->error_code = VGPU_ERR_MEDIATOR_UNAVAIL;
         return;
     }
@@ -784,7 +803,7 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
     }
 
     /* Mark device busy */
-    s->status_reg = VGPU_STATUS_BUSY;
+    VGPU_STATUS_WRITE(s, VGPU_STATUS_BUSY);
     s->error_code = VGPU_ERR_NONE;
 
     /* Clear result registers */
@@ -829,7 +848,7 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
         fprintf(stderr, "[vgpu] vm_id=%u: ERROR: Cannot connect to mediator (call_id=0x%04x)\n",
                 s->vm_id, s->cuda_op);
         fflush(stderr);
-        s->status_reg = VGPU_STATUS_ERROR;
+        VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
         s->error_code = VGPU_ERR_MEDIATOR_UNAVAIL;
         return;
     }
@@ -865,7 +884,7 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
                 data_len = VGPU_BAR1_G2H_SIZE;
         } else {
             /* No large data path available */
-            s->status_reg = VGPU_STATUS_ERROR;
+            VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
             s->error_code = VGPU_ERR_REQUEST_TOO_LARGE;
             return;
         }
@@ -900,7 +919,7 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
          */
         data_bounce = g_malloc(data_len);
         if (!data_bounce) {
-            s->status_reg = VGPU_STATUS_ERROR;
+            VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
             s->error_code = VGPU_ERR_REQUEST_TOO_LARGE;
             return;
         }
@@ -1074,7 +1093,7 @@ static void vgpu_socket_read_handler(void *opaque)
             /* If we were waiting for a response, signal error.
              * The guest shim will retry on the next call. */
             if (s->status_reg == VGPU_STATUS_BUSY) {
-                s->status_reg = VGPU_STATUS_ERROR;
+                VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                 s->error_code = VGPU_ERR_MEDIATOR_UNAVAIL;
             }
         }
@@ -1129,36 +1148,36 @@ static void vgpu_socket_read_handler(void *opaque)
         if (copy_len >= VGPU_RESPONSE_HEADER_SIZE) {
             VGPUResponse *resp = (VGPUResponse *)s->resp_buf;
             if (resp->status == 0) {
-                s->status_reg = VGPU_STATUS_DONE;
+                VGPU_STATUS_WRITE(s, VGPU_STATUS_DONE);
                 s->error_code = VGPU_ERR_NONE;
             } else if (resp->status == VGPU_ERR_RATE_LIMITED) {
                 /* Phase 3: back-pressure - VM exceeded its rate limit */
-                s->status_reg = VGPU_STATUS_ERROR;
+                VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                 s->error_code = VGPU_ERR_RATE_LIMITED;
                 fprintf(stderr,
                         "[vgpu] vm%u req%u: rate-limited by mediator\n",
                         s->vm_id, s->request_id);
             } else if (resp->status == VGPU_ERR_VM_QUARANTINED) {
                 /* Phase 3: VM quarantined due to excessive faults */
-                s->status_reg = VGPU_STATUS_ERROR;
+                VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                 s->error_code = VGPU_ERR_VM_QUARANTINED;
                 fprintf(stderr,
                         "[vgpu] vm%u req%u: VM quarantined\n",
                         s->vm_id, s->request_id);
             } else if (resp->status == VGPU_ERR_QUEUE_FULL) {
                 /* Queue depth exceeded */
-                s->status_reg = VGPU_STATUS_ERROR;
+                VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                 s->error_code = VGPU_ERR_QUEUE_FULL;
                 fprintf(stderr,
                         "[vgpu] vm%u req%u: queue full\n",
                         s->vm_id, s->request_id);
             } else {
                 /* Generic CUDA or other error */
-                s->status_reg = VGPU_STATUS_ERROR;
+                VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                 s->error_code = VGPU_ERR_CUDA_ERROR;
             }
         } else {
-            s->status_reg = VGPU_STATUS_DONE;
+            VGPU_STATUS_WRITE(s, VGPU_STATUS_DONE);
             s->error_code = VGPU_ERR_NONE;
         }
 
@@ -1168,7 +1187,7 @@ static void vgpu_socket_read_handler(void *opaque)
     else if (hdr->msg_type == VGPU_MSG_BUSY) {
         /* Phase 3: mediator signals rate-limit rejection as a distinct
          * message type (no payload).  Map to MMIO error code. */
-        s->status_reg = VGPU_STATUS_ERROR;
+        VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
         s->error_code = VGPU_ERR_RATE_LIMITED;
         s->response_len = 0;
         fprintf(stderr,
@@ -1178,7 +1197,7 @@ static void vgpu_socket_read_handler(void *opaque)
     else if (hdr->msg_type == VGPU_MSG_QUARANTINED) {
         /* Phase 3: mediator signals VM quarantine as a distinct
          * message type (no payload).  Map to MMIO error code. */
-        s->status_reg = VGPU_STATUS_ERROR;
+        VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
         s->error_code = VGPU_ERR_VM_QUARANTINED;
         s->response_len = 0;
         fprintf(stderr,
@@ -1198,6 +1217,9 @@ static void vgpu_socket_read_handler(void *opaque)
              * and the guest would see status=0 + num_results=0 (misread as OOM). */
             if (cr->seq_num != s->pending_seq) {
                 /* Stale or out-of-order response; consume but do not update registers */
+                fprintf(stderr, "[vgpu] vm_id=%u: CUDA result IGNORED (recv seq=%u pending_seq=%u) — guest will keep waiting\n",
+                        s->vm_id, cr->seq_num, s->pending_seq);
+                fflush(stderr);
             } else {
                 /* Copy result registers */
                 s->cuda_result_status   = cr->status;
@@ -1241,15 +1263,22 @@ static void vgpu_socket_read_handler(void *opaque)
                 s->timestamp_hi = (uint32_t)((uint64_t)now_us >> 32);
 
                 if (cr->status == 0) {
-                    s->status_reg = VGPU_STATUS_DONE;
+                    VGPU_STATUS_WRITE(s, VGPU_STATUS_DONE);
                     s->error_code = VGPU_ERR_NONE;
                 } else {
-                    s->status_reg = VGPU_STATUS_ERROR;
+                    VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
                     s->error_code = VGPU_ERR_CUDA_ERROR;
                 }
+                if (cr->status != 0)
+                    fprintf(stderr, "[vgpu] vm_id=%u: CUDA result applied seq=%u status=%u (CUDA_ERROR — guest will see ERROR)\n",
+                            s->vm_id, cr->seq_num, cr->status);
+                else
+                    fprintf(stderr, "[vgpu] vm_id=%u: CUDA result applied seq=%u status=%u (DONE)\n",
+                            s->vm_id, cr->seq_num, cr->status);
+                fflush(stderr);
             }
         } else {
-            s->status_reg = VGPU_STATUS_ERROR;
+            VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
             s->error_code = VGPU_ERR_INVALID_REQUEST;
         }
     }
@@ -1289,6 +1318,27 @@ static uint64_t vgpu_bar1_read(void *opaque, hwaddr addr, unsigned size)
     VGPUStubState *s = opaque;
     uint64_t val = 0;
 
+    /* Last 4 bytes of BAR1 are always the status mirror (works when bar1_data is NULL).
+     * Handle both 4-byte read at (BAR1_SIZE-4) and 8-byte read at (BAR1_SIZE-8). */
+    if (addr + size > VGPU_BAR1_SIZE - 4u) {
+        if (size == 4 && addr >= VGPU_BAR1_SIZE - 4u)
+            val = s->bar1_status_mirror;
+        else if (size == 8 && addr == VGPU_BAR1_SIZE - 8u)
+            val = (uint64_t)s->bar1_status_mirror << 32;
+        else
+            val = s->bar1_status_mirror;
+        /* Log BAR1 status when DONE/ERROR (MMIO mismatch: do BAR1 reads reach stub?) */
+        if (val == 2u || val == 3u) {
+            fprintf(stderr, "[vgpu] vm_id=%u: BAR1 status read -> 0x%x\n", s->vm_id, (unsigned)val);
+            fflush(stderr);
+        }
+        if (val == 2u) {
+            static FILE *f;
+            if (!f) f = fopen("/tmp/vgpu_stub_bar1_done.log", "a");
+            if (f) { fprintf(f, "DONE\n"); fflush(f); }
+        }
+        return val;
+    }
     if (s->bar1_data && addr + size <= VGPU_BAR1_SIZE) {
         memcpy(&val, &s->bar1_data[addr], size);
     }
@@ -1339,6 +1389,7 @@ static void vgpu_realize(PCIDevice *pci_dev, Error **errp)
 
     /* Initialise control registers */
     s->status_reg   = VGPU_STATUS_IDLE;
+    s->bar1_status_mirror = VGPU_STATUS_IDLE;
     s->error_code   = VGPU_ERR_NONE;
     s->request_len  = 0;
     s->response_len = 0;

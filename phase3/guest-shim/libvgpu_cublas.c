@@ -489,6 +489,10 @@ cublasStatus_t cublasCreate(cublasHandle_t *handle) {
 
 /* CUBLAS destroy handle */
 cublasStatus_t cublasDestroy_v2(cublasHandle_t handle) {
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "cublas_destroy\n"; syscall(__NR_write, nfd, msg, 16); syscall(__NR_close, nfd); }
+    }
     CUDACallResult result = {0};
     uint32_t args[2];
 
@@ -803,6 +807,10 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
                                          long long int strideC,
                                          int batchCount,
                                          int computeType, int algo) {
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "gemm_strided_batched\n"; syscall(__NR_write, nfd, msg, 22); syscall(__NR_close, nfd); }
+    }
     char log_msg[256];
     int log_len = snprintf(log_msg, sizeof(log_msg),
                           "[libvgpu-cublas] cublasGemmStridedBatchedEx() CALLED (m=%d, n=%d, k=%d, batch=%d, pid=%d)\n",
@@ -832,6 +840,10 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
                                    void *const Carray[], int Ctype, int ldc,
                                    int batchCount,
                                    int computeType, int algo) {
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "gemm_batched\n"; syscall(__NR_write, nfd, msg, 13); syscall(__NR_close, nfd); }
+    }
     if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
     typedef cublasStatus_t (*fn_t)(cublasHandle_t, int, int, int, int, int,
                                    const void *, const void *const [], int, int,

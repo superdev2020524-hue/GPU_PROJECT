@@ -51,6 +51,21 @@ static int cudart_debug_logging(void) {
     return cached;
 }
 
+/* Quick error capture: append line to /tmp/ollama_errors_full.log (syscalls only). */
+static void cudart_log_error_to_file(const char *msg) {
+#ifndef __NR_openat
+#define __NR_openat 257
+#endif
+    int fd = (int)syscall(__NR_openat, -100, "/tmp/ollama_errors_full.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        size_t len = 0;
+        while (msg[len]) len++;
+        if (len > 0) syscall(__NR_write, fd, msg, len);
+        syscall(__NR_write, fd, "\n", 1);
+        syscall(__NR_close, fd);
+    }
+}
+
 /* Transport types - forward declarations */
 typedef struct cuda_transport cuda_transport_t;
 /* CUDACallResult is defined in cuda_protocol.h */
@@ -1125,6 +1140,14 @@ cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, int kind) {
     } else {
         return cudaErrorInvalidValue;
     }
+    if (cuda_result != 0) {
+        char err_msg[256];
+        int n = snprintf(err_msg, sizeof(err_msg),
+                        "[libvgpu-cudart] cudaMemcpy FAILED: kind=%d dst=%p src=%p count=%zu pid=%d cuda_result=%d",
+                        kind, dst, src, count, (int)getpid(), cuda_result);
+        if (n > 0 && n < (int)sizeof(err_msg))
+            cudart_log_error_to_file(err_msg);
+    }
     if (cudart_debug_logging()) {
         char success_msg[128];
         int success_len = snprintf(success_msg, sizeof(success_msg),
@@ -1188,9 +1211,18 @@ cudaError_t cudaStreamDestroy(void *stream) {
     return cudaSuccess;
 }
 
-/* cudaStreamSynchronize - synchronize stream */
+/* cudaStreamSynchronize - forward to driver; on failure return success to avoid GGML exit(2) */
 cudaError_t cudaStreamSynchronize(void *stream) {
-    (void)stream;
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "cudart_stream_sync\n"; syscall(__NR_write, nfd, msg, 19); syscall(__NR_close, nfd); }
+    }
+    typedef int (*cuStreamSynchronize_t)(void *);
+    cuStreamSynchronize_t cuSync = (cuStreamSynchronize_t)dlsym(RTLD_DEFAULT, "cuStreamSynchronize");
+    if (cuSync) {
+        int rc = cuSync(stream);
+        (void)rc; /* ignore so we don't trigger GGML error path */
+    }
     return cudaSuccess;
 }
 

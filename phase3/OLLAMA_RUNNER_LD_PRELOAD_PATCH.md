@@ -88,3 +88,7 @@ If `patch` fails, add this block in `llm/server.go` inside `StartRunner`, after 
 ## Note
 
 Upstream `llm/server.go` already sets `cmd.Env = os.Environ()`, so in theory the runner gets the server’s env. Packaged or snap builds may use an older or patched tree that filters env; this patch forces `LD_PRELOAD` and `LD_LIBRARY_PATH` through regardless.
+
+## Applied in this repo
+
+**`transfer_ollama_go_patches.py`** applies this logic when patching `llm/server.go`: it injects the "ensure runner inherits LD_PRELOAD and LD_LIBRARY_PATH" block (step 3 in `patch_server_go`). Run that script with an Ollama tree at `phase3/ollama-src` (with `ml/device.go`, `llm/server.go`, `discover/runner.go`) to transfer patched files to the VM, build `ollama.bin`, and install. After that, the runner will receive `LD_PRELOAD` from the server, so the vGPU shim's `write()` interceptor can capture runner stderr to `/tmp/ollama_errors_full.log` for error tracking.

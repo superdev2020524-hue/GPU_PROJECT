@@ -783,6 +783,21 @@ static int vgpu_debug_logging(void) {
     return cached;
 }
 
+/* Quick error capture: append line to /tmp/ollama_errors_full.log (syscalls only). */
+static void vgpu_log_error_to_file(const char *msg) {
+#ifndef __NR_openat
+#define __NR_openat 257
+#endif
+    int fd = (int)syscall(__NR_openat, -100, "/tmp/ollama_errors_full.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        size_t len = 0;
+        while (msg[len]) len++;
+        if (len > 0) syscall(__NR_write, fd, msg, len);
+        syscall(__NR_write, fd, "\n", 1);
+        syscall(__NR_close, fd);
+    }
+}
+
 /* Helper: Ensure mutex is initialized (lazy initialization)
  * CRITICAL: Do NOT use PTHREAD_MUTEX_INITIALIZER - it runs at library load time
  * and can crash during early initialization via /etc/ld.so.preload */
@@ -3451,28 +3466,28 @@ __attribute__((unused)) static CUresult generic_stub_0(void) {
     return CUDA_SUCCESS;
 }
 
-static CUresult generic_stub_1ptr(void *arg1) {
+__attribute__((unused)) static CUresult generic_stub_1ptr(void *arg1) {
     (void)arg1;
     fprintf(stderr, "[libvgpu-cuda] GENERIC STUB (1 ptr) CALLED: returning SUCCESS (init phase)\n");
     fflush(stderr);
     return CUDA_SUCCESS;
 }
 
-static CUresult generic_stub_2args(void *arg1, void *arg2) {
+__attribute__((unused)) static CUresult generic_stub_2args(void *arg1, void *arg2) {
     (void)arg1; (void)arg2;
     fprintf(stderr, "[libvgpu-cuda] GENERIC STUB (2 args) CALLED: returning SUCCESS (init phase)\n");
     fflush(stderr);
     return CUDA_SUCCESS;
 }
 
-static CUresult generic_stub_3args(void *arg1, void *arg2, void *arg3) {
+__attribute__((unused)) static CUresult generic_stub_3args(void *arg1, void *arg2, void *arg3) {
     (void)arg1; (void)arg2; (void)arg3;
     fprintf(stderr, "[libvgpu-cuda] GENERIC STUB (3 args) CALLED: returning SUCCESS (init phase)\n");
     fflush(stderr);
     return CUDA_SUCCESS;
 }
 
-static CUresult generic_stub_4args(void *arg1, void *arg2, void *arg3, void *arg4) {
+__attribute__((unused)) static CUresult generic_stub_4args(void *arg1, void *arg2, void *arg3, void *arg4) {
     (void)arg1; (void)arg2; (void)arg3; (void)arg4;
     fprintf(stderr, "[libvgpu-cuda] GENERIC STUB (4 args) CALLED: returning SUCCESS (init phase)\n");
     fflush(stderr);
@@ -4324,6 +4339,10 @@ static CUresult dark_get_primary_context(CUcontext *pctx, CUdevice dev)
     return rc;
 }
 
+/* Forward declarations for module load (used by dark_* below) */
+CUresult cuModuleLoadData(CUmodule *module, const void *image);
+CUresult cuModuleLoadFatBinary(CUmodule *module, const void *fatCubin);
+
 static CUresult dark_get_module_from_cubin(CUmodule *module, const void *fatbinc_wrapper)
 {
     char log_msg[256];
@@ -4363,14 +4382,14 @@ static void dark_cudart_interface_fn7(size_t arg1)
     (void)arg1;
 }
 
-static CUresult dark_not_supported_result_stub(void)
+__attribute__((unused)) static CUresult dark_not_supported_result_stub(void)
 {
     const char *msg = "[libvgpu-cuda] dark_not_supported_result_stub() CALLED\n";
     syscall(__NR_write, 2, msg, sizeof("[libvgpu-cuda] dark_not_supported_result_stub() CALLED\n") - 1);
     return CUDA_ERROR_NOT_SUPPORTED;
 }
 
-static void dark_noop_void_stub(void)
+__attribute__((unused)) static void dark_noop_void_stub(void)
 {
     const char *msg = "[libvgpu-cuda] dark_noop_void_stub() CALLED\n";
     syscall(__NR_write, 2, msg, sizeof("[libvgpu-cuda] dark_noop_void_stub() CALLED\n") - 1);
@@ -5514,8 +5533,8 @@ CUresult cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib, CUdevice dev)
     /* CRITICAL: Return immediately without calling ensure_init()
      * to avoid any delays or failures. Use g_gpu_info which is
      * initialized by init_gpu_defaults() above or in cuInit(). */
-
-    switch (attrib) {
+    /* Cast to int so numeric attribute IDs (15, 45, ...) not in our enum are valid case labels */
+    switch ((int)attrib) {
     case CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK:
         /* CRITICAL FIX: Explicitly return 1024 (valid for all NVIDIA GPUs)
          * This ensures Ollama/GGML validation passes. ChatGPT identified that
@@ -6583,7 +6602,12 @@ CUresult cuCtxSynchronize(void)
     if (rc != CUDA_SUCCESS) return rc;
 
     CUDACallResult result;
-    return rpc_simple(CUDA_CALL_CTX_SYNCHRONIZE, NULL, 0, &result);
+    rc = rpc_simple(CUDA_CALL_CTX_SYNCHRONIZE, NULL, 0, &result);
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "ctx_sync_return\n"; syscall(__NR_write, nfd, msg, 17); syscall(__NR_close, nfd); }
+    }
+    return rc;
 }
 
 CUresult cuCtxGetDevice(CUdevice *device)
@@ -6919,6 +6943,16 @@ CUresult cuMemHostGetDevicePointer(CUdeviceptr *pdptr, void *p, unsigned int fla
 CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
                           size_t byteCount)
 {
+    /* Lightweight trace: see if hang is during HtoD (async upload) */
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) {
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf), "htod size=%zu\n", (size_t)byteCount);
+            if (n > 0) syscall(__NR_write, nfd, buf, (size_t)n);
+            syscall(__NR_close, nfd);
+        }
+    }
     if (vgpu_debug_logging()) {
         char log_msg[256];
         int log_len = snprintf(log_msg, sizeof(log_msg),
@@ -6972,6 +7006,14 @@ CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
                                   (int)getpid());
         if (success_len > 0 && success_len < (int)sizeof(success_msg))
             syscall(__NR_write, 2, success_msg, success_len);
+    }
+    if (rc != CUDA_SUCCESS) {
+        char err_msg[256];
+        int n = snprintf(err_msg, sizeof(err_msg),
+                        "[libvgpu-cuda] cuMemcpyHtoD FAILED: dst=0x%llx size=%zu pid=%d rc=%d",
+                        (unsigned long long)dstDevice, byteCount, (int)getpid(), (int)rc);
+        if (n > 0 && n < (int)sizeof(err_msg))
+            vgpu_log_error_to_file(err_msg);
     }
     return rc;
 }
@@ -7048,6 +7090,18 @@ CUresult cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
                                   recv_len, (int)getpid());
         if (success_len > 0 && success_len < (int)sizeof(success_msg))
             syscall(__NR_write, 2, success_msg, success_len);
+    }
+    if (rc != CUDA_SUCCESS) {
+        char err_msg[256];
+        int n = snprintf(err_msg, sizeof(err_msg),
+                        "[libvgpu-cuda] cuMemcpyDtoH FAILED: src=0x%llx size=%zu pid=%d rc=%d",
+                        (unsigned long long)srcDevice, byteCount, (int)getpid(), (int)rc);
+        if (n > 0 && n < (int)sizeof(err_msg))
+            vgpu_log_error_to_file(err_msg);
+    }
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "memcpy_dtoh_return\n"; syscall(__NR_write, nfd, msg, 20); syscall(__NR_close, nfd); }
     }
     return rc;
 }
@@ -7885,7 +7939,7 @@ static CUlibrary dark_library_to_public(dark_library_handle_t *handle)
     return (CUlibrary)(((uintptr_t)handle) | DARK_LIBRARY_HANDLE_TAG);
 }
 
-CUresult cuModuleLoadData(CUmodule *module, const void *image);
+/* cuModuleLoadData / cuModuleLoadFatBinary declared earlier for dark_get_module_from_cubin */
 CUresult cuModuleUnload(CUmodule hmod);
 
 static CUresult __attribute__((unused)) dark_library_resolve_module(dark_library_handle_t *handle)
@@ -7933,7 +7987,8 @@ static size_t dark_resolve_elf_image_size(const unsigned char *bytes)
         return 0;
     }
 
-    if (ehdr->e_ehsize >= sizeof(VgpuElf64_Ehdr) && ehdr->e_ehsize < (1u << 20)) {
+    /* e_ehsize is uint16_t; use upper bound in type range to avoid -Wtype-limits */
+    if (ehdr->e_ehsize >= sizeof(VgpuElf64_Ehdr) && ehdr->e_ehsize <= 0xFF00U) {
         max_end = ehdr->e_ehsize;
     }
 
@@ -8133,6 +8188,8 @@ CUresult cuLibraryLoadData(CUlibrary *library,
                            unsigned int numLibraryOptions)
 {
     CUresult rc;
+    (void)jitOptions;
+    (void)jitOptionValues;
     const void *resolved_image = code;
     size_t image_size = 0;
     const char *image_kind = "unknown";
@@ -8492,7 +8549,10 @@ CUresult cuLaunchKernel(CUfunction f,
             syscall(__NR_write, 2, error_msg, error_len);
         }
     }
-
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "launch_kernel_return\n"; syscall(__NR_write, nfd, msg, 21); syscall(__NR_close, nfd); }
+    }
     free(payload);
     return rc;
 }
@@ -8860,7 +8920,12 @@ CUresult cuStreamSynchronize(CUstream hStream)
     uint32_t args[2];
     CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hStream);
 
-    return rpc_simple(CUDA_CALL_STREAM_SYNCHRONIZE, args, 2, &result);
+    rc = rpc_simple(CUDA_CALL_STREAM_SYNCHRONIZE, args, 2, &result);
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "stream_sync_return\n"; syscall(__NR_write, nfd, msg, 19); syscall(__NR_close, nfd); }
+    }
+    return rc;
 }
 
 CUresult cuStreamQuery(CUstream hStream)
@@ -8909,6 +8974,10 @@ CUresult cuStreamGetCtx(CUstream hStream, CUcontext *pctx)
 CUresult cuStreamWaitEvent(CUstream hStream, CUevent hEvent,
                             unsigned int flags)
 {
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "stream_wait_event\n"; syscall(__NR_write, nfd, msg, 19); syscall(__NR_close, nfd); }
+    }
     CUresult rc = ensure_init();
     if (rc != CUDA_SUCCESS) return rc;
 
@@ -8961,6 +9030,10 @@ CUresult cuEventDestroy(CUevent hEvent)
 
 CUresult cuEventRecord(CUevent hEvent, CUstream hStream)
 {
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "event_record\n"; syscall(__NR_write, nfd, msg, 14); syscall(__NR_close, nfd); }
+    }
     CUresult rc = ensure_init();
     if (rc != CUDA_SUCCESS) return rc;
 
@@ -8974,6 +9047,10 @@ CUresult cuEventRecord(CUevent hEvent, CUstream hStream)
 
 CUresult cuEventSynchronize(CUevent hEvent)
 {
+    {
+        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
+        if (nfd >= 0) { const char *msg = "event_sync\n"; syscall(__NR_write, nfd, msg, 12); syscall(__NR_close, nfd); }
+    }
     CUresult rc = ensure_init();
     if (rc != CUDA_SUCCESS) return rc;
 
@@ -9519,7 +9596,7 @@ CUresult cuCtxGetLimit(size_t *pvalue, int limit)
     return CUDA_SUCCESS;
 }
 
-#if 0
+#if 1  /* Enable write() interception to capture runner stderr to /tmp/ollama_errors_full.log */
 /* ================================================================
  * Version symbol aliases
  *
@@ -9548,6 +9625,7 @@ CUresult cuCtxGetLimit(size_t *pvalue, int limit)
 ssize_t write(int fd, const void *buf, size_t count)
 {
     static ssize_t (*real_write)(int, const void *, size_t) = NULL;
+    static int once = 0;
     if (!real_write) {
         real_write = (ssize_t (*)(int, const void *, size_t))
                      dlsym(RTLD_NEXT, "write");
@@ -9556,6 +9634,16 @@ ssize_t write(int fd, const void *buf, size_t count)
     /* If writing to stderr, capture ALL messages (not just filtered) */
     /* Increased buffer size to 2000 to capture longer error messages */
     if (fd == 2 && buf && count > 0 && count < 2000) {
+        /* One-time marker so we know the runner is using our write() */
+        if (!once) {
+            once = 1;
+            int mfd = (int)syscall(__NR_open, "/tmp/ollama_errors_full.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (mfd >= 0) {
+                const char *marker = "[libvgpu-cuda] write() interceptor active (stderr capture)\n";
+                syscall(__NR_write, mfd, marker, 52);
+                syscall(__NR_close, mfd);
+            }
+        }
         const char *msg = (const char *)buf;
         
         /* Get timestamp and PID using syscalls to avoid libc dependencies */
@@ -9564,9 +9652,7 @@ ssize_t write(int fd, const void *buf, size_t count)
         #define __NR_clock_gettime 228  /* x86_64 syscall number */
         #endif
         syscall(__NR_clock_gettime, 0, &ts); /* CLOCK_REALTIME = 0 */
-        time_t sec = ts.tv_sec;
-        long nsec = ts.tv_nsec;
-        pid_t pid = (pid_t)syscall(__NR_getpid);
+        (void)ts;  /* reserved for optional timestamp prefix */
         
         /* Log ALL stderr writes to full log */
         /* Use simple string building without snprintf to avoid libc dependencies */
@@ -9601,4 +9687,4 @@ ssize_t write(int fd, const void *buf, size_t count)
     
     return real_write ? real_write(fd, buf, count) : -1;
 }
-#endif /* #if 0 - malloc interception disabled */
+#endif /* #if 1 - write() interception enabled for quick error capture */

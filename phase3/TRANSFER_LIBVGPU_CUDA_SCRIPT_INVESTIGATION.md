@@ -111,7 +111,9 @@ After the user restarted TEST-4 and SSH worked again, the **previous boot’s** 
    - This avoids running gcc on the VM at all. A small script could do: build locally → scp .so → ssh 'sudo cp ... && sudo systemctl restart ollama'.
 3. **Optional: reduce gcc memory use on VM** (if you must build on the VM):
    - Add `-j1` (already serial) and consider `-O1` instead of `-O2` to reduce compiler memory use (at the cost of some performance of the shim). Not guaranteed to avoid OOM on very small VMs.
-4. **Before running the transfer script:** Check VM RAM and free memory (`free -h`) and ensure `/tmp` has enough free space (`df /tmp`).
+4. **Before running the transfer script:** **Stop Ollama on the VM** (`sudo systemctl stop ollama`). Ollama uses significant memory; stopping it frees memory and reduces load so the VM stays responsive for SSH/SCP and the gcc build. Then check VM RAM and free memory (`free -h`) and ensure `/tmp` has enough free space (`df /tmp`).
+
+5. **If transfer still fails (e.g. SCP "timeout waiting for password"):** The machine running the script may have no route to the VM. **Run the transfer from the mediator host** (same network as the VM). See **TRANSFER_FROM_HOST.md** and **CONNECT_VM_README.md** — connection and stable transmission previously succeeded when scripts were run from a host that could reach the VM.
 
 ---
 

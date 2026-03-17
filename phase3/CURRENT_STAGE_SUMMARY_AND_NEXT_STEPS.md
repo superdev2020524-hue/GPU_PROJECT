@@ -11,6 +11,12 @@
 
 See **PHASE3_PURPOSE_AND_GOALS.md**.
 
+### Direction (do not deviate)
+
+- **Stage 1 is proof of the path:** Ollama is the first target to prove the **vGPU data path** works (shims → transport → stub → mediator → host CUDA). The fix is in the **general path** (transport, BAR reply delivery, shims), not in Ollama-specific code.
+- **Actual blocker:** Runner blocks during **model load** waiting for host response to **cuMemcpyHtoD_v2** (ACTUAL_ERROR_FOUND.md). Diagnosis (HtoD_DIAGNOSIS_RESULTS.md): host applies DONE and stub returns 0x2, but **guest MMIO read sees 0x01 (BUSY)** — bug is in the path between QEMU MMIO return and the guest (Xen/device model or BAR mapping). Fix that path so the guest sees DONE and load completes.
+- **Do not:** Drift into Ollama-only work (runner env, discovery CPU fallback, runner stderr) except as the minimal step to confirm a **path** failure. Priority is HtoD reply visibility and transport, then any remaining path bug that causes exit 2.
+
 ---
 
 ## How we reached the current stage
@@ -29,7 +35,7 @@ See **PHASE3_PURPOSE_AND_GOALS.md**.
 - **What happened:** On a **fresh** Ollama server start, the second-pass “init validation” runs a bootstrap runner with only the vGPU visible. That runner reported **0 devices**, so Ollama filtered the vGPU and fell back to CPU (`total_vram="0 B"`, 404 on generate).
 - **Cause:** `bootstrapDevices()` returns the device list from that runner; if the runner crashes or returns empty, the device is dropped with the log message above.
 - **Fix:** Skip the second-pass validation for CUDA so the first-pass device list is kept: in `ml/device.go`, `NeedsInitValidation()` now returns `false` for CUDA (`return d.Library == "ROCm"` only). Requires a **patched Ollama binary**.
-- **VM had only Go 1.18** — could not build the current Ollama tree (needs Go 1.23+). We:
+- **VM build:** Go 1.26.1 is at `/usr/local/go/bin/go` on the VM; always check with `go version` and `/usr/local/go/bin/go version` before concluding the VM cannot build. We:
   - Transferred the patched source (device.go, server.go, discover/runner.go) to the VM via `transfer_ollama_go_patches.py`.
   - Installed **Go 1.26.1** on the VM with **`install_go_and_build_ollama_on_vm.py`** (download on VM from go.dev, extract to `/usr/local/go`, build `ollama.bin`, install and restart ollama).
 - **Result:** The VM now runs the **patched** `ollama.bin`; discovery should no longer filter the vGPU as “didn’t fully initialize.”
@@ -51,6 +57,7 @@ See **PHASE3_PURPOSE_AND_GOALS.md**.
 | **transfer_ollama_go_patches.py** | Apply patches in memory, transfer device/server/runner.go to VM (build was then done after Go upgrade). |
 | **capture_ollama_actual_error.py** | Run server with logging, trigger generate, read log (to re-check discovery if needed). |
 | **HOST_LOG_FINDINGS.md** | Host OOM, GEMM path, what to check on host. |
+| **ACTUAL_ERROR_VERIFICATION.md** | Verified actual errors: client timeout → "context canceled"; server timeout → "timed out waiting for llama runner to start - progress 0.00". |
 | **OLLAMA_VGPU_REVISIONS_STATUS.md** | Host/guest revisions, diagnostics, GEMM progression, exit 2. |
 
 ---
@@ -79,7 +86,7 @@ sudo journalctl -u ollama -n 80 --no-pager | grep -E "inference compute|total_vr
 - **Success:** You see a line like `inference compute ... library=CUDA ... total="80.0 GiB"` (or similar non-zero VRAM) and **no** line containing `filtering device which didn't fully initialize`.
 - **Failure:** You see `filtering device which didn't fully initialize` and/or `library=cpu`, `total_vram="0 B"`.
 
-### 3. Optional: run the capture script again (fresh server + generate)
+### 3. Thorough: run the capture script (fresh server + generate)
 
 To simulate a cold start and confirm the bootstrap path does not filter the device:
 
@@ -88,7 +95,13 @@ cd /path/to/phase3
 python3 capture_ollama_actual_error.py
 ```
 
-In the printed log, again check for **absence** of `filtering device which didn't fully initialize` and **presence** of CUDA with non-zero VRAM. The script restarts the ollama service at the end.
+The script now starts the **patched** binary (`/usr/local/bin/ollama.bin serve`) with the same env as the service, so it tests the discovery fix. (The default `ollama` command on the VM runs `ollama.real` (unpatched); using it would still show "filtering device which didn't fully initialize".)
+
+In the printed log, check for **absence** of `filtering device which didn't fully initialize` and **presence** of:
+- `inference compute ... library=CUDA ... total="80.0 GiB"` (or similar)
+- `vram-based default context total_vram="80.0 GiB"`
+
+**Verified (Mar 16):** With the script updated to use `ollama.bin`, the log shows CUDA device kept, `total="80.0 GiB"`, `total_vram="80.0 GiB"`, and **no** "filtering device which didn't fully initialize". Discovery issue (Issue A) is resolved when the patched binary is used. The script restarts the ollama service at the end.
 
 ### 4. Quick API check
 
@@ -105,11 +118,29 @@ curl -s -X POST http://127.0.0.1:11434/api/generate -H "Content-Type: applicatio
 
 ---
 
+### 5. Runner env (LD_PRELOAD) verified (Mar 17)
+
+After the **OLLAMA_RUNNER_LD_PRELOAD_PATCH**, the discovery runner was confirmed to have the correct env on one run: restart ollama, poll every 0.05s for a child whose cmdline contains `runner`, dump `/proc/<pid>/environ`. **Result:** Runner had `LD_PRELOAD=/opt/vgpu/lib/libvgpu-cuda.so.1` and `LD_LIBRARY_PATH=/opt/vgpu/lib:...`. So the runner can get the shims. If discovery still reports `library=cpu` / `total_vram="0 B"`, the cause is GPU init/discovery falling back to CPU or the runner not actually loading our shims.
+
+### 6. CPU mode cause and fix — resolved (Mar 17)
+
+**Root cause (phase3 docs, VM_TEST3_GPU_MODE_STATUS.md, ROOT_CAUSE_FIXED.md):** GPU detection depends on the **GGML CUDA backend** (`libggml-cuda.so` / `libggml-cuda-v12.so`) being loaded during discovery. That .so is in the VM path (e.g. `/usr/local/lib/ollama/cuda_v12/` with top-level symlinks). The loader finds it only when the **runner does NOT have LD_PRELOAD**: with LD_PRELOAD, the runner’s `dlopen` resolves to libdl and the backend **never** loads `libggml-cuda.so`; without LD_PRELOAD, real `dlopen` loads `libggml-cuda.so`, which pulls in our shim via `LD_LIBRARY_PATH`, and the CUDA backend sees the GPU.
+
+**Fix applied:** Rebuild Ollama with **runner env** that (1) passes `LD_LIBRARY_PATH`, `OLLAMA_LIBRARY_PATH`, `OLLAMA_LLM_LIBRARY`, `OLLAMA_NUM_GPU` to the runner, and (2) **strips `LD_PRELOAD`** from the runner’s `cmd.Env` so the backend loader can load `libggml-cuda.so`. Use `transfer_ollama_go_patches.py --from-vm` to apply the patch on the VM (server.go + discover/runner.go), build, and install.
+
+**Verified (Mar 17):** After applying the patch and restarting, discovery shows `library=CUDA`, `description="NVIDIA H100 80GB HBM3"`, `total="80.0 GiB"`.
+
+**Refresh during model load:** The scheduler calls `GPUDevices()` again when loading a model (to refresh free VRAM). That path can fall back to **bootstrapDevices** with a hardcoded `[]string{ml.LibOllamaPath, dir}` (parent first). If that order is used, the refresh bootstrap can fail to see CUDA and you get "unable to refresh free memory, using old values". **Fix:** Patch the refresh call to use `[]string{dir, ml.LibOllamaPath}` as well. See **DISCOVER_REFRESH_CUDA.md**. The same `transfer_ollama_go_patches.py --from-vm` (and `patch_discover_runner_go`) now apply both the initial and the refresh-path discover/runner.go fixes.
+
+---
+
 ## Next step to reach Stage 1 (continue from where we stopped)
 
 Once you have verified that discovery is resolved (vGPU kept, no “didn’t fully initialize”):
 
 - **We continue from where we stopped:** the runner **exit status 2** that happens **after** successful GEMM returns and **before** `cuLaunchKernel` / `cuCtxSynchronize` / `cuStreamSynchronize` / `cuMemcpyDtoH` (see **HOST_LOG_FINDINGS.md**, **OLLAMA_VGPU_REVISIONS_STATUS.md**).
+
+**Actual error identified (Mar 16):** Runner blocks during load waiting for host response to **cuMemcpyHtoD_v2**. See **ACTUAL_ERROR_FOUND.md** for details and host-side checks.
 
 ### Immediate next steps for Issue B (post-GEMM crash)
 

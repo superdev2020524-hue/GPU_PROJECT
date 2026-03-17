@@ -1,0 +1,32 @@
+# Alternative to ollama_runner_ld_preload.patch: ensure runner gets LD_LIBRARY_PATH
+# and OLLAMA_* but do NOT strip LD_PRELOAD (so runner loads vGPU shims and discovery
+# sees GPU). Use this if discovery still reports library=cpu with the default patch.
+--- a/llm/server.go
++++ b/llm/server.go
+@@ -315,6 +315,25 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
+ 	for k, done := range extraEnvsDone {
+ 		if !done {
+ 			cmd.Env = append(cmd.Env, k+"="+extraEnvs[k])
+ 		}
+ 	}
++
++	// Ensure runner gets LD_LIBRARY_PATH, OLLAMA_LIBRARY_PATH, OLLAMA_LLM_LIBRARY
++	// (and keep LD_PRELOAD from server so vGPU shims are loaded in runner for discovery)
++	for _, key := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "OLLAMA_LIBRARY_PATH", "OLLAMA_LLM_LIBRARY"} {
++		if v, ok := os.LookupEnv(key); ok && v != "" {
++			found := false
++			for i := range cmd.Env {
++				if strings.HasPrefix(cmd.Env[i], key+"=") {
++					cmd.Env[i] = key + "=" + v
++					found = true
++					break
++				}
++			}
++			if !found {
++				cmd.Env = append(cmd.Env, key+"="+v)
++			}
++		}
++	}
++
+ 	slog.Info("starting runner", "cmd", cmd)
+ 	slog.Debug("subprocess", "", filteredEnv(cmd.Env))

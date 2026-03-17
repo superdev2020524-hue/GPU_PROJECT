@@ -37,6 +37,6 @@ The script does **not** change how SSH connects. It only automates password entr
 
 ## Summary
 
-- Connection succeeded earlier when the script was run from a machine that could reach the VM.
-- Connection fails in environments (e.g. Cursor cloud) that have no route to 10.25.33.11.
-- Run `connect_vm.py` from a host that can ping/SSH the VM (e.g. your workstation or a jump host on the same LAN/VPN).
+- **Stable transmission:** Connection and transfer succeeded earlier when the script was run from a machine that could reach the VM (e.g. the mediator host 10.25.33.10, which is on the same network as the VM).
+- Connection fails in environments (e.g. Cursor cloud) that have no route to the VM (10.25.33.11 / 10.25.33.12).
+- **Solution:** Run `connect_vm.py` and transfer scripts (e.g. `transfer_cuda_transport.py`) from a host that can ping/SSH the VM — e.g. your workstation, a jump host on the same LAN/VPN, or the **mediator host** (see **TRANSFER_FROM_HOST.md**).

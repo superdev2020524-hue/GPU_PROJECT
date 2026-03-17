@@ -310,6 +310,8 @@ static void call_libvgpu_set_skip_interception(int skip);
 /* BAR sizes */
 #define BAR0_SIZE  4096
 #define BAR1_SIZE  (16 * 1024 * 1024)
+/* Workaround: BAR0 status read returns stale value on some Xen/qemu-dm; poll BAR1 tail instead */
+#define BAR1_STATUS_MIRROR_OFFSET  (BAR1_SIZE - 4)
 
 /* Status register values */
 #define STATUS_IDLE   0x00
@@ -325,15 +327,18 @@ static void call_libvgpu_set_skip_interception(int skip);
 #define VGPU_ERR_VM_QUARANTINED    0x0B
 
 /* Polling */
-#define POLL_INTERVAL_US  100
+/* 10 ms so QEMU main loop / fd handler can run and set DONE (avoid tight poll starving iothread) */
+#define POLL_INTERVAL_US  2000
 #define POLL_TIMEOUT_SEC_DEFAULT  60
-/* Override via CUDA_TRANSPORT_TIMEOUT_SEC (e.g. 120) when mediator is slow. */
+#define POLL_TIMEOUT_SEC_MIN      120  /* model load can be slow; avoid ~10s failure */
+/* Override via CUDA_TRANSPORT_TIMEOUT_SEC when mediator is slow. */
 static int poll_timeout_sec(void) {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("CUDA_TRANSPORT_TIMEOUT_SEC");
-        cached = (e && *e) ? (int)strtol(e, NULL, 10) : POLL_TIMEOUT_SEC_DEFAULT;
-        if (cached <= 0) cached = POLL_TIMEOUT_SEC_DEFAULT;
+        int v = (e && *e) ? (int)strtol(e, NULL, 10) : POLL_TIMEOUT_SEC_DEFAULT;
+        if (v <= 0) v = POLL_TIMEOUT_SEC_DEFAULT;
+        cached = (v < POLL_TIMEOUT_SEC_MIN) ? POLL_TIMEOUT_SEC_MIN : v;
     }
     return cached;
 }
@@ -777,8 +782,8 @@ int cuda_transport_init(cuda_transport_t **tp)
     /* Map BAR0 (always required) */
     t->bar0_fd = open(res0_path, O_RDWR | O_SYNC);
     if (t->bar0_fd < 0) {
-        char errdetail[128];
-        snprintf(errdetail, sizeof(errdetail), "open(%s) %s", res0_path, strerror(errno));
+        char errdetail[640];
+        (void)snprintf(errdetail, sizeof(errdetail), "open(%s) %s", res0_path, strerror(errno));
         cuda_transport_write_error("BAR0_OPEN_FAILED", 0, 0, errdetail);
         fprintf(stderr, "[cuda-transport] Cannot open BAR0: %s (%s)\n",
                 res0_path, strerror(errno));
@@ -804,7 +809,7 @@ int cuda_transport_init(cuda_transport_t **tp)
 
     /* --- Preferred path: VHOST-style shared memory --- */
     if (!setup_shmem(t)) {
-        /* --- Fallback: map BAR1 (legacy 8 MB window) --- */
+        /* --- Fallback: map BAR1 (legacy data region) --- */
         t->bar1_fd = open(res1_path, O_RDWR | O_SYNC);
         if (t->bar1_fd >= 0) {
             t->bar1 = mmap(NULL, BAR1_SIZE, PROT_READ | PROT_WRITE,
@@ -821,15 +826,35 @@ int cuda_transport_init(cuda_transport_t **tp)
             }
         }
     }
+    /* --- Always map BAR1 for status mirror (avoids broken BAR0 status path) --- */
+    if (!t->has_bar1) {
+        t->bar1_fd = open(res1_path, O_RDWR | O_SYNC);
+        if (t->bar1_fd >= 0) {
+            t->bar1 = mmap(NULL, BAR1_SIZE, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, t->bar1_fd, 0);
+            if (t->bar1 != MAP_FAILED) {
+                t->has_bar1 = 1;
+                fprintf(stderr, "[cuda-transport] BAR1 mapped for status mirror\n");
+            } else {
+                t->bar1 = NULL;
+                close(t->bar1_fd);
+                t->bar1_fd = -1;
+                fprintf(stderr, "[cuda-transport] BAR1 mmap failed - status will be read from BAR0\n");
+            }
+        } else {
+            fprintf(stderr, "[cuda-transport] BAR1 open failed (errno=%d) - status will be read from BAR0\n", errno);
+        }
+    }
 
     /* Re-enable interception after successful discovery */
     call_libvgpu_set_skip_interception(0);
     cuda_transport_write_checkpoint("TRANSPORT_READY");
+    fprintf(stderr, "[cuda-transport] Connected (vm_id=%u) data_path=%s status_from=%s\n",
+            t->vm_id,
+            t->has_shmem ? "shmem" : (t->has_bar1 ? "BAR1" : "BAR0-inline"),
+            t->has_bar1 ? "BAR1" : "BAR0");
     if (vgpu_debug_logging())
-        fprintf(stderr, "[cuda-transport] Connected to VGPU-STUB "
-                "(vm_id=%u, data_path=%s)\n",
-                t->vm_id,
-                t->has_shmem ? "shmem" : (t->has_bar1 ? "BAR1" : "BAR0-inline"));
+        fprintf(stderr, "[cuda-transport] (debug logging on)\n");
     *tp = t;
     return 0;
 }
@@ -1094,9 +1119,56 @@ static int do_single_cuda_call(cuda_transport_t *tp,
 
     /* Poll for completion */
     start = time(NULL);
+    unsigned poll_iter = 0;
     while (1) {
-        status = REG32(tp->bar0, REG_STATUS);
+        __asm__ __volatile__ ("" ::: "memory");
+        if (tp->has_bar1)
+            status = *(volatile uint32_t *)((volatile char *)tp->bar1 + BAR1_STATUS_MIRROR_OFFSET);
+        else
+            status = REG32(tp->bar0, REG_STATUS);
         if (status == STATUS_DONE || status == STATUS_ERROR) break;
+        if (poll_iter >= 30) {
+            uint32_t rlen = REG32(tp->bar0, REG_RESPONSE_LEN);
+            if (rlen != 0) {
+                usleep(100000);
+                if (call_id == 0x0030u) {
+                    uint32_t rstat = REG32(tp->bar0, REG_CUDA_RESULT_STATUS);
+                    uint64_t rptr  = REG64(tp->bar0, REG_CUDA_RESULT_BASE);
+                    if (rstat != 0 || rptr == 0) continue;
+                }
+                status = STATUS_DONE;
+                break;
+            }
+        }
+        poll_iter++;
+        {
+            /* Log at start and every 50 iters (~500ms at 10ms sleep) so we see status without relying on time() */
+            int should_log = (poll_iter == 1) || (poll_iter % 50 == 0);
+            if (should_log) {
+                fprintf(stderr, "[cuda-transport] poll call_id=0x%04x seq=%u iter=%u status=0x%02x from=%s\n",
+                        call_id, seq, poll_iter, (unsigned)status,
+                        tp->has_bar1 ? "BAR1" : "BAR0");
+                fflush(stderr);
+                /* Write to file (runner may not have stderr drained by server) */
+                {
+                    static char status_log_path[256];
+                    if (status_log_path[0] == '\0') {
+                        const char *home = getenv("HOME");
+                        (void)snprintf(status_log_path, sizeof(status_log_path), "%s/vgpu_status_poll.log",
+                                (home && home[0]) ? home : "/tmp");
+                    }
+                    int lfd = (int)syscall(__NR_open, status_log_path,
+                            O_WRONLY | O_CREAT | O_APPEND, 0600);
+                    if (lfd >= 0) {
+                        char lbuf[96];
+                        int n = snprintf(lbuf, sizeof(lbuf), "iter=%u seq=%u status=0x%02x from=%s\n",
+                                poll_iter, seq, (unsigned)status, tp->has_bar1 ? "BAR1" : "BAR0");
+                        if (n > 0) (void)syscall(__NR_write, lfd, lbuf, (size_t)n);
+                        (void)syscall(__NR_close, lfd);
+                    }
+                }
+            }
+        }
         if (time(NULL) - start >= poll_timeout_sec()) {
             char detail[64];
             snprintf(detail, sizeof(detail), "call_id=0x%04x seq=%u after %ds",
@@ -1182,7 +1254,20 @@ static int do_single_cuda_call(cuda_transport_t *tp,
         if (recv_len) *recv_len = 0;
     }
 
-    return result ? (int)result->status : 0;
+    {
+        int ret = result ? (int)result->status : 0;
+        if (ret != 0) {
+            int fd = (int)syscall(__NR_open, "/tmp/vgpu_transport_returned_nonzero",
+                    O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            if (fd >= 0) {
+                char buf[64];
+                int n = snprintf(buf, sizeof(buf), "ret=%d call_id=0x%04x seq=%u\n", ret, call_id, seq);
+                if (n > 0) (void)syscall(__NR_write, fd, buf, (size_t)n);
+                (void)syscall(__NR_close, fd);
+            }
+        }
+        return ret;
+    }
 }
 
 /* ================================================================
