@@ -77,7 +77,9 @@ def patch_server_go(content: str) -> str:
         "\tfor k, done := range extraEnvsDone {\n\t\tif !done {\n\t\t\tcmd.Env = append(cmd.Env, k+\"=\"+extraEnvs[k])\n\t\t}\n\t}\n\n"
         "\t// Ensure runner gets LD_LIBRARY_PATH, OLLAMA_* (do NOT pass LD_PRELOAD: need real dlopen to load libggml-cuda.so)\n"
         "\tfor _, key := range []string{\"LD_LIBRARY_PATH\", \"OLLAMA_LIBRARY_PATH\", \"OLLAMA_LLM_LIBRARY\", \"OLLAMA_NUM_GPU\"} {\n"
-        "\t\tif v, ok := os.LookupEnv(key); ok && v != \"\" {\n"
+        "\t\tv, ok := os.LookupEnv(key)\n"
+        "\t\tif ok && v != \"\" {\n"
+        "\t\t\tif key == \"LD_LIBRARY_PATH\" { v = \"/opt/vgpu/lib:\" + v }\n"
         "\t\t\tfound := false\n"
         "\t\t\tfor i := range cmd.Env {\n"
         "\t\t\t\tif strings.HasPrefix(cmd.Env[i], key+\"=\") {\n"
@@ -89,6 +91,13 @@ def patch_server_go(content: str) -> str:
         "\t\t\tif !found {\n"
         "\t\t\t\tcmd.Env = append(cmd.Env, key+\"=\"+v)\n"
         "\t\t\t}\n"
+        "\t\t}\n"
+        "\t}\n"
+        "\t// Force runner LD_LIBRARY_PATH to start with /opt/vgpu/lib (Phase 1: vGPU shims)\n"
+        "\tfor i := range cmd.Env {\n"
+        "\t\tif strings.HasPrefix(cmd.Env[i], \"LD_LIBRARY_PATH=\") {\n"
+        "\t\t\tval := strings.TrimPrefix(cmd.Env[i], \"LD_LIBRARY_PATH=\"); if !strings.Contains(val, \"/opt/vgpu/lib\") { cmd.Env[i] = \"LD_LIBRARY_PATH=/opt/vgpu/lib:\" + val }\n"
+        "\t\t\tbreak\n"
         "\t\t}\n"
         "\t}\n"
         "\t// Remove LD_PRELOAD from runner so dlopen loads libggml-cuda.so\n"
@@ -104,6 +113,22 @@ def patch_server_go(content: str) -> str:
     )
     if insert3 not in content and needle3 in content:
         content = content.replace(needle3, insert3, 1)
+    elif "Ensure runner gets LD_LIBRARY_PATH" in content and '"/opt/vgpu/lib:" + v' not in content:
+        # Upgrade existing patch: add defensive prepend of /opt/vgpu/lib for runner LD_LIBRARY_PATH
+        old_block = (
+            "\t\tif v, ok := os.LookupEnv(key); ok && v != \"\" {\n"
+            "\t\t\tfound := false\n"
+        )
+        new_block = (
+            "\t\tv, ok := os.LookupEnv(key)\n"
+            "\t\tif ok && v != \"\" {\n"
+            "\t\t\tif key == \"LD_LIBRARY_PATH\" && !strings.Contains(v, \"/opt/vgpu/lib\") {\n"
+            "\t\t\t\tv = \"/opt/vgpu/lib:\" + v\n"
+            "\t\t\t}\n"
+            "\t\t\tfound := false\n"
+        )
+        if old_block in content and new_block not in content:
+            content = content.replace(old_block, new_block, 1)
     elif "Ensure runner gets LD_LIBRARY_PATH" not in content and "Remove LD_PRELOAD from runner" not in content and needle3 not in content:
         raise SystemExit("server.go: StartRunner env block target not found")
 
@@ -171,7 +196,9 @@ def make_apply_server_patch_script(remote_ollama: str) -> bytes:
         "\tfor k, done := range extraEnvsDone {\n\t\tif !done {\n\t\t\tcmd.Env = append(cmd.Env, k+\"=\"+extraEnvs[k])\n\t\t}\n\t}\n\n"
         "\t// Ensure runner gets LD_LIBRARY_PATH, OLLAMA_* (do NOT pass LD_PRELOAD: need real dlopen to load libggml-cuda.so)\n"
         "\tfor _, key := range []string{\"LD_LIBRARY_PATH\", \"OLLAMA_LIBRARY_PATH\", \"OLLAMA_LLM_LIBRARY\", \"OLLAMA_NUM_GPU\"} {\n"
-        "\t\tif v, ok := os.LookupEnv(key); ok && v != \"\" {\n"
+        "\t\tv, ok := os.LookupEnv(key)\n"
+        "\t\tif ok && v != \"\" {\n"
+        "\t\t\tif key == \"LD_LIBRARY_PATH\" { v = \"/opt/vgpu/lib:\" + v }\n"
         "\t\t\tfound := false\n"
         "\t\t\tfor i := range cmd.Env {\n"
         "\t\t\t\tif strings.HasPrefix(cmd.Env[i], key+\"=\") {\n"
@@ -185,6 +212,13 @@ def make_apply_server_patch_script(remote_ollama: str) -> bytes:
         "\t\t\t}\n"
         "\t\t}\n"
         "\t}\n"
+        "\t// Force runner LD_LIBRARY_PATH to start with /opt/vgpu/lib (Phase 1: vGPU shims)\n"
+        "\tfor i := range cmd.Env {\n"
+        "\t\tif strings.HasPrefix(cmd.Env[i], \"LD_LIBRARY_PATH=\") {\n"
+        "\t\t\tval := strings.TrimPrefix(cmd.Env[i], \"LD_LIBRARY_PATH=\"); if !strings.Contains(val, \"/opt/vgpu/lib\") { cmd.Env[i] = \"LD_LIBRARY_PATH=/opt/vgpu/lib:\" + val }\n"
+        "\t\t\tbreak\n"
+        "\t\t}\n"
+        "\t}\n"
         "\t// Remove LD_PRELOAD from runner so dlopen loads libggml-cuda.so\n"
         "\tn := 0\n"
         "\tfor _, e := range cmd.Env {\n"
@@ -196,18 +230,52 @@ def make_apply_server_patch_script(remote_ollama: str) -> bytes:
         "\tcmd.Env = cmd.Env[:n]\n\n"
         "\tslog.Info(\"starting runner\""
     )
+    old_runner_block = "\t\tif v, ok := os.LookupEnv(key); ok && v != \"\" {\n\t\t\tfound := false"
+    new_runner_block = "\t\tv, ok := os.LookupEnv(key)\n\t\tif ok && v != \"\" {\n\t\t\tif key == \"LD_LIBRARY_PATH\" { v = \"/opt/vgpu/lib:\" + v }\n\t\t\tfound := false"
+    cond_prepend = "\t\tv, ok := os.LookupEnv(key)\n\t\tif ok && v != \"\" {\n\t\t\tif key == \"LD_LIBRARY_PATH\" && !strings.Contains(v, \"/opt/vgpu/lib\") {\n\t\t\t\tv = \"/opt/vgpu/lib:\" + v\n\t\t\t}\n\t\t\tfound := false"
+    force_ld_block = (
+        "\t// Force runner LD_LIBRARY_PATH to start with /opt/vgpu/lib (Phase 1: vGPU shims)\n"
+        "\tfor i := range cmd.Env {\n"
+        "\t\tif strings.HasPrefix(cmd.Env[i], \"LD_LIBRARY_PATH=\") {\n"
+        "\t\t\tval := strings.TrimPrefix(cmd.Env[i], \"LD_LIBRARY_PATH=\"); if !strings.Contains(val, \"/opt/vgpu/lib\") { cmd.Env[i] = \"LD_LIBRARY_PATH=/opt/vgpu/lib:\" + val }\n"
+        "\t\t\tbreak\n"
+        "\t\t}\n"
+        "\t}\n"
+        "\t"
+    )
     script = f'''#! /usr/bin/env python3
 import sys
 path = "{remote_ollama}/llm/server.go"
 needle = {repr(needle3)}
 insert = {repr(insert3)}
+old_runner_block = {repr(old_runner_block)}
+new_runner_block = {repr(new_runner_block)}
+cond_prepend = {repr(cond_prepend)}
 with open(path, "r") as f:
     c = f.read()
 if insert in c:
     print("SERVER_ALREADY_PATCHED")
+elif cond_prepend in c and new_runner_block not in c:
+    c = c.replace(cond_prepend, new_runner_block, 1)
+    with open(path, "w") as f:
+        f.write(c)
+    print("PATCHED_SERVER_UPGRADE")
+elif old_runner_block in c and new_runner_block not in c:
+    c = c.replace(old_runner_block, new_runner_block, 1)
+    with open(path, "w") as f:
+        f.write(c)
+    print("PATCHED_SERVER_UPGRADE")
 elif needle not in c:
-    print("NEEDLE_NOT_FOUND")
-    sys.exit(1)
+    # Add Force runner LD_LIBRARY_PATH post-pass if missing (already patched server.go)
+    if "Force runner LD_LIBRARY_PATH" not in c and "Remove LD_PRELOAD from runner" in c:
+        force_ld_block = {repr(force_ld_block)}
+        c = c.replace("\t// Remove LD_PRELOAD from runner", force_ld_block + "// Remove LD_PRELOAD from runner", 1)
+        with open(path, "w") as f:
+            f.write(c)
+        print("PATCHED_SERVER_FORCE_LD")
+    else:
+        print("NEEDLE_NOT_FOUND")
+        sys.exit(1)
 else:
     c = c.replace(needle, insert, 1)
     with open(path, "w") as f:
@@ -276,7 +344,7 @@ def main():
         if not ok or "NEEDLE_NOT_FOUND" in (out or ""):
             print("Patch script failed or server.go target not found.")
             return 1
-        if "PATCHED_SERVER" not in (out or "") and "SERVER_ALREADY_PATCHED" not in (out or ""):
+        if "PATCHED_SERVER" not in (out or "") and "PATCHED_SERVER_UPGRADE" not in (out or "") and "PATCHED_SERVER_FORCE_LD" not in (out or "") and "SERVER_ALREADY_PATCHED" not in (out or ""):
             print("Patch script did not confirm server state.")
             return 1
         print("Patched server.go (and discover/runner.go if needed). Building...")

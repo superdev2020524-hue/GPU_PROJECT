@@ -1115,6 +1115,17 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             (void)syscall(__NR_close, tfd);
         }
     }
+    /* Verification: record that we are about to poll for this call (so we can see if HtoD/0x0032 is ever reached) */
+    if (call_id == 0x0030u || call_id == 0x0032u) {
+        int vfd = (int)syscall(__NR_open, "/tmp/vgpu_host_response_verify.log",
+                O_WRONLY | O_CREAT | O_APPEND, 0666);
+        if (vfd >= 0) {
+            char vbuf[80];
+            int vn = snprintf(vbuf, sizeof(vbuf), "SUBMIT call_id=0x%04x seq=%u (about to poll)\n", call_id, seq);
+            if (vn > 0) (void)syscall(__NR_write, vfd, vbuf, (size_t)vn);
+            (void)syscall(__NR_close, vfd);
+        }
+    }
     REG32(tp->bar0, REG_CUDA_DOORBELL) = 1;
 
     /* Poll for completion */
@@ -1126,10 +1137,32 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             status = *(volatile uint32_t *)((volatile char *)tp->bar1 + BAR1_STATUS_MIRROR_OFFSET);
         else
             status = REG32(tp->bar0, REG_STATUS);
-        if (status == STATUS_DONE || status == STATUS_ERROR) break;
+        if (status == STATUS_DONE || status == STATUS_ERROR) {
+            /* Verification: log why we broke (guest received host response via status register) */
+            int vfd = (int)syscall(__NR_open, "/tmp/vgpu_host_response_verify.log",
+                    O_WRONLY | O_CREAT | O_APPEND, 0666);
+            if (vfd >= 0) {
+                char vbuf[128];
+                int vn = snprintf(vbuf, sizeof(vbuf), "BREAK reason=STATUS call_id=0x%04x seq=%u status=0x%02x iter=%u\n",
+                        call_id, seq, (unsigned)status, poll_iter);
+                if (vn > 0) (void)syscall(__NR_write, vfd, vbuf, (size_t)vn);
+                (void)syscall(__NR_close, vfd);
+            }
+            break;
+        }
         if (poll_iter >= 30) {
             uint32_t rlen = REG32(tp->bar0, REG_RESPONSE_LEN);
             if (rlen != 0) {
+                /* Verification: log break due to response_len (guest received host response via BAR0+0x01C) */
+                int vfd = (int)syscall(__NR_open, "/tmp/vgpu_host_response_verify.log",
+                        O_WRONLY | O_CREAT | O_APPEND, 0666);
+                if (vfd >= 0) {
+                    char vbuf[128];
+                    int vn = snprintf(vbuf, sizeof(vbuf), "BREAK reason=RESPONSE_LEN call_id=0x%04x seq=%u status=0x%02x rlen=%u iter=%u\n",
+                            call_id, seq, (unsigned)status, (unsigned)rlen, poll_iter);
+                    if (vn > 0) (void)syscall(__NR_write, vfd, vbuf, (size_t)vn);
+                    (void)syscall(__NR_close, vfd);
+                }
                 usleep(100000);
                 if (call_id == 0x0030u) {
                     uint32_t rstat = REG32(tp->bar0, REG_CUDA_RESULT_STATUS);
@@ -1141,6 +1174,22 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             }
         }
         poll_iter++;
+        /* Verification: log what guest reads (status, response_len) — throttle: first 100 iters every 5, then every 50 */
+        if (poll_iter <= 100 ? (poll_iter % 5 == 0 || poll_iter == 1) : (poll_iter % 50 == 0)) {
+            uint32_t rlen_log = (poll_iter >= 30) ? REG32(tp->bar0, REG_RESPONSE_LEN) : 0xFFFFu;
+            int vfd = (int)syscall(__NR_open, "/tmp/vgpu_host_response_verify.log",
+                    O_WRONLY | O_CREAT | O_APPEND, 0666);
+            if (vfd >= 0) {
+                char vbuf[96];
+                int vn = (rlen_log != 0xFFFFu)
+                    ? snprintf(vbuf, sizeof(vbuf), "iter=%u call_id=0x%04x seq=%u status=0x%02x rlen=%u\n",
+                            poll_iter, call_id, seq, (unsigned)status, (unsigned)rlen_log)
+                    : snprintf(vbuf, sizeof(vbuf), "iter=%u call_id=0x%04x seq=%u status=0x%02x\n",
+                            poll_iter, call_id, seq, (unsigned)status);
+                if (vn > 0) (void)syscall(__NR_write, vfd, vbuf, (size_t)vn);
+                (void)syscall(__NR_close, vfd);
+            }
+        }
         {
             /* Log at start and every 50 iters (~500ms at 10ms sleep) so we see status without relying on time() */
             int should_log = (poll_iter == 1) || (poll_iter % 50 == 0);
@@ -1170,6 +1219,16 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             }
         }
         if (time(NULL) - start >= poll_timeout_sec()) {
+            /* Verification: log timeout (guest never saw DONE or response_len) */
+            int vfd = (int)syscall(__NR_open, "/tmp/vgpu_host_response_verify.log",
+                    O_WRONLY | O_CREAT | O_APPEND, 0666);
+            if (vfd >= 0) {
+                char vbuf[128];
+                int vn = snprintf(vbuf, sizeof(vbuf), "BREAK reason=TIMEOUT call_id=0x%04x seq=%u status=0x%02x iter=%u\n",
+                        call_id, seq, (unsigned)status, poll_iter);
+                if (vn > 0) (void)syscall(__NR_write, vfd, vbuf, (size_t)vn);
+                (void)syscall(__NR_close, vfd);
+            }
             char detail[64];
             snprintf(detail, sizeof(detail), "call_id=0x%04x seq=%u after %ds",
                      call_id, seq, poll_timeout_sec());

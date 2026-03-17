@@ -98,7 +98,7 @@ Most likely the **reply path** is failing: host completes HtoD and writes the re
 
 ## 10. 40-minute client-timeout run (Mar 16)
 
-**Setup:** Server started manually **without** `OLLAMA_LOAD_TIMEOUT` (so server used default ~5 min load timeout). Client: `curl -m 2400` (40 min). Model: `llama3.2:1b` (Oyu not on VM).
+**Setup:** Server started manually **without** `OLLAMA_LOAD_TIMEOUT` (so server used default ~5 min load timeout). Client: `curl -m 2400` (40 min). Model: `llama3.2:1b` (only this model on VM).
 
 **Result:** Request ended after **~302 s** with **HTTP 500**. Server log: `Load failed ... error="timed out waiting for llama runner to start - progress 0.00"`. So the **server** aborted the load at its default 5 min timeout, not the client.
 
@@ -197,6 +197,68 @@ Most likely the **reply path** is failing: host completes HtoD and writes the re
 - **vgpu_call_sequence.log:** Last lines 0x00b5, 0x00ae, 0x00b5 — many RPCs complete; BAR1 status mirror is in use and host is replying.
 
 **Conclusion:** Host is returning DONE for all calls including 0x00ae/0x00b5. Exit status 2 is likely from the **runner/application layer** (Ollama or llama.cpp), not from our transport returning 2. **Next:** Capture runner stderr (e.g. `journalctl -u ollama` or run with `OLLAMA_DEBUG=1`) when generate returns 500 to see the actual message; or inspect Ollama/llama.cpp for what causes exit(2).
+
+---
+
+## 17. Error-tracking re-run (Mar 17, 2026)
+
+**What was run:** Triggered one generate (llama3.2:1b, 2 tokens) on the VM with the service running; waited 100 s; collected guest logs.
+
+**Guest:**
+- **vgpu_call_sequence.log:** 21 lines. Last RPC = **cuMemcpyHtoD_v2** (0x0032). Sequence: init/getinfo/ctx (×2), 1× cuMemAlloc_v2, **12× cuMemcpyHtoD_v2**. Runner blocks waiting for the response to the last HtoD (same as ACTUAL_ERROR_FOUND.md).
+- **vgpu_status_poll.log:** Guest **only sees status=0x01 (BUSY)** and **from=BAR1** for all poll iterations (seq 1..24, multiple rounds). No 0x02 (DONE) ever observed.
+- **gen response:** Empty (request did not complete within 100 s).
+
+**Conclusion:** Same as §14–15. Stub returns DONE; guest MMIO read (BAR1) never sees it. Next: run **host-side correlation** (MMIO_MISMATCH_CAUSE_DIAGNOSIS.md §3): on the host, for the same time window, run  
+`grep -a 'BAR0 STATUS read\|BAR1 status read' /var/log/daemon.log | tail -100`  
+and optionally `cat /tmp/vgpu_stub_bar1_done.log | wc -l`.  
+- If **no BAR1 status read** lines on host while guest reports `from=BAR1` → guest BAR1 reads are not reaching the stub (cause A).  
+- If host shows BAR1 -> 0x2 but guest sees 0x01 → value corrupted in path (B or D).
+
+---
+
+## 18. Host log correlation (Mar 17, 2026)
+
+**Commands run on host (via connect_host.py):**  
+`grep -a 'BAR0 STATUS read\|BAR1 status read' /var/log/daemon.log | tail -100`  
+`wc -l /tmp/vgpu_stub_bar1_done.log; tail -5 /tmp/vgpu_stub_bar1_done.log`
+
+**Host (daemon.log):**
+- **BAR0 STATUS read -> 0x2:** 1 line (Mar 17 00:48:25, vm_id=9).
+- **BAR1 status read -> 0x2:** Many lines for vm_id=9 (02:34:41, 02:51:05, 03:00:21, 03:08:01–03:17:31, etc.). The stub’s BAR1 status read handler **is** invoked and **returns 0x2 (DONE)**.
+
+**Guest (same period / recent run, §17):** Poll log shows **status=0x01 only**, **from=BAR1**.
+
+**Conclusion:** The stub **is** seeing BAR1 status reads and returning **0x2**. So guest BAR1 reads **do** reach the stub (Cause A ruled out). The guest nevertheless **receives 0x01**. So the **value is wrong on delivery**: between QEMU’s MMIO read return and the guest vCPU, the result is corrupted or a different/cached value is delivered (MMIO_MISMATCH_CAUSE_DIAGNOSIS.md **Cause B or D** — corruption in path or cached/stale MMIO region). **Next:** Investigate Xen/qemu-dm MMIO result delivery for this device (how the read result is passed back to the guest); consider workarounds (e.g. interrupt or different completion mechanism).
+
+**Note:** `/tmp/vgpu_stub_bar1_done.log` was not present or empty on the host (wc produced no output).
+
+### 19. Post–mediator-restart correlation (Mar 17, 2026)
+
+After host mediator rebuild/restart (user ran `make clean && make` and restarted `mediator_phase3` with `2>/tmp/mediator.log`):
+
+- **VM guest:** `vgpu_call_sequence.log` 42 lines, last RPC `cuMemcpyHtoD_v2`; `$HOME/vgpu_status_poll.log` 100 lines, all `status=0x01 from=BAR1`.
+- **Host mediator log:** Tail shows init, cuMemAlloc, `HtoD progress: 10 MB, 20 MB`. **No** `[MEDIATOR] CUDA result sent` lines in `/tmp/mediator.log`.
+
+So either (1) the mediator binary was built from source that did not include the new `[MEDIATOR] CUDA result sent` log (updated `mediator_phase3.c` not deployed to host before `make`), or (2) no HtoD response had been sent yet in this run. To confirm mediator-side completions: copy updated `phase3/src/mediator_phase3.c` to the host, rebuild, restart, then re-run and `grep -a 'CUDA result sent' /tmp/mediator.log`.
+
+### 20. Full correlation with new mediator binary (Mar 17, 2026)
+
+After deploying updated `mediator_phase3.c` to the host and restarting the mediator, one generate was triggered from the VM (curl 90s timeout). Results:
+
+- **Mediator log:** Multiple `[MEDIATOR] CUDA result sent vm_id=9 request_id=N call_id=0x32 result.status=0 -> stub sets DONE` lines (request_id 7–19, call_id=0x32 = cuMemcpyHtoD_v2). The mediator is sending HtoD completions (DONE) to the stub.
+- **Guest:** `vgpu_call_sequence.log` 22 lines, last RPC `cuMemcpyHtoD_v2`; `$HOME/vgpu_status_poll.log` 21 lines, all `status=0x01 from=BAR1`. The guest never sees 0x02.
+
+**Conclusion:** Mediator → stub path is correct (mediator sends DONE for HtoD; stub receives and should set BAR1 status to 0x02). The fault is in the **stub → guest** path: the value returned to the guest on BAR1 status read is 0x01 instead of 0x02 (Cause B or D in MMIO_MISMATCH_CAUSE_DIAGNOSIS.md — corruption or cached MMIO in Xen/qemu-dm). Fix requires investigation of the vGPU stub’s MMIO read return path or Xen/qemu-dm delivery to the guest (outside mediator-only scope).
+
+**Workaround:** Use BAR0 `response_len` (0x01C) instead of status for completion detection. See **MMIO_WORKAROUND_RESPONSE_LEN.md**: stub sets `response_len = 1` when applying CUDA result and clears it when starting a new request; guest checks `response_len` after **30** poll iterations (do not use 3 — that was reverted; see VERIFICATION_REPORT). Requires stub (QEMU) rebuild and guest shim redeploy.
+
+**Host access constraint:** Only the host’s **mediator** is accessed (mediator process, `/tmp/mediator.log`, mediator binary/deploy). No other host components (Xen, QEMU tree, system configs) are modified or depended on.
+
+**Mediator-side correlation (added):** When the mediator sends a CUDA result to the stub it now logs:  
+`[MEDIATOR] CUDA result sent vm_id=N request_id=M call_id=0x... result.status=K -> stub sets DONE`  
+to stderr (so it appears in `/tmp/mediator.log` when the mediator is run with `2>/tmp/mediator.log`). Use this to correlate mediator completions with stub/guest:  
+`grep -a 'CUDA result sent\|BAR1 status read' /tmp/mediator.log` on mediator log; stub BAR1 lines remain in daemon.log from QEMU.
 
 ---
 

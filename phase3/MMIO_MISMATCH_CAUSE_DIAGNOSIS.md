@@ -92,6 +92,15 @@ journalctl -u ollama -n 200 --no-pager | grep -E 'cuda-transport.*poll|status=0x
 - **No BAR1 lines on host, guest uses BAR1:** Guest BAR1 reads do not hit the stub → investigate how Xen exposes BAR1 to the guest (trap-and-emulate vs direct map).
 - **Host shows BAR0/BAR1 -> 0x2, guest shows status=0x01:** Same read returns different value to guest → bug in Xen/qemu-dm MMIO result delivery or caching.
 
+### 4. Correlation result (Mar 17, 2026)
+
+Host logs (via `connect_host.py`) were checked:
+
+- **daemon.log:** Many lines `[vgpu] vm_id=9: BAR1 status read -> 0x2` (and one BAR0 STATUS read -> 0x2). So the stub **is** invoked for BAR1 status reads and returns **0x2 (DONE)**.
+- **Guest** (same period / recent run): `vgpu_status_poll.log` shows **status=0x01**, **from=BAR1** only.
+
+**Conclusion:** Cause **A** is ruled out (guest BAR1 reads do reach the stub). The mismatch is in delivery: stub returns 0x2 but guest receives 0x01 → **Cause B or D** (corruption in path, or cached/stale MMIO). See **HtoD_DIAGNOSIS_RESULTS.md** §18.
+
 ---
 
 ## Next steps depending on result

@@ -1009,6 +1009,10 @@ static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
         fprintf(stderr, "[ERROR] Failed to send CUDA result: %s\n",
                 strerror(errno));
     } else {
+        /* MMIO correlation: mediator sends completion; stub sets DONE; guest should see 0x02 */
+        fprintf(stderr, "[MEDIATOR] CUDA result sent vm_id=%u request_id=%u call_id=0x%x result.status=%d -> stub sets DONE\n",
+                (unsigned)sock_hdr->vm_id, (unsigned)sock_hdr->request_id,
+                (unsigned)cuda_hdr->call_id, result.status);
         /* Update sent message count */
         pthread_mutex_lock(&g_connections_lock);
         for (int i = 0; i < g_num_connections; i++) {

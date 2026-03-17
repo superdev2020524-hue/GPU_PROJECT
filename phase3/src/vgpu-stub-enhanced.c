@@ -805,6 +805,7 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
     /* Mark device busy */
     VGPU_STATUS_WRITE(s, VGPU_STATUS_BUSY);
     s->error_code = VGPU_ERR_NONE;
+    s->response_len = 0;  /* clear so guest does not see previous completion */
 
     /* Clear result registers */
     s->cuda_result_status   = 0;
@@ -1261,6 +1262,11 @@ static void vgpu_socket_read_handler(void *opaque)
                 int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
                 s->timestamp_lo = (uint32_t)(now_us & 0xFFFFFFFF);
                 s->timestamp_hi = (uint32_t)((uint64_t)now_us >> 32);
+
+                /* Workaround for MMIO status read mismatch: guest may never see DONE (0x02)
+                 * on BAR0/BAR1 status. Set response_len so guest fallback (poll_iter>=30)
+                 * can complete by reading BAR0+0x01C instead. */
+                s->response_len = 1;
 
                 if (cr->status == 0) {
                     VGPU_STATUS_WRITE(s, VGPU_STATUS_DONE);
