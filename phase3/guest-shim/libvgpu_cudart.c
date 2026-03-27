@@ -616,12 +616,13 @@ static void patch_ggml_cuda_device_prop(void *prop_ptr) {
     // Cast to byte pointer for offset access
     uint8_t *ptr = (uint8_t *)prop_ptr;
 
-    // Patch at multiple offsets - GGML may use different cudaDeviceProp layouts.
-    // CUDA 12: 0x148/0x14C (computeCapabilityMajor/Minor)
-    // Legacy: 0x15C/0x160 (major/minor)
-    // Observed in the deployed libggml-cuda.so build: 0x168/0x16C
-    size_t offsets_major[] = {0x148, 0x15C, 0x168};
-    size_t offsets_minor[] = {0x14C, 0x160, 0x16C};
+    // Patch CC at offsets that are actually compute-capacity fields in cudaDeviceProp.
+    // CUDA 12: 0x148/0x14C (computeCapabilityMajor/Minor); legacy: 0x15C/0x160 (major/minor).
+    // Do NOT patch 0x168/0x16C — in CUDA 12 headers those are texturePitchAlignment and
+    // deviceOverlap; writing 9/0 there was corrupting alignment (e.g. pitch=9) and can
+    // SIGSEGV in GGML/llama NewContextWithModel paths.
+    size_t offsets_major[] = {0x148, 0x15C};
+    size_t offsets_minor[] = {0x14C, 0x160};
 
     int major = GPU_DEFAULT_CC_MAJOR;
     int minor = GPU_DEFAULT_CC_MINOR;
@@ -635,13 +636,12 @@ static void patch_ggml_cuda_device_prop(void *prop_ptr) {
     if (cudart_debug_logging()) {
         int verify_major = *((int32_t *)(ptr + 0x148));
         int verify_minor = *((int32_t *)(ptr + 0x14C));
-        int verify_major_alt = *((int32_t *)(ptr + 0x168));
-        int verify_minor_alt = *((int32_t *)(ptr + 0x16C));
+        int tex_pitch = *((int32_t *)(ptr + 0x168));
         char patch_buf[512];
         int patch_len = snprintf(patch_buf, sizeof(patch_buf),
-                                "[GGML PATCH] Patched cudaDeviceProp at prop=%p: major=%d minor=%d (verified: 0x148=%d 0x14C=%d 0x168=%d 0x16C=%d, pid=%d)\n",
+                                "[GGML PATCH] Patched cudaDeviceProp at prop=%p: major=%d minor=%d (verified: 0x148=%d 0x14C=%d texturePitchAlignment@0x168=%d, pid=%d)\n",
                                 prop_ptr, major, minor, verify_major, verify_minor,
-                                verify_major_alt, verify_minor_alt, (int)getpid());
+                                tex_pitch, (int)getpid());
         if (patch_len > 0 && patch_len < (int)sizeof(patch_buf))
             syscall(__NR_write, 2, patch_buf, patch_len);
     }
@@ -748,11 +748,12 @@ cudaError_t cudaGetDeviceProperties_v2(cudaDeviceProp *prop, int device) {
     int *old_minor_ptr = (int*)((char*)prop + 0x160);
     *old_major_ptr = GPU_DEFAULT_CC_MAJOR;
     *old_minor_ptr = GPU_DEFAULT_CC_MINOR;
-    int *ggml_major_ptr = (int*)((char*)prop + 0x168);
-    int *ggml_minor_ptr = (int*)((char*)prop + 0x16C);
-    *ggml_major_ptr = GPU_DEFAULT_CC_MAJOR;
-    *ggml_minor_ptr = GPU_DEFAULT_CC_MINOR;
-    
+
+    /* 0x168 = texturePitchAlignment, 0x16C = deviceOverlap (CUDA 12 layout) — must be sane. */
+    prop->textureAlignment = 512;
+    prop->texturePitchAlignment = 512;
+    prop->deviceOverlap = 1;
+
     int *warpSize_ptr = (int*)((char*)prop + 0x114);
     *warpSize_ptr = GPU_DEFAULT_WARP_SIZE;
 

@@ -85,6 +85,30 @@ static cublas_remote_handle_t *as_remote_handle(cublasHandle_t h) {
 static cuda_transport_t *g_cublas_transport = NULL;
 static pthread_mutex_t g_cublas_transport_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Guest-side sync after mediated BLAS: executor already cuCtxSynchronizes on the host;
+ * this runs the shimmed cuCtxSynchronize RPC so guest/driver state stays ordered. */
+typedef unsigned int (*cublas_pfn_cuCtxSynchronize)(void);
+static cublas_pfn_cuCtxSynchronize g_cuCtxSynchronize;
+static void *g_cuda_driver_dl;
+
+static void cublas_ensure_cuCtxSynchronize(void)
+{
+    if (g_cuCtxSynchronize)
+        return;
+    if (!g_cuda_driver_dl)
+        g_cuda_driver_dl = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!g_cuda_driver_dl)
+        return;
+    g_cuCtxSynchronize = (cublas_pfn_cuCtxSynchronize)dlsym(g_cuda_driver_dl, "cuCtxSynchronize");
+}
+
+static void cublas_guest_ctx_sync_after_rpc(void)
+{
+    cublas_ensure_cuCtxSynchronize();
+    if (g_cuCtxSynchronize)
+        (void)g_cuCtxSynchronize();
+}
+
 static int cublas_ensure_connected(void) {
     CUDACallResult init_result = {0};
     uint32_t recv_len = 0;
@@ -204,6 +228,10 @@ static void init_real_cublas(void) {
     (void)ensure_vgpu_cuda_loaded();
 
     const char *candidates[] = {
+        /* Prefer versioned vendor file first: when libcublas.so.12 is a symlink to
+         * libvgpu-cublas.so.12, dlopen(".../libcublas.so.12") would load THIS shim
+         * again and break dlsym. See CUBLAS_VENDOR_SYMLINK_DEPLOY.md */
+        "/usr/local/lib/ollama/cuda_v12/libcublas.so.12.3.2.9",
         "/usr/local/lib/ollama/cuda_v12/libcublas.so.12",
         "/usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.12",
         "/usr/local/cuda/lib64/libcublas.so.12",
@@ -749,10 +777,11 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
         payload.ldc = ldc;
         payload.computeType = computeType;
         payload.algo = algo;
-        /* GGML calls this path with alpha=1, beta=0; keep payload robust even
-         * when caller passes fp16 scalar pointers. */
+        /* Host replays with stack float &alpha/&beta; copy caller scalars (GGML uses host float). */
         payload.alpha_f32 = 1.0f;
         payload.beta_f32 = 0.0f;
+        memcpy(&payload.alpha_f32, alpha, sizeof(float));
+        memcpy(&payload.beta_f32, beta, sizeof(float));
 
         if (cublas_ensure_connected() != 0) {
             return CUBLAS_STATUS_NOT_INITIALIZED;
@@ -778,9 +807,19 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
         if (tc_rc != 0 || result.num_results < 1) {
             return CUBLAS_STATUS_EXECUTION_FAILED;
         }
+        cublas_guest_ctx_sync_after_rpc();
         {
             int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
             if (nfd >= 0) { const char *msg = "gemm_ex_return\n"; syscall(__NR_write, nfd, msg, 15); syscall(__NR_close, nfd); }
+        }
+        {
+            char ret_msg[288];
+            int rn = snprintf(ret_msg, sizeof(ret_msg),
+                              "[libvgpu-cublas] cublasGemmEx() RETURN ok tc_rc=%d cublas_status=%u (m=%d n=%d k=%d pid=%d)\n",
+                              tc_rc, (unsigned)result.results[0], m, n, k, (int)getpid());
+            if (rn > 0 && rn < (int)sizeof(ret_msg)) {
+                syscall(__NR_write, 2, ret_msg, (size_t)rn);
+            }
         }
         return (cublasStatus_t)result.results[0];
     }
@@ -818,6 +857,52 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
     if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
+    if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
+    if (is_remote_handle(handle)) {
+        CUDACallResult result = {0};
+        CublasGemmStridedBatchedExCall payload;
+        if (!alpha || !beta || !A || !B || !C) {
+            return CUBLAS_STATUS_INVALID_VALUE;
+        }
+        memset(&payload, 0, sizeof(payload));
+        payload.handle = as_remote_handle(handle)->remote_handle;
+        payload.a = (uint64_t)(uintptr_t)A;
+        payload.b = (uint64_t)(uintptr_t)B;
+        payload.c = (uint64_t)(uintptr_t)C;
+        payload.strideA = (int64_t)strideA;
+        payload.strideB = (int64_t)strideB;
+        payload.strideC = (int64_t)strideC;
+        payload.transa = transa;
+        payload.transb = transb;
+        payload.m = m;
+        payload.n = n;
+        payload.k = k;
+        payload.Atype = Atype;
+        payload.Btype = Btype;
+        payload.Ctype = Ctype;
+        payload.lda = lda;
+        payload.ldb = ldb;
+        payload.ldc = ldc;
+        payload.batchCount = batchCount;
+        payload.computeType = computeType;
+        payload.algo = algo;
+        payload.alpha_f32 = 1.0f;
+        payload.beta_f32 = 0.0f;
+        memcpy(&payload.alpha_f32, alpha, sizeof(float));
+        memcpy(&payload.beta_f32, beta, sizeof(float));
+        if (cublas_ensure_connected() != 0) {
+            return CUBLAS_STATUS_NOT_INITIALIZED;
+        }
+        if (cuda_transport_call(g_cublas_transport, CUDA_CALL_CUBLAS_GEMM_STRIDED_BATCHED_EX,
+                                NULL, 0,
+                                &payload, (uint32_t)sizeof(payload),
+                                &result, NULL, 0, NULL) != 0 ||
+            result.num_results < 1) {
+            return CUBLAS_STATUS_EXECUTION_FAILED;
+        }
+        cublas_guest_ctx_sync_after_rpc();
+        return (cublasStatus_t)result.results[0];
+    }
     typedef cublasStatus_t (*fn_t)(cublasHandle_t, int, int, int, int, int,
                                    const void *, const void *, int, int, long long int,
                                    const void *, int, int, long long int,
@@ -845,6 +930,66 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
         if (nfd >= 0) { const char *msg = "gemm_batched\n"; syscall(__NR_write, nfd, msg, 13); syscall(__NR_close, nfd); }
     }
     if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
+    if (is_remote_handle(handle)) {
+        CUDACallResult result = {0};
+        if (!alpha || !beta || !Aarray || !Barray || !Carray || batchCount < 1) {
+            return CUBLAS_STATUS_INVALID_VALUE;
+        }
+        size_t ptr_bytes = (size_t)batchCount * 3u * sizeof(uint64_t);
+        size_t total = sizeof(CublasGemmBatchedExCallHdr) + ptr_bytes;
+        uint8_t *payload_buf = (uint8_t *)malloc(total);
+        if (!payload_buf) {
+            return CUBLAS_STATUS_ALLOC_FAILED;
+        }
+        CublasGemmBatchedExCallHdr *hdr = (CublasGemmBatchedExCallHdr *)payload_buf;
+        memset(hdr, 0, sizeof(*hdr));
+        hdr->handle = as_remote_handle(handle)->remote_handle;
+        hdr->transa = transa;
+        hdr->transb = transb;
+        hdr->m = m;
+        hdr->n = n;
+        hdr->k = k;
+        hdr->Atype = Atype;
+        hdr->Btype = Btype;
+        hdr->Ctype = Ctype;
+        hdr->lda = lda;
+        hdr->ldb = ldb;
+        hdr->ldc = ldc;
+        hdr->batchCount = batchCount;
+        hdr->computeType = computeType;
+        hdr->algo = algo;
+        /* Host replays with float scalars; must match caller (was hardcoded 1/0). */
+        hdr->alpha_f32 = 1.0f;
+        hdr->beta_f32 = 0.0f;
+        if (alpha && beta && Atype == 0 /* CUDA_R_32F */) {
+            hdr->alpha_f32 = *(const float *)alpha;
+            hdr->beta_f32 = *(const float *)beta;
+        }
+        uint64_t *tr = (uint64_t *)(payload_buf + sizeof(CublasGemmBatchedExCallHdr));
+        for (int i = 0; i < batchCount; i++) {
+            tr[i] = (uint64_t)(uintptr_t)Aarray[i];
+        }
+        for (int i = 0; i < batchCount; i++) {
+            tr[(size_t)batchCount + (size_t)i] = (uint64_t)(uintptr_t)Barray[i];
+        }
+        for (int i = 0; i < batchCount; i++) {
+            tr[2u * (size_t)batchCount + (size_t)i] = (uint64_t)(uintptr_t)Carray[i];
+        }
+        if (cublas_ensure_connected() != 0) {
+            free(payload_buf);
+            return CUBLAS_STATUS_NOT_INITIALIZED;
+        }
+        int tc_rc = cuda_transport_call(g_cublas_transport, CUDA_CALL_CUBLAS_GEMM_BATCHED_EX,
+                                        NULL, 0,
+                                        payload_buf, (uint32_t)total,
+                                        &result, NULL, 0, NULL);
+        free(payload_buf);
+        if (tc_rc != 0 || result.num_results < 1) {
+            return CUBLAS_STATUS_EXECUTION_FAILED;
+        }
+        cublas_guest_ctx_sync_after_rpc();
+        return (cublasStatus_t)result.results[0];
+    }
     typedef cublasStatus_t (*fn_t)(cublasHandle_t, int, int, int, int, int,
                                    const void *, const void *const [], int, int,
                                    const void *const [], int, int, const void *,
