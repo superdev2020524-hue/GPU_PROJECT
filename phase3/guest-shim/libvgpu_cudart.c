@@ -323,9 +323,9 @@ static void sanitize_device_prop_nonzero(cudaDeviceProp *prop) {
     if (prop->regsPerBlock <= 0) prop->regsPerBlock = 65536;
     if (prop->sharedMemPerBlock == 0) prop->sharedMemPerBlock = 49152;
     if (prop->sharedMemPerMultiprocessor == 0) prop->sharedMemPerMultiprocessor = 233472;
-    if (prop->sharedMemPerBlockOptin <= 0) prop->sharedMemPerBlockOptin = 49152;
+    if (prop->sharedMemPerBlockOptin <= 0) prop->sharedMemPerBlockOptin = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK_OPTIN;
     if (prop->maxSharedMemoryPerMultiProcessor <= 0) prop->maxSharedMemoryPerMultiProcessor = 233472;
-    if (prop->maxSharedMemoryPerBlockOptin <= 0) prop->maxSharedMemoryPerBlockOptin = 49152;
+    if (prop->maxSharedMemoryPerBlockOptin <= 0) prop->maxSharedMemoryPerBlockOptin = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK_OPTIN;
     if (prop->maxSharedMemoryPerBlock <= 0) prop->maxSharedMemoryPerBlock = 49152;
     if (prop->clockRate <= 0) prop->clockRate = 1400000;
     if (prop->memoryClockRate <= 0) prop->memoryClockRate = 2600000;
@@ -591,7 +591,7 @@ cudaError_t cudaDeviceGetAttribute(int *value, int attr, int device) {
         *value = (int)GPU_DEFAULT_SHARED_MEM_PER_SM;
         break;
     case 97:  /* cudaDevAttrMaxSharedMemoryPerBlockOptin */
-        *value = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK;
+        *value = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK_OPTIN;
         break;
     default:
         *value = 1;
@@ -709,9 +709,9 @@ cudaError_t cudaGetDeviceProperties_v2(cudaDeviceProp *prop, int device) {
     prop->regsPerBlock = 65536;
     prop->sharedMemPerBlock = GPU_DEFAULT_SHARED_MEM_PER_BLOCK;
     prop->sharedMemPerMultiprocessor = GPU_DEFAULT_SHARED_MEM_PER_SM;
-    prop->sharedMemPerBlockOptin = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK;
+    prop->sharedMemPerBlockOptin = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK_OPTIN;
     prop->maxSharedMemoryPerMultiProcessor = (int)GPU_DEFAULT_SHARED_MEM_PER_SM;
-    prop->maxSharedMemoryPerBlockOptin = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK;
+    prop->maxSharedMemoryPerBlockOptin = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK_OPTIN;
     prop->maxSharedMemoryPerBlock = (int)GPU_DEFAULT_SHARED_MEM_PER_BLOCK;
     prop->maxBlocksPerMultiProcessor = 32;
     prop->singleToDoublePrecisionPerfRatio = 2;

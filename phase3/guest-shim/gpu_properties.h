@@ -17,18 +17,18 @@
 #define GPU_PROPERTIES_H
 
 /* ---- Device identity ------------------------------------------- */
-#define GPU_DEFAULT_NAME            "NVIDIA H100 80GB HBM3"
+#define GPU_DEFAULT_NAME            "HEXACORE vH100 CAP"
 #define GPU_DEFAULT_PCI_DEVICE_ID   0x2331   /* H100 PCIe */
 #define GPU_DEFAULT_PCI_VENDOR_ID   0x10DE   /* NVIDIA     */
 
 /* ---- Compute capability ---------------------------------------- */
-/* NOTE:
- * Some GGML CUDA builds abort in MMQ path on reported arch=900.
- * Use 8.9 compatibility reporting to stay on a supported kernel path
- * while preserving modern tensor-core behavior.
+/* H100 Hopper = 9.0. Prior 8.9 (Ada) workaround caused libcublasLt to
+ * select sm_80 Ampere fatbins (see FATBIN_CUBLAS_CC_ANALYSIS_MAR21.md).
+ * GGML CUDA is built with sm_90 (CMAKE_CUDA_ARCHITECTURES=90); advertise
+ * true CC so BLASLt / runtime pick Hopper-compatible kernel packages.
  */
-#define GPU_DEFAULT_CC_MAJOR        8
-#define GPU_DEFAULT_CC_MINOR        9
+#define GPU_DEFAULT_CC_MAJOR        9
+#define GPU_DEFAULT_CC_MINOR        0
 
 /* ---- Core counts ----------------------------------------------- */
 #define GPU_DEFAULT_SM_COUNT        132      /* Streaming Multiprocessors */
@@ -57,7 +57,10 @@
 #define GPU_DEFAULT_MAX_THREADS_PER_SM      2048
 
 /* ---- Shared memory / registers --------------------------------- */
-#define GPU_DEFAULT_SHARED_MEM_PER_BLOCK    (49152)     /* 48 KB  */
+#define GPU_DEFAULT_SHARED_MEM_PER_BLOCK    (49152)     /* 48 KiB static per block */
+/* Hopper: GGML MMQ uses smpbo = cudaDeviceProp.sharedMemPerBlockOptin (ggml-cuda.cu).
+ * If this is only 48 KiB, mmq_get_nbytes_shared > smpbo for all tiles → mmq_x_best=0 → GGML_ABORT. */
+#define GPU_DEFAULT_SHARED_MEM_PER_BLOCK_OPTIN (227328) /* 222 KiB — H100 max opt-in per block */
 #define GPU_DEFAULT_SHARED_MEM_PER_SM       (233472)    /* 228 KB */
 #define GPU_DEFAULT_REGS_PER_BLOCK          65536
 #define GPU_DEFAULT_REGS_PER_SM             65536
