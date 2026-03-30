@@ -1,0 +1,46 @@
+#!/usr/bin/expect -f
+
+set timeout 300
+if {$argc < 1} {
+    puts stderr "usage: dom0_vm_exec.exp <remote command> ?timeout_sec?"
+    exit 2
+}
+
+set remote_cmd [lindex $argv 0]
+if {$argc >= 2} {
+    set timeout [lindex $argv 1]
+}
+
+log_user 1
+match_max 100000
+
+set ssh_cmd [format {ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PreferredAuthentications=password -o PubkeyAuthentication=no test-4@10.25.33.12 bash -lc %s} [list $remote_cmd]]
+spawn sh -lc $ssh_cmd
+
+expect {
+    -re {.*password:.*} {
+        send "Calvin@123\r"
+    }
+    timeout {
+        puts stderr "TIMEOUT_WAITING_FOR_PASSWORD"
+        exit 124
+    }
+    eof {
+        puts stderr "EOF_BEFORE_PASSWORD"
+        exit 1
+    }
+}
+
+expect {
+    eof
+    timeout {
+        puts stderr "TIMEOUT_WAITING_FOR_REMOTE_EOF"
+        exit 125
+    }
+}
+
+catch wait result
+if {[llength $result] >= 4} {
+    exit [lindex $result 3]
+}
+exit 0

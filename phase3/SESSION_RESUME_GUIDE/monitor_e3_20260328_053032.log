@@ -1,0 +1,1830 @@
+===== 2026-03-28T09:40:48Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids test-4    206746       1  0 05:30 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    206747       1  0 05:30 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_053032/generate_request.json -o /tmp/e3_bounded_20260328_053032/curl_generate.out.json -D /tmp/e3_bounded_20260328_053032/curl_generate.response_headers.txt
+--- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 116 MB total (vm=9)
+[cuda-executor] HtoD progress: 127 MB total (vm=9)
+[cuda-executor] HtoD progress: 137 MB total (vm=9)
+[cuda-executor] HtoD progress: 147 MB total (vm=9)
+[cuda-executor] HtoD progress: 158 MB total (vm=9)
+[cuda-executor] HtoD progress: 168 MB total (vm=9)
+[cuda-executor] HtoD progress: 178 MB total (vm=9)
+[cuda-executor] HtoD progress: 188 MB total (vm=9)
+[cuda-executor] HtoD progress: 199 MB total (vm=9)
+[cuda-executor] HtoD progress: 209 MB total (vm=9)
+[cuda-executor] HtoD progress: 219 MB total (vm=9)
+[cuda-executor] HtoD progress: 229 MB total (vm=9)
+[cuda-executor] HtoD progress: 240 MB total (vm=9)
+[cuda-executor] HtoD progress: 250 MB total (vm=9)
+[cuda-executor] HtoD progress: 261 MB total (vm=9)
+[cuda-executor] HtoD progress: 271 MB total (vm=9)
+[cuda-executor] HtoD progress: 281 MB total (vm=9)
+[cuda-executor] HtoD progress: 291 MB total (vm=9)
+[cuda-executor] HtoD progress: 302 MB total (vm=9)
+[cuda-executor] HtoD progress: 312 MB total (vm=9)
+[cuda-executor] HtoD progress: 322 MB total (vm=9)
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+
+===== 2026-03-28T09:50:56Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 116 MB total (vm=9)
+[cuda-executor] HtoD progress: 127 MB total (vm=9)
+[cuda-executor] HtoD progress: 137 MB total (vm=9)
+[cuda-executor] HtoD progress: 147 MB total (vm=9)
+[cuda-executor] HtoD progress: 158 MB total (vm=9)
+[cuda-executor] HtoD progress: 168 MB total (vm=9)
+[cuda-executor] HtoD progress: 178 MB total (vm=9)
+[cuda-executor] HtoD progress: 188 MB total (vm=9)
+[cuda-executor] HtoD progress: 199 MB total (vm=9)
+[cuda-executor] HtoD progress: 209 MB total (vm=9)
+[cuda-executor] HtoD progress: 219 MB total (vm=9)
+[cuda-executor] HtoD progress: 229 MB total (vm=9)
+[cuda-executor] HtoD progress: 240 MB total (vm=9)
+[cuda-executor] HtoD progress: 250 MB total (vm=9)
+[cuda-executor] HtoD progress: 261 MB total (vm=9)
+[cuda-executor] HtoD progress: 271 MB total (vm=9)
+[cuda-executor] HtoD progress: 281 MB total (vm=9)
+[cuda-executor] HtoD progress: 291 MB total (vm=9)
+[cuda-executor] HtoD progress: 302 MB total (vm=9)
+[cuda-executor] HtoD progress: 312 MB total (vm=9)
+[cuda-executor] HtoD progress: 322 MB total (vm=9)
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+
+===== 2026-03-28T10:01:04Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 116 MB total (vm=9)
+[cuda-executor] HtoD progress: 127 MB total (vm=9)
+[cuda-executor] HtoD progress: 137 MB total (vm=9)
+[cuda-executor] HtoD progress: 147 MB total (vm=9)
+[cuda-executor] HtoD progress: 158 MB total (vm=9)
+[cuda-executor] HtoD progress: 168 MB total (vm=9)
+[cuda-executor] HtoD progress: 178 MB total (vm=9)
+[cuda-executor] HtoD progress: 188 MB total (vm=9)
+[cuda-executor] HtoD progress: 199 MB total (vm=9)
+[cuda-executor] HtoD progress: 209 MB total (vm=9)
+[cuda-executor] HtoD progress: 219 MB total (vm=9)
+[cuda-executor] HtoD progress: 229 MB total (vm=9)
+[cuda-executor] HtoD progress: 240 MB total (vm=9)
+[cuda-executor] HtoD progress: 250 MB total (vm=9)
+[cuda-executor] HtoD progress: 261 MB total (vm=9)
+[cuda-executor] HtoD progress: 271 MB total (vm=9)
+[cuda-executor] HtoD progress: 281 MB total (vm=9)
+[cuda-executor] HtoD progress: 291 MB total (vm=9)
+[cuda-executor] HtoD progress: 302 MB total (vm=9)
+[cuda-executor] HtoD progress: 312 MB total (vm=9)
+[cuda-executor] HtoD progress: 322 MB total (vm=9)
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+
+===== 2026-03-28T10:11:13Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 116 MB total (vm=9)
+[cuda-executor] HtoD progress: 127 MB total (vm=9)
+[cuda-executor] HtoD progress: 137 MB total (vm=9)
+[cuda-executor] HtoD progress: 147 MB total (vm=9)
+[cuda-executor] HtoD progress: 158 MB total (vm=9)
+[cuda-executor] HtoD progress: 168 MB total (vm=9)
+[cuda-executor] HtoD progress: 178 MB total (vm=9)
+[cuda-executor] HtoD progress: 188 MB total (vm=9)
+[cuda-executor] HtoD progress: 199 MB total (vm=9)
+[cuda-executor] HtoD progress: 209 MB total (vm=9)
+[cuda-executor] HtoD progress: 219 MB total (vm=9)
+[cuda-executor] HtoD progress: 229 MB total (vm=9)
+[cuda-executor] HtoD progress: 240 MB total (vm=9)
+[cuda-executor] HtoD progress: 250 MB total (vm=9)
+[cuda-executor] HtoD progress: 261 MB total (vm=9)
+[cuda-executor] HtoD progress: 271 MB total (vm=9)
+[cuda-executor] HtoD progress: 281 MB total (vm=9)
+[cuda-executor] HtoD progress: 291 MB total (vm=9)
+[cuda-executor] HtoD progress: 302 MB total (vm=9)
+[cuda-executor] HtoD progress: 312 MB total (vm=9)
+[cuda-executor] HtoD progress: 322 MB total (vm=9)
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+
+===== 2026-03-28T10:21:21Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 116 MB total (vm=9)
+[cuda-executor] HtoD progress: 127 MB total (vm=9)
+[cuda-executor] HtoD progress: 137 MB total (vm=9)
+[cuda-executor] HtoD progress: 147 MB total (vm=9)
+[cuda-executor] HtoD progress: 158 MB total (vm=9)
+[cuda-executor] HtoD progress: 168 MB total (vm=9)
+[cuda-executor] HtoD progress: 178 MB total (vm=9)
+[cuda-executor] HtoD progress: 188 MB total (vm=9)
+[cuda-executor] HtoD progress: 199 MB total (vm=9)
+[cuda-executor] HtoD progress: 209 MB total (vm=9)
+[cuda-executor] HtoD progress: 219 MB total (vm=9)
+[cuda-executor] HtoD progress: 229 MB total (vm=9)
+[cuda-executor] HtoD progress: 240 MB total (vm=9)
+[cuda-executor] HtoD progress: 250 MB total (vm=9)
+[cuda-executor] HtoD progress: 261 MB total (vm=9)
+[cuda-executor] HtoD progress: 271 MB total (vm=9)
+[cuda-executor] HtoD progress: 281 MB total (vm=9)
+[cuda-executor] HtoD progress: 291 MB total (vm=9)
+[cuda-executor] HtoD progress: 302 MB total (vm=9)
+[cuda-executor] HtoD progress: 312 MB total (vm=9)
+[cuda-executor] HtoD progress: 322 MB total (vm=9)
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+
+===== 2026-03-28T10:31:29Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 116 MB total (vm=9)
+[cuda-executor] HtoD progress: 127 MB total (vm=9)
+[cuda-executor] HtoD progress: 137 MB total (vm=9)
+[cuda-executor] HtoD progress: 147 MB total (vm=9)
+[cuda-executor] HtoD progress: 158 MB total (vm=9)
+[cuda-executor] HtoD progress: 168 MB total (vm=9)
+[cuda-executor] HtoD progress: 178 MB total (vm=9)
+[cuda-executor] HtoD progress: 188 MB total (vm=9)
+[cuda-executor] HtoD progress: 199 MB total (vm=9)
+[cuda-executor] HtoD progress: 209 MB total (vm=9)
+[cuda-executor] HtoD progress: 219 MB total (vm=9)
+[cuda-executor] HtoD progress: 229 MB total (vm=9)
+[cuda-executor] HtoD progress: 240 MB total (vm=9)
+[cuda-executor] HtoD progress: 250 MB total (vm=9)
+[cuda-executor] HtoD progress: 261 MB total (vm=9)
+[cuda-executor] HtoD progress: 271 MB total (vm=9)
+[cuda-executor] HtoD progress: 281 MB total (vm=9)
+[cuda-executor] HtoD progress: 291 MB total (vm=9)
+[cuda-executor] HtoD progress: 302 MB total (vm=9)
+[cuda-executor] HtoD progress: 312 MB total (vm=9)
+[cuda-executor] HtoD progress: 322 MB total (vm=9)
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+
+===== 2026-03-28T10:41:37Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 116 MB total (vm=9)
+[cuda-executor] HtoD progress: 127 MB total (vm=9)
+[cuda-executor] HtoD progress: 137 MB total (vm=9)
+[cuda-executor] HtoD progress: 147 MB total (vm=9)
+[cuda-executor] HtoD progress: 158 MB total (vm=9)
+[cuda-executor] HtoD progress: 168 MB total (vm=9)
+[cuda-executor] HtoD progress: 178 MB total (vm=9)
+[cuda-executor] HtoD progress: 188 MB total (vm=9)
+[cuda-executor] HtoD progress: 199 MB total (vm=9)
+[cuda-executor] HtoD progress: 209 MB total (vm=9)
+[cuda-executor] HtoD progress: 219 MB total (vm=9)
+[cuda-executor] HtoD progress: 229 MB total (vm=9)
+[cuda-executor] HtoD progress: 240 MB total (vm=9)
+[cuda-executor] HtoD progress: 250 MB total (vm=9)
+[cuda-executor] HtoD progress: 261 MB total (vm=9)
+[cuda-executor] HtoD progress: 271 MB total (vm=9)
+[cuda-executor] HtoD progress: 281 MB total (vm=9)
+[cuda-executor] HtoD progress: 291 MB total (vm=9)
+[cuda-executor] HtoD progress: 302 MB total (vm=9)
+[cuda-executor] HtoD progress: 312 MB total (vm=9)
+[cuda-executor] HtoD progress: 322 MB total (vm=9)
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+
+===== 2026-03-28T10:51:45Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 229 MB total (vm=9)
+[cuda-executor] HtoD progress: 240 MB total (vm=9)
+[cuda-executor] HtoD progress: 250 MB total (vm=9)
+[cuda-executor] HtoD progress: 261 MB total (vm=9)
+[cuda-executor] HtoD progress: 271 MB total (vm=9)
+[cuda-executor] HtoD progress: 281 MB total (vm=9)
+[cuda-executor] HtoD progress: 291 MB total (vm=9)
+[cuda-executor] HtoD progress: 302 MB total (vm=9)
+[cuda-executor] HtoD progress: 312 MB total (vm=9)
+[cuda-executor] HtoD progress: 322 MB total (vm=9)
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 651 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 661 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+
+===== 2026-03-28T11:01:54Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 332 MB total (vm=9)
+[cuda-executor] HtoD progress: 343 MB total (vm=9)
+[cuda-executor] HtoD progress: 353 MB total (vm=9)
+[cuda-executor] HtoD progress: 363 MB total (vm=9)
+[cuda-executor] HtoD progress: 374 MB total (vm=9)
+[cuda-executor] HtoD progress: 384 MB total (vm=9)
+[cuda-executor] HtoD progress: 394 MB total (vm=9)
+[cuda-executor] HtoD progress: 404 MB total (vm=9)
+[cuda-executor] HtoD progress: 415 MB total (vm=9)
+[cuda-executor] HtoD progress: 425 MB total (vm=9)
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 651 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 661 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+
+===== 2026-03-28T11:12:01Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 435 MB total (vm=9)
+[cuda-executor] HtoD progress: 445 MB total (vm=9)
+[cuda-executor] HtoD progress: 456 MB total (vm=9)
+[cuda-executor] HtoD progress: 466 MB total (vm=9)
+[cuda-executor] HtoD progress: 476 MB total (vm=9)
+[cuda-executor] HtoD progress: 487 MB total (vm=9)
+[cuda-executor] HtoD progress: 497 MB total (vm=9)
+[cuda-executor] HtoD progress: 507 MB total (vm=9)
+[cuda-executor] HtoD progress: 517 MB total (vm=9)
+[cuda-executor] HtoD progress: 528 MB total (vm=9)
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 651 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 661 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+
+===== 2026-03-28T11:22:10Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[cuda-executor] HtoD progress: 538 MB total (vm=9)
+[cuda-executor] HtoD progress: 548 MB total (vm=9)
+[cuda-executor] HtoD progress: 558 MB total (vm=9)
+[cuda-executor] HtoD progress: 569 MB total (vm=9)
+[cuda-executor] HtoD progress: 579 MB total (vm=9)
+[cuda-executor] HtoD progress: 589 MB total (vm=9)
+[cuda-executor] HtoD progress: 600 MB total (vm=9)
+[cuda-executor] HtoD progress: 611 MB total (vm=9)
+[cuda-executor] HtoD progress: 623 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 651 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 661 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+
+===== 2026-03-28T11:32:18Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 635 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 651 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 661 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+
+===== 2026-03-28T11:42:26Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=3 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=13 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=14 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 661 MB total (vm=9)
+[MEDIATOR] CUDA result sent vm_id=9 request_id=4 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=23 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+
+===== 2026-03-28T11:52:35Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:02:42Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:12:50Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:22:58Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:33:06Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:43:14Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:53:22Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T13:03:29Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T13:13:38Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+alive_pids --- journal
+Mar 27 18:21:20 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:21:20 | 200 |      92.104µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:31:47 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:31:47 | 200 |      73.639µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:42:12 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:42:12 | 200 |      81.753µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 18:52:38 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 18:52:38 | 200 |     108.766µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:03:02 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:03:02 | 200 |      98.226µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:13:27 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:13:27 | 200 |       90.07µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:23:51 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:23:51 | 200 |      82.656µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:34:14 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:34:14 | 200 |      95.891µs |       127.0.0.1 | GET      "/api/ps"
+Mar 27 19:44:39 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/27 - 19:44:39 | 200 |      77.025µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 04:57:56 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 04:57:56 | 200 |     705.895µs |       127.0.0.1 | GET      "/api/tags"
+Mar 28 05:45:49 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:45:49 | 200 |     101.542µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:36 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:36 | 200 |      81.363µs |       127.0.0.1 | GET      "/api/ps"
+Mar 28 05:49:54 test4-HVM-domU ollama_vgpu_wrapper.sh[200702]: [GIN] 2026/03/28 - 05:49:54 | 200 |     113.125µs |       127.0.0.1 | GET      "/api/ps"
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T13:23:46Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_053032
+
+[vm status]
+Connection reset by 10.25.33.12 port 22

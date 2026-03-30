@@ -1,0 +1,82 @@
+================================================================================
+FIX: File Interception Breaking PCI Device Enumeration
+================================================================================
+
+PROBLEM IDENTIFIED
+------------------
+
+The vGPU-stub device was visible in `lspci` BEFORE the shim was installed, but
+disappeared AFTER installation. This indicates the shim's file interception is
+interfering with system processes that enumerate PCI devices.
+
+ROOT CAUSE
+----------
+
+The shim's file interception functions (fopen, fgets, fread, open, stat, etc.)
+were being applied to ALL processes via /etc/ld.so.preload, including system
+processes like:
+  - udev (device manager)
+  - systemd-udevd (device enumeration)
+  - lspci (PCI device listing)
+  - Other system processes that read /sys/bus/pci/devices/
+
+Even though we skip cuInit() for system processes, the file interception hooks
+were still active and breaking PCI enumeration.
+
+FIX IMPLEMENTED
+---------------
+
+Added system process detection to ALL file interception functions:
+
+1. fopen() - Now checks is_system_process() before intercepting PCI files
+2. fread() - Now checks is_system_process() before intercepting PCI files
+3. fgets() - Now checks is_system_process() before intercepting PCI files
+4. open() - Now checks is_system_process() before intercepting NVIDIA proc files
+5. openat() - Now checks is_system_process() before intercepting NVIDIA proc files
+6. stat() - Now checks is_system_process() before intercepting NVIDIA proc files
+7. lstat() - Now checks is_system_process() before intercepting NVIDIA proc files
+8. access() - Now checks is_system_process() before intercepting NVIDIA proc files
+
+Also expanded is_system_process() to detect:
+  - systemd, init, kthreadd
+  - systemd-* processes
+  - udev, systemd-udevd
+  - Any process with "udev" in the name
+  - lspci and similar tools
+
+DEPLOYMENT STEPS
+----------------
+
+1. Rebuild the shim with the fixed code:
+   
+   cd ~/phase3/guest-shim
+   sudo gcc -shared -fPIC -o /usr/lib64/libvgpu-cuda.so \
+       libvgpu_cuda.c cuda_transport.c \
+       -I../include -I. -ldl -lpthread -O2 -Wall
+
+2. Verify the device reappears:
+   
+   lspci | grep -i "2331\|3d controller"
+   # Should show the vGPU-stub device
+
+3. Restart Ollama:
+   
+   sudo systemctl restart ollama
+   sleep 25
+   systemctl is-active ollama
+
+4. Verify GPU mode:
+   
+   sudo journalctl -u ollama --since "2 minutes ago" --no-pager | grep "library="
+   # Should show library=cuda
+
+EXPECTED RESULT
+---------------
+
+After this fix:
+  ✓ vGPU-stub device visible in lspci
+  ✓ System processes can enumerate PCI devices normally
+  ✓ Application processes (like Ollama) still get file interception
+  ✓ Ollama can discover and use the vGPU
+
+================================================================================

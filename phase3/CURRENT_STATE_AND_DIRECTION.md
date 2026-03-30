@@ -53,13 +53,15 @@ So the report is **not** saying transfer is quick. It is saying: transfer comple
 
 ### Permissions
 
-- **VM (test-4):** Full interaction is allowed (run commands, configure, deploy guest artifacts, read VM logs).
-- **Host (mediator):** Only **reading logs** is allowed (e.g. `tail /tmp/mediator.log`). No copying files to the host and no building or running make on the host.
+**See `ASSISTANT_PERMISSIONS.md` for the authoritative statement** (it overrides older paragraphs in this file).
+
+- **VM (test-4):** **Full authority** — run commands, configure, deploy, edit VM files, read logs, rebuild and install (e.g. ollama.bin, guest shims), restart services.
+- **Host (dom0 / mediator):** As of **2026-03-25**, the operator granted the assistant **autonomous** Phase 3 work on the host: **read** logs and files; **edit** sources/config under agreed paths (e.g. `/root/phase3`); **build** (`make`, etc.); **install** / **restart** mediator when documented; **deploy** from the workspace (e.g. `deploy_cuda_executor_to_host.py`, `connect_host.py`). **Binding condition:** **non-destruction** (no reckless wipes of system trees; risky changes → stop and ask). *Before that date, host was treated as read-only for the assistant; session notes may still say “human/dom0 only” for that period.*
 
 ### Implications
 
-- **Host-side fixes** (e.g. changes to `cuda_executor.c`, mediator rebuild, mediator restart) are **not** done by the assistant. They are documented and left for you to apply on the host (transfer updated sources, `make`, restart mediator).
-- **VM-side work** is done by the assistant: checking Ollama, triggering generates, inspecting journalctl, deploying or updating guest-side components (e.g. Hopper-built `libggml-cuda.so` onto the VM), and reading host logs to confirm behavior (e.g. vm=9, SUCCESS/FAILED, module-load rc=…).
+- **Host-side fixes** (e.g. `cuda_executor.c`, mediator rebuild/restart) **may** be performed by the assistant **when** they stay within **`ASSISTANT_PERMISSIONS.md`** and deployment docs.
+- **VM-side work** remains with the assistant as before: Ollama, journal, guest shims, Hopper `libggml-cuda.so`, etc., plus **reading** host logs to confirm behavior (e.g. vm=9, module-load rc=…).
 
 ---
 
@@ -71,18 +73,14 @@ So the report is **not** saying transfer is quick. It is saying: transfer comple
 - **Fix:** Use the **primary context** for allocation and memory ops in `cuda_executor.c` (MEM_ALLOC, MEM_FREE, MEMCPY_*, MEMSET_*, MEM_GET_INFO) instead of `ensure_vm_context`.
 - **How it was applied earlier:** The assistant **copied** the updated `cuda_executor.c` to the host (e.g. via `deploy_cuda_executor_to_host.py` or chunked transfer over `connect_host`) and **ran `make` on the host** to rebuild the mediator, then restarted the mediator. That required both **copy** and **build** on the host.
 
-### Why that approach did not align with your direction
+### Historical note (permissions evolution)
 
-You specified that on the host you grant **only permission to read logs**, not to copy or build. So:
-
-- The **previous approach** (push code to host, rebuild mediator on host) is **not** allowed under your current direction.
-- The **aligned approach** is: the assistant **documents** what must be done on the host (e.g. “update `cuda_executor.c` with primary-context change, rebuild mediator, restart”) and **does not** perform copy or build on the host. The assistant can still **read** host mediator logs to verify behavior (e.g. cuMemAlloc SUCCESS for vm=9, or module-load rc=200).
+At one point the operator restricted the assistant to **host read-only**; some older work notes still describe host changes as **operator-only**. **Current** rules are in **`ASSISTANT_PERMISSIONS.md`** (2026-03-25 grant). When in doubt, follow that file—not dated “read-only host” sentences elsewhere in PHASE3.
 
 ### Going forward
 
-- For any **host-only** fix: document the change and the steps (transfer, make, restart); you apply them on the host.
-- For **VM-side** fixes (e.g. deploying a Hopper-built `libggml-cuda.so` to the VM): the assistant performs them via VM interaction.
-- The assistant uses host log output only to **diagnose and confirm** (e.g. that test-4 is in GPU mode and where the pipeline fails: module-load INVALID_IMAGE).
+- **Host:** implement or deploy per **`ASSISTANT_PERMISSIONS.md`** (non-destruction, documented paths).
+- **VM:** unchanged — assistant performs guest-side work and uses host logs for verification.
 
 ---
 
@@ -93,5 +91,5 @@ You specified that on the host you grant **only permission to read logs**, not t
 | **Ollama on test-4 in GPU mode?** | Yes. CUDA path is used; calls and data go guest shims → VGPU-STUB → mediator → H100. |
 | **Current blocker** | Host `cuModuleLoadFatBinary` returns INVALID_IMAGE: VM’s `libggml-cuda.so` has no sm_90 (Hopper) kernel image. |
 | **Fix (concept)** | Deploy a `libggml-cuda.so` built with `CMAKE_CUDA_ARCHITECTURES=90` to the VM (see BUILD_LIBGGML_CUDA_HOPPER.md). |
-| **Assistant role** | VM: full interaction. Host: read logs only; no copy, no build. |
+| **Assistant role** | VM: full. Host: per **`ASSISTANT_PERMISSIONS.md`** (dom0 edit/build/restart allowed under non-destruction; not “read-only only”). |
 | **Previous host-side fix** | Allocation fix was applied by copying/rebuilding on the host; that method is out of scope under your current permissions. |

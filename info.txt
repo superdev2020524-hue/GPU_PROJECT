@@ -15,3 +15,11 @@ IP: 10.25.33.11
 username: root
 password: Calvin@123
 """""""""""""""""""""""""""""
+iDACK IP: 192.168.20.20
+username: root
+password: calvin
+XCP-NG
+IP: 10.25.33.20
+username: root
+password: Calvin@123
+"""""""""""""""""""""""

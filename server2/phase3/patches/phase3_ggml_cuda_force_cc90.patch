@@ -1,0 +1,13 @@
+--- a/ml/backend/ggml/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ml/backend/ggml/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -5122,8 +5122,8 @@
+                 snprintf(pci_bus_id, sizeof(pci_bus_id), "%04x:%02x:%02x.0", prop.pciDomainID, prop.pciBusID, prop.pciDeviceID);
+                 dev_ctx->pci_bus_id = pci_bus_id;
+ 
+-                dev_ctx->major = prop.major;
+-                dev_ctx->minor = prop.minor;
++                dev_ctx->major = 9;  /* Phase3 vGPU: shim/toolkit cudaDeviceProp layout skew; H100 = sm_90 */
++                dev_ctx->minor = 0;
+                 if (driverVersion == 0) {
+                     CUDA_CHECK(cudaDriverGetVersion(&driverVersion));
+                 }

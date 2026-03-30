@@ -1,0 +1,97 @@
+================================================================================
+FGETS() PATH LOOKUP FIX - ROOT CAUSE ANALYSIS
+================================================================================
+
+PROBLEM IDENTIFIED
+------------------
+
+From the terminal logs (lines 293-340), the issue is clear:
+
+1. cuda_transport.c opens three files sequentially:
+   - /sys/bus/pci/devices/0000:00:05.0/vendor
+   - /sys/bus/pci/devices/0000:00:05.0/device
+   - /sys/bus/pci/devices/0000:00:05.0/class
+
+2. Each file is opened, read with fgets(), then closed
+
+3. Our fgets() interception is finding the WRONG path:
+   - Line 297: fgets() for /vendor - CORRECT ✓
+   - Line 300: fgets() for /vendor - WRONG! Should be /device ✗
+   - Line 303: fgets() for /vendor - WRONG! Should be /class ✗
+
+4. Result: Device lookup fails because:
+   - vendor=0x10de ✓ (correct)
+   - device=0x10de ✗ (WRONG - should be 0x2331)
+   - class=0x10de ✗ (WRONG - should be 0x030200)
+
+ROOT CAUSE
+----------
+
+The path lookup in fgets() searches the tracked_files array from the beginning.
+When cuda_transport.c opens files quickly and reuses the same variable (fp),
+the FILE* pointer lookup might find the wrong entry, or the same FILE* might
+be reused by the system.
+
+The original code:
+  - Always added new entries (never updated existing)
+  - Searched from beginning (found first match, not most recent)
+  - No handling for FILE* pointer reuse
+
+THE FIX
+-------
+
+1. **Search from end (most recent first)**:
+   - Changed lookup to search from num_tracked_files-1 down to 0
+   - This finds the most recent match if FILE* is reused
+
+2. **Update existing entries**:
+   - track_file() now checks if FILE* already exists
+   - If found, updates the path instead of adding duplicate
+   - Prevents stale entries
+
+3. **Better debugging**:
+   - Added FILE* pointer logging in fopen() and fgets()
+   - Added path verification after tracking
+
+CODE CHANGES
+------------
+
+File: libvgpu_cuda.c
+
+1. track_file() function:
+   - Now checks if FILE* already exists in array
+   - Updates existing entry instead of always adding new
+   - Prevents duplicate/stale entries
+
+2. fgets() and fread() path lookup:
+   - Changed search direction: for (i = num_tracked_files - 1; i >= 0; i--)
+   - Finds most recent match first
+   - Handles FILE* pointer reuse correctly
+
+3. fopen() tracking:
+   - Added FILE* pointer logging
+   - Added path verification after tracking
+
+EXPECTED RESULT
+---------------
+
+After the fix:
+  - fgets() for /vendor should return vendor=0x10de ✓
+  - fgets() for /device should return device=0x2331 ✓
+  - fgets() for /class should return class=0x030200 ✓
+  - Device discovery should succeed: "Found VGPU-STUB at 0000:00:05.0"
+  - cuInit() should succeed
+  - Ollama should detect GPU and use GPU mode
+
+DEPLOYMENT
+----------
+
+1. Copy fixed libvgpu_cuda.c to VM
+2. Rebuild shim library
+3. Restart Ollama
+4. Verify device discovery succeeds
+5. Check GPU mode in Ollama logs
+
+The fix is in the code and ready to deploy.
+
+================================================================================

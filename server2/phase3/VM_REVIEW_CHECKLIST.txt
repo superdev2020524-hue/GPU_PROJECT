@@ -1,0 +1,132 @@
+================================================================================
+VM REVIEW CHECKLIST - test-4@10.25.33.12
+================================================================================
+
+Connection: ✓ Verified (hostname: test4-HVM-domU, user: test-4)
+Password: Calvin@123
+
+================================================================================
+COMPREHENSIVE REVIEW CHECKLIST
+================================================================================
+
+Run these commands on the VM to complete the review:
+
+1. SYSTEM INFORMATION
+   ✓ Hostname: test4-HVM-domU
+   ✓ User: test-4
+   [ ] Check: uname -a
+   [ ] Check: df -h / (disk space)
+   [ ] Check: free -h (memory)
+
+2. OLLAMA SERVICE STATUS
+   [ ] Check: systemctl is-active ollama
+   [ ] Check: systemctl status ollama --no-pager -l | head -20
+   [ ] Expected: Service should be "active"
+
+3. OLLAMA PROCESS
+   [ ] Check: pgrep -f "ollama serve"
+   [ ] Check: ps aux | grep -E "[o]llama" | head -5
+   [ ] Expected: Process should be running
+
+4. SHIM LIBRARIES
+   [ ] Check: ls -lh /usr/lib64/libvgpu-cuda.so
+   [ ] Check: ls -lh /usr/lib64/libvgpu-nvml.so
+   [ ] Check: file /usr/lib64/libvgpu-cuda.so
+   [ ] Expected: Libraries should exist and be valid shared objects
+
+5. LD.SO.PRELOAD CONFIGURATION
+   [ ] Check: cat /etc/ld.so.preload
+   [ ] Expected: Should contain "/usr/lib64/libvgpu-cuda.so"
+
+6. SHIM LOADING IN PROCESS
+   [ ] Check: OLLAMA_PID=$(pgrep -f "ollama serve" | head -1)
+   [ ] Check: sudo cat /proc/$OLLAMA_PID/maps | grep -E "vgpu|cuda" | head -10
+   [ ] Expected: Should show libvgpu-cuda.so loaded
+
+7. SHIM LOG FILES
+   [ ] Check: OLLAMA_PID=$(pgrep -f "ollama serve" | head -1)
+   [ ] Check: cat /tmp/vgpu-shim-cuda-${OLLAMA_PID}.log
+   [ ] Expected: Should show "Pre-initialization succeeded" if fix is deployed
+
+8. SOURCE FILES
+   [ ] Check: ls -la ~/phase3/guest-shim/
+   [ ] Check: grep -n "Pre-initializing CUDA at load time" ~/phase3/guest-shim/libvgpu_cuda.c
+   [ ] Check: grep -n "__sync_bool_compare_and_swap" ~/phase3/guest-shim/libvgpu_cuda.c
+   [ ] Expected: Source files should exist with fixes
+
+9. OLLAMA LOGS - LIBRARY MODE
+   [ ] Check: sudo journalctl -u ollama -n 500 --no-pager | grep -E "library=" | tail -10
+   [ ] Expected: Should show "library=cuda" (not "library=cpu")
+
+10. RECENT ERRORS
+    [ ] Check: sudo journalctl -u ollama -n 200 --no-pager | grep -iE "error|fail|panic" | tail -10
+    [ ] Expected: Should be minimal or none
+
+11. DEPLOYMENT SCRIPTS
+    [ ] Check: ls -lh ~/safe_deploy.sh ~/phase3/guest-shim/safe_deploy.sh
+    [ ] Expected: safe_deploy.sh should be available
+
+12. AVAILABLE MODELS
+    [ ] Check: ollama list
+    [ ] Expected: Should show available models
+
+================================================================================
+QUICK STATUS COMMAND
+================================================================================
+
+Run this single command to get a quick overview:
+
+bash -c "
+echo '=== SYSTEM ===' && uname -a && echo &&
+echo '=== OLLAMA STATUS ===' && systemctl is-active ollama && echo &&
+echo '=== OLLAMA PID ===' && pgrep -f 'ollama serve' | head -1 && echo &&
+echo '=== SHIM LIB ===' && ls -lh /usr/lib64/libvgpu-cuda.so 2>&1 && echo &&
+echo '=== PRELOAD ===' && cat /etc/ld.so.preload 2>&1 && echo &&
+echo '=== LIBRARY MODE ===' && sudo journalctl -u ollama -n 300 --no-pager 2>&1 | grep 'library=' | tail -3
+"
+
+================================================================================
+EXPECTED STATE
+================================================================================
+
+If everything is working correctly, you should see:
+
+✓ Ollama service: active
+✓ Ollama process: Running (PID shown)
+✓ Shim library: Exists at /usr/lib64/libvgpu-cuda.so
+✓ Preload: Contains /usr/lib64/libvgpu-cuda.so
+✓ Shim loaded: libvgpu-cuda.so appears in process maps
+✓ Library mode: library=cuda (not library=cpu)
+✓ Source files: Exist with cuInit and thread-safe fixes
+
+================================================================================
+IF ISSUES FOUND
+================================================================================
+
+1. If shim library missing:
+   → Deploy source files and rebuild using safe_deploy.sh
+
+2. If shim not loaded:
+   → Check /etc/ld.so.preload
+   → Restart Ollama: sudo systemctl restart ollama
+
+3. If library mode is CPU:
+   → Check shim logs for errors
+   → Verify source has fixes
+   → Rebuild and redeploy
+
+4. If service not running:
+   → Check logs: sudo journalctl -u ollama -n 100
+   → Start service: sudo systemctl start ollama
+
+================================================================================
+NEXT STEPS AFTER REVIEW
+================================================================================
+
+Based on review results:
+
+- If everything looks good: Test inference and verify GPU mode
+- If fixes needed: Use safe_deploy.sh to deploy thread-safe fixes
+- If issues found: Follow troubleshooting steps above
+
+================================================================================

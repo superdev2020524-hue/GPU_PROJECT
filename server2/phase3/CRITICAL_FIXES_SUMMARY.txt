@@ -1,0 +1,78 @@
+CRITICAL FIXES APPLIED - Complete Safety Overhaul
+==================================================
+
+All three critical fixes have been implemented to prevent VM crashes:
+
+## Fix 1: Cache Check Logic (COMPLETED)
+**Problem**: The cache check `if (g_process_type_cached >= 0)` was unsafe.
+**Solution**: Changed to `if (g_process_type_cached == 1)` to only check for positive cache.
+
+**Changes**:
+- Line 1195-1197: Only check for cached positive result (ollama found)
+- Never cache negative results (system processes) - always recheck
+- Cache comment updated to reflect we never cache 0
+
+## Fix 2: Re-entrancy Protection (COMPLETED)
+**Problem**: No protection against recursive calls to `is_application_process()`.
+**Solution**: Added `g_checking_process_type` flag to prevent re-entrancy.
+
+**Changes**:
+- Line 160-161: Added re-entrancy protection flag
+- Line 1188-1193: Check flag at function start, return 0 if already checking
+- Line 1198: Set flag when starting check
+- All early returns: Clear flag before returning
+- Line 1342: Clear flag before final return
+
+**Safety**: If function is called recursively, it immediately returns 0 (don't intercept).
+
+## Fix 3: Early Returns with Flag Clearing (COMPLETED)
+**Problem**: Early returns didn't clear re-entrancy flag.
+**Solution**: All early returns now clear the flag before returning.
+
+**Changes**:
+- All system process checks (lspci, cat, bash, sh, sshd, systemd, init) clear flag
+- All error paths clear flag before returning
+- Final return clears flag
+
+## Key Safety Features
+
+1. **Whitelist Approach**: Only intercept ollama processes
+2. **Conservative Caching**: Only cache positive results (ollama found)
+3. **Re-entrancy Protection**: Prevents infinite recursion
+4. **Safe Defaults**: Always default to "don't intercept" on any uncertainty
+5. **Direct Syscalls**: System processes use direct syscalls, bypassing libc
+6. **No String Functions**: All checks use direct character comparisons
+
+## Testing Checklist
+
+Before deployment:
+- [x] Code compiles without errors
+- [x] No linting errors
+- [x] All three fixes implemented
+- [x] Re-entrancy flag cleared on all paths
+
+After deployment:
+- [ ] Test `cat /etc/ld.so.preload` (should work)
+- [ ] Test `lspci` (should work)
+- [ ] Test `bash` commands (should work)
+- [ ] Test SSH (should work)
+- [ ] Verify VM does not crash
+- [ ] Verify only ollama processes are intercepted
+
+## Expected Behavior
+
+- System processes (cat, lspci, bash, sh, sshd, systemd, init): NOT intercepted
+- Ollama processes: Intercepted
+- No segmentation faults
+- No infinite recursion
+- VM remains stable
+
+## Files Modified
+
+- `phase3/guest-shim/libvgpu_cuda.c`:
+  - Lines 153-161: Added re-entrancy flag and updated cache comment
+  - Lines 1186-1342: Complete rewrite of `is_application_process()` with all safety features
+
+## Deployment
+
+The code is now ready for deployment. All critical safety mechanisms are in place.

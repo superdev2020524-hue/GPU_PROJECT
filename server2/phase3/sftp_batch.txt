@@ -1,0 +1,8 @@
+cd phase3/guest-shim
+put guest-shim/libvgpu_cuda.c libvgpu_cuda.c
+put guest-shim/cuda_transport.c cuda_transport.c
+put guest-shim/cuda_transport.h cuda_transport.h
+put guest-shim/gpu_properties.h gpu_properties.h
+cd ../include
+put include/cuda_protocol.h cuda_protocol.h
+quit

@@ -1,0 +1,172 @@
+================================================================================
+MANUAL VERIFICATION STEPS - Run these on the VM
+================================================================================
+
+All force-load injection methods have been deployed. Follow these steps to verify:
+
+================================================================================
+STEP 1: Verify Installation
+================================================================================
+
+SSH to VM: ssh test-3@10.25.33.11 (password: Calvin@123)
+
+Run these commands:
+
+1. Check /etc/ld.so.preload exists and has correct content:
+   sudo cat /etc/ld.so.preload
+   
+   Expected output:
+   /usr/lib64/libvgpu-cuda.so
+   /usr/lib64/libvgpu-nvml.so
+
+2. Check installed files:
+   ls -la /usr/lib64/libldaudit_cuda.so
+   ls -la /usr/local/bin/force_load_shim
+   
+   Both should exist and be executable.
+
+3. Check shim libraries:
+   ls -la /usr/lib64/libvgpu-cuda.so /usr/lib64/libvgpu-nvml.so
+   
+   Both should exist.
+
+================================================================================
+STEP 2: Test Shim Loading
+================================================================================
+
+Run this test program:
+
+cd ~/phase3/guest-shim
+gcc -o /tmp/test_shim_load test_shim_load.c -ldl
+/tmp/test_shim_load
+
+Expected output:
+  SUCCESS: libcuda.so.1 loaded
+  SUCCESS: cuInit symbol found
+  cuInit returned: 0 (0 = success)
+  FOUND: /usr/lib64/libvgpu-cuda.so (in preload check)
+
+If you see "FAILED" messages, the shims are not loading correctly.
+
+================================================================================
+STEP 3: Restart Ollama and Check Logs
+================================================================================
+
+1. Restart Ollama service:
+   sudo systemctl restart ollama
+
+2. Wait 3-5 seconds, then check logs:
+   sudo journalctl -u ollama -n 100 --no-pager | grep -iE "libvgpu|LOADED|cuInit|cuda|gpu"
+
+Expected to see:
+  [libvgpu-cuda] LOADED (pid=...)
+  [libvgpu-cuda] cuInit() device found at 0000:00:05.0
+  [libvgpu-cuda] GPU defaults applied (H100 80GB CC=9.0 VRAM=81920 MB)
+
+If you DON'T see "[libvgpu-cuda] LOADED", the shims are not loading into Ollama.
+
+================================================================================
+STEP 4: Test Ollama GPU Detection
+================================================================================
+
+Run:
+  ollama info
+
+Look for these lines:
+  library: cuda_v12    ← This means GPU is detected!
+  pci_id: 0000:00:05.0
+
+If you see:
+  library: cpu         ← This means GPU is NOT detected (shims not loading)
+
+================================================================================
+STEP 5: Check Shim Log Files
+================================================================================
+
+Check for shim log files:
+  ls -la /tmp/vgpu-shim-*.log
+
+If Ollama is running, you should see log files like:
+  /tmp/vgpu-shim-cuda-<pid>.log
+
+View the latest log:
+  sudo cat /tmp/vgpu-shim-cuda-*.log | tail -20
+
+Should show:
+  [libvgpu-cuda] LOADED (pid=...)
+  [libvgpu-cuda] cuInit() device found at ...
+
+================================================================================
+STEP 6: Test Ollama Inference
+================================================================================
+
+Run a simple inference:
+  ollama run llama3.2:1b "Hello from GPU"
+
+This should:
+  1. Complete successfully
+  2. Use the GPU (check host mediator logs)
+  3. Not fall back to CPU
+
+================================================================================
+STEP 7: Verify Host Mediator Receives CUDA Calls
+================================================================================
+
+On the HOST (10.25.33.10), check mediator logs:
+
+  tail -f /var/log/mediator_phase3.log
+
+When Ollama runs, you should see:
+  [cuda-executor] CUDA_CALL_INIT vm=3
+  [cuda-executor] CUDA_CALL_* (various calls)
+  Total processed: N (incrementing)
+
+If "Total processed" stays at 0, CUDA calls are not reaching the mediator.
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+If shims are NOT loading:
+
+1. Verify /etc/ld.so.preload:
+   sudo cat /etc/ld.so.preload
+   # Should list both shim libraries
+
+2. Test manual loading:
+   LD_PRELOAD=/usr/lib64/libvgpu-cuda.so /usr/local/bin/ollama info
+   # Should show shim loading messages
+
+3. Check for conflicting libraries:
+   ls -la /usr/lib64/libvgpu-*.so
+   # Should only see libvgpu-cuda.so and libvgpu-nvml.so
+   # If you see libvgpu-exec.so or libvgpu-syscall.so, they might interfere
+
+4. Check systemd service:
+   sudo systemctl cat ollama
+   # Verify ExecStart or Environment settings
+
+5. Try LD_AUDIT directly:
+   LD_AUDIT=/usr/lib64/libldaudit_cuda.so /usr/local/bin/ollama info
+   # Should show "[ld-audit] Redirecting dlopen" messages
+
+6. Try force_load_shim:
+   /usr/local/bin/force_load_shim /usr/local/bin/ollama info
+   # Should show "[force-load] Pre-loading shim libraries"
+
+================================================================================
+EXPECTED FINAL STATE
+================================================================================
+
+✓ /etc/ld.so.preload contains shim paths
+✓ Test program successfully loads shims
+✓ Ollama logs show "[libvgpu-cuda] LOADED"
+✓ ollama info shows "library: cuda_v12"
+✓ Ollama inference works
+✓ Host mediator logs show CUDA calls
+
+If ALL of these are true, the system is working correctly!
+
+================================================================================
+END OF VERIFICATION STEPS
+================================================================================

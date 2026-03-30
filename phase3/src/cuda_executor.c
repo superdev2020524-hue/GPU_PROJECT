@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -41,6 +42,59 @@
 #define MAX_STREAM_ENTRIES  128
 #define MAX_EVENT_ENTRIES   256
 #define MAX_CUBLAS_ENTRIES  128
+#define MAX_PENDING_ASYNC_HTOD 8192
+
+#ifndef CU_STREAM_LEGACY
+#define CU_STREAM_LEGACY ((CUstream)0x1)
+#endif
+
+#ifndef CU_STREAM_PER_THREAD
+#define CU_STREAM_PER_THREAD ((CUstream)0x2)
+#endif
+
+static uint16_t cuda_executor_float_to_half_bits(float value)
+{
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+
+    uint32_t sign = (bits >> 16) & 0x8000u;
+    int32_t exp = (int32_t)((bits >> 23) & 0xffu) - 127 + 15;
+    uint32_t mant = bits & 0x7fffffu;
+
+    if (exp <= 0) {
+        if (exp < -10) {
+            return (uint16_t)sign;
+        }
+        mant = (mant | 0x800000u) >> (uint32_t)(1 - exp);
+        if (mant & 0x00001000u) {
+            mant += 0x00002000u;
+        }
+        return (uint16_t)(sign | (mant >> 13));
+    }
+
+    if (exp >= 31) {
+        return (uint16_t)(sign | 0x7c00u);
+    }
+
+    if (mant & 0x00001000u) {
+        mant += 0x00002000u;
+        if (mant & 0x00800000u) {
+            mant = 0;
+            exp++;
+            if (exp >= 31) {
+                return (uint16_t)(sign | 0x7c00u);
+            }
+        }
+    }
+
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
+}
+
+static int cuda_executor_is_fp16_compute(int computeType)
+{
+    return computeType == CUBLAS_COMPUTE_16F ||
+           computeType == CUBLAS_COMPUTE_16F_PEDANTIC;
+}
 
 /* ================================================================
  * Per-VM mapping tables
@@ -85,10 +139,17 @@ typedef struct {
 } cublas_entry_t;
 
 typedef struct {
+    CUstream host_stream;
+    void    *host_buf;
+    size_t   size;
+} pending_async_htod_t;
+
+typedef struct {
     uint32_t    vm_id;
     int         active;
     CUcontext   ctx;
     int         ctx_valid;
+    int         ctx_is_primary;
 
     /* Memory mapping */
     mem_entry_t    mem[MAX_MEM_ENTRIES];
@@ -129,6 +190,11 @@ typedef struct {
     /* HtoD progress: log every PROGRESS_LOG_INTERVAL bytes during model load */
     uint64_t       htod_total_bytes;
     uint64_t       htod_last_log_bytes;
+
+    /* Host-owned staging buffers for in-flight cuMemcpyHtoDAsync calls.
+     * These buffers must remain alive until the associated stream/context sync. */
+    pending_async_htod_t pending_async_htod[MAX_PENDING_ASYNC_HTOD];
+    int                  pending_async_htod_count;
 } vm_state_t;
 
 #define HTOD_PROGRESS_LOG_INTERVAL  (10 * 1024 * 1024)  /* 10 MB */
@@ -217,6 +283,22 @@ static CUdeviceptr vm_find_mem(vm_state_t *vm, uint64_t guest)
         }
     }
     return 0;
+}
+
+static mem_entry_t *vm_find_mem_entry(vm_state_t *vm, uint64_t guest)
+{
+    for (int i = 0; i < vm->mem_count; i++) {
+        if (vm->mem[i].guest_ptr == guest) {
+            return &vm->mem[i];
+        }
+        if (guest > vm->mem[i].guest_ptr) {
+            uint64_t off = guest - vm->mem[i].guest_ptr;
+            if (off < vm->mem[i].size) {
+                return &vm->mem[i];
+            }
+        }
+    }
+    return NULL;
 }
 
 static void vm_remove_mem(vm_state_t *vm, uint64_t guest)
@@ -346,6 +428,8 @@ static void vm_remove_stream(vm_state_t *vm, uint64_t guest)
 static uint64_t vm_find_guest_stream(vm_state_t *vm, CUstream host)
 {
     if (host == NULL) return 0;
+    if (host == CU_STREAM_LEGACY) return 1;
+    if (host == CU_STREAM_PER_THREAD) return 2;
     for (int i = 0; i < vm->stream_count; i++) {
         if (vm->streams[i].host_stream == host)
             return vm->streams[i].guest_handle;
@@ -353,14 +437,52 @@ static uint64_t vm_find_guest_stream(vm_state_t *vm, CUstream host)
     return 0;
 }
 
-/* Event mapping helpers */
-static void vm_add_event(vm_state_t *vm, uint64_t guest, CUevent host)
+static CUstream vm_resolve_stream_handle(vm_state_t *vm, uint64_t guest_handle)
 {
-    if (vm->event_count < MAX_EVENT_ENTRIES) {
-        vm->events[vm->event_count].guest_handle = guest;
-        vm->events[vm->event_count].host_event   = host;
-        vm->event_count++;
+    if (guest_handle == 0) return NULL;
+    if (guest_handle == 1) return CU_STREAM_LEGACY;
+    if (guest_handle == 2) return CU_STREAM_PER_THREAD;
+    return vm_find_stream(vm, guest_handle);
+}
+
+static int vm_add_pending_async_htod(vm_state_t *vm, CUstream stream,
+                                     void *host_buf, size_t size)
+{
+    if (vm->pending_async_htod_count >= MAX_PENDING_ASYNC_HTOD) {
+        return 0;
     }
+
+    vm->pending_async_htod[vm->pending_async_htod_count].host_stream = stream;
+    vm->pending_async_htod[vm->pending_async_htod_count].host_buf = host_buf;
+    vm->pending_async_htod[vm->pending_async_htod_count].size = size;
+    vm->pending_async_htod_count++;
+    return 1;
+}
+
+static void vm_drain_pending_async_htod(vm_state_t *vm, CUstream stream, int drain_all)
+{
+    for (int i = 0; i < vm->pending_async_htod_count; ) {
+        pending_async_htod_t *entry = &vm->pending_async_htod[i];
+        if (drain_all || entry->host_stream == stream) {
+            free(entry->host_buf);
+            vm->pending_async_htod[i] =
+                vm->pending_async_htod[vm->pending_async_htod_count - 1];
+            vm->pending_async_htod_count--;
+            continue;
+        }
+        i++;
+    }
+}
+
+/* Event mapping helpers — returns 0 if table full (caller must destroy host event) */
+static int vm_add_event(vm_state_t *vm, uint64_t guest, CUevent host)
+{
+    if (vm->event_count >= MAX_EVENT_ENTRIES)
+        return 0;
+    vm->events[vm->event_count].guest_handle = guest;
+    vm->events[vm->event_count].host_event   = host;
+    vm->event_count++;
+    return 1;
 }
 
 static CUevent vm_find_event(vm_state_t *vm, uint64_t guest)
@@ -497,6 +619,20 @@ static CUresult load_host_module(uint32_t vm_id, uint32_t call_id,
             }
             memcpy(fatbin_copy, data, data_len);
 
+            /* Debug: persist the 401312-byte cuBLASLt fatbin for E1 tracing (cuobjdump).
+             * See FAIL401312_DUMP_WHY_AND_HOW.md, host_fatbin_isolation_directive.sh */
+            if (data_len == 401312U) {
+                FILE *df = fopen("/tmp/fail401312.bin", "wb");
+                if (df) {
+                    fwrite(fatbin_copy, 1, data_len, df);
+                    fclose(df);
+                    fprintf(stderr,
+                            "[cuda-executor] dumped /tmp/fail401312.bin (%u bytes)\n",
+                            data_len);
+                    fflush(stderr);
+                }
+            }
+
             /* Try raw fat binary first (0xBA55ED50); some driver versions accept it.
              * If that fails, fall back to wrapper (0x466243b1) shape. */
             rc = cuModuleLoadFatBinary(mod_out, fatbin_copy);
@@ -557,11 +693,64 @@ static CUresult ensure_vm_context(cuda_executor_t *exec, vm_state_t *vm)
         return CUDA_SUCCESS;
     }
 
-    CUresult rc = cuCtxCreate(&vm->ctx, CU_CTX_SCHED_AUTO, exec->device);
-    if (rc == CUDA_SUCCESS) {
-        vm->ctx_valid = 1;
+    /* Keep all replayed objects in the same CUDA context.
+     * Alloc/HtoD/module/CUBLAS paths already use the device primary context;
+     * late stream/event/sync paths must use that same context too. */
+    vm->ctx = exec->primary_ctx;
+    vm->ctx_valid = 1;
+    vm->ctx_is_primary = 1;
+    return cuCtxSetCurrent(exec->primary_ctx);
+}
+
+static void vm_discard_runtime_state(vm_state_t *vm)
+{
+    vm->ctx = NULL;
+    vm->ctx_valid = 0;
+    vm->ctx_is_primary = 0;
+    vm->mem_count = 0;
+    vm->module_count = 0;
+    vm->library_count = 0;
+    vm->func_count = 0;
+    vm->stream_count = 0;
+    vm->event_count = 0;
+    vm->cublas_count = 0;
+    vm->pending_async_htod_count = 0;
+    vm->htod_total_bytes = 0;
+    vm->htod_last_log_bytes = 0;
+    free(vm->mod_chunk_buf);
+    vm->mod_chunk_buf = NULL;
+    vm->mod_chunk_alloc = 0;
+    vm->mod_chunk_used = 0;
+}
+
+static void cuda_executor_recover_primary_context(cuda_executor_t *exec, uint32_t vm_id, const char *reason)
+{
+    if (!exec || !exec->cuda_initialized) {
+        return;
     }
-    return rc;
+
+    fprintf(stderr,
+            "[cuda-executor] Recovering primary context after vm_id=%u fault: %s\n",
+            vm_id, reason ? reason : "(unknown)");
+
+    (void)cuCtxSetCurrent(NULL);
+    (void)cuDevicePrimaryCtxRelease(exec->device);
+    (void)cuDevicePrimaryCtxReset(exec->device);
+
+    exec->primary_ctx = NULL;
+    if (cuDevicePrimaryCtxRetain(&exec->primary_ctx, exec->device) != CUDA_SUCCESS) {
+        fprintf(stderr, "[cuda-executor] ERROR: failed to re-retain primary context after recovery\n");
+        return;
+    }
+
+    for (int i = 0; i < MAX_VMS; i++) {
+        if (exec->vms[i].active) {
+            vm_discard_runtime_state(&exec->vms[i]);
+        }
+    }
+
+    (void)cudaSetDevice(0);
+    (void)cuCtxSetCurrent(exec->primary_ctx);
 }
 
 /* ================================================================
@@ -932,6 +1121,9 @@ int cuda_executor_call(cuda_executor_t *exec,
         if (vm->ctx_valid) {
             cuCtxSetCurrent(vm->ctx);
             rc = cuCtxSynchronize();
+            if (rc == CUDA_SUCCESS) {
+                vm_drain_pending_async_htod(vm, NULL, 1);
+            }
         }
         break;
 
@@ -948,6 +1140,7 @@ int cuda_executor_call(cuda_executor_t *exec,
     /* ---- Memory management ------------------------------------- */
     case CUDA_CALL_MEM_ALLOC: {
         uint64_t bytesize = CUDA_UNPACK_U64(call->args, 0);
+        int retried_after_recover = 0;
 
         fprintf(stderr, "[cuda-executor] cuMemAlloc: allocating %llu bytes on physical GPU (vm=%u)\n",
                 (unsigned long long)bytesize, call->vm_id);
@@ -957,16 +1150,39 @@ int cuda_executor_call(cuda_executor_t *exec,
 
         CUdeviceptr dptr = 0;
         rc = cuMemAlloc(&dptr, (size_t)bytesize);
+        if (rc == CUDA_ERROR_ILLEGAL_ADDRESS) {
+            fprintf(stderr,
+                    "[cuda-executor] cuMemAlloc hit CUDA_ERROR_ILLEGAL_ADDRESS before allocation completed; "
+                    "recovering context and retrying once (vm=%u size=%llu)\n",
+                    call->vm_id, (unsigned long long)bytesize);
+            cuda_executor_recover_primary_context(exec, vm->vm_id,
+                                                  "cuMemAlloc hit CUDA_ERROR_ILLEGAL_ADDRESS");
+            cuCtxSetCurrent(exec->primary_ctx);
+            dptr = 0;
+            rc = cuMemAlloc(&dptr, (size_t)bytesize);
+            retried_after_recover = 1;
+        }
         if (rc == CUDA_SUCCESS) {
             /* Generate a guest-visible handle (use the host pointer value) */
             uint64_t guest_ptr = (uint64_t)dptr;
             vm_add_mem(vm, guest_ptr, dptr, (size_t)bytesize);
             result->num_results = 1;
             result->results[0] = guest_ptr;
-            fprintf(stderr, "[cuda-executor] cuMemAlloc SUCCESS: allocated 0x%llx on physical GPU (vm=%u)\n",
-                    (unsigned long long)dptr, call->vm_id);
+            fprintf(stderr, "[cuda-executor] cuMemAlloc SUCCESS: allocated 0x%llx on physical GPU (vm=%u%s)\n",
+                    (unsigned long long)dptr, call->vm_id,
+                    retried_after_recover ? ", after context recovery" : "");
         } else {
-            fprintf(stderr, "[cuda-executor] cuMemAlloc FAILED: rc=%d (vm=%u)\n", rc, call->vm_id);
+            const char *ename = NULL;
+            const char *estr = NULL;
+            (void)cuGetErrorName(rc, &ename);
+            (void)cuGetErrorString(rc, &estr);
+            fprintf(stderr,
+                    "[cuda-executor] cuMemAlloc FAILED: rc=%d (%s) %s size=%llu bytes (vm=%u)\n",
+                    (int)rc,
+                    ename ? ename : "?",
+                    estr ? estr : "?",
+                    (unsigned long long)bytesize,
+                    call->vm_id);
         }
         break;
     }
@@ -976,8 +1192,42 @@ int cuda_executor_call(cuda_executor_t *exec,
         CUdeviceptr host_ptr = vm_find_mem(vm, guest_ptr);
         if (host_ptr) {
             cuCtxSetCurrent(exec->primary_ctx);
+            /* Ensure async work (e.g. cublas on default stream) completes before free */
+            {
+                CUresult sync_rc = cuCtxSynchronize();
+                if (sync_rc != CUDA_SUCCESS) {
+                    const char *sn = NULL;
+                    const char *ss = NULL;
+                    (void)cuGetErrorName(sync_rc, &sn);
+                    (void)cuGetErrorString(sync_rc, &ss);
+                    fprintf(stderr,
+                            "[cuda-executor] cuMemFree: cuCtxSynchronize before free: rc=%d (%s) %s (vm=%u)\n",
+                            (int)sync_rc, sn ? sn : "?", ss ? ss : "?", call->vm_id);
+                }
+            }
             rc = cuMemFree(host_ptr);
-            vm_remove_mem(vm, guest_ptr);
+            if (rc != CUDA_SUCCESS) {
+                const char *ename = NULL;
+                const char *estr = NULL;
+                (void)cuGetErrorName(rc, &ename);
+                (void)cuGetErrorString(rc, &estr);
+                fprintf(stderr,
+                        "[cuda-executor] cuMemFree FAILED: rc=%d (%s) %s guest=0x%llx host=0x%llx (vm=%u)\n",
+                        (int)rc,
+                        ename ? ename : "?",
+                        estr ? estr : "?",
+                        (unsigned long long)guest_ptr,
+                        (unsigned long long)host_ptr,
+                        call->vm_id);
+            }
+            if (rc == CUDA_SUCCESS)
+                vm_remove_mem(vm, guest_ptr);
+        } else {
+            fprintf(stderr,
+                    "[cuda-executor] cuMemFree: no mapping for guest=0x%llx (vm=%u) — treating as success\n",
+                    (unsigned long long)guest_ptr, call->vm_id);
+            /* Guest may free handles we did not allocate via this VM table */
+            rc = CUDA_SUCCESS;
         }
         break;
     }
@@ -1016,6 +1266,83 @@ int cuda_executor_call(cuda_executor_t *exec,
             } else {
                 fprintf(stderr, "[cuda-executor] cuMemcpyHtoD FAILED: rc=%d dst=0x%llx size=%zu (vm=%u)\n",
                         rc, (unsigned long long)host_dst, copy_len, call->vm_id);
+            }
+        }
+        break;
+    }
+
+    case CUDA_CALL_MEMCPY_HTOD_ASYNC: {
+        uint64_t dst = CUDA_UNPACK_U64(call->args, 0);
+        uint64_t byte_count = CUDA_UNPACK_U64(call->args, 2);
+        uint64_t stream_handle = CUDA_UNPACK_U64(call->args, 4);
+
+        CUdeviceptr host_dst = vm_find_mem(vm, dst);
+        if (!host_dst) {
+            host_dst = (CUdeviceptr)dst;
+        }
+
+        /* Some guest paths surface raw stream-like handles without a prior
+         * STREAM_CREATE RPC. Fall back to the default stream so weight copies
+         * continue rather than failing the whole load on INVALID_HANDLE. */
+        CUstream stream = vm_resolve_stream_handle(vm, stream_handle);
+        if (stream_handle != 0 && !stream) {
+            fprintf(stderr,
+                    "[cuda-executor] cuMemcpyHtoDAsync unresolved stream handle guest=0x%llx (vm=%u) -> fallback default stream\n",
+                    (unsigned long long)stream_handle, call->vm_id);
+            stream = NULL;
+        }
+
+        cuCtxSetCurrent(exec->primary_ctx);
+
+        if (data && data_len > 0) {
+            size_t copy_len = (size_t)byte_count;
+            if (copy_len > data_len) copy_len = data_len;
+
+            void *staging = malloc(copy_len);
+            if (!staging) {
+                rc = CUDA_ERROR_OUT_OF_MEMORY;
+                break;
+            }
+
+            memcpy(staging, data, copy_len);
+            int used_sync_fallback = 0;
+            rc = cuMemcpyHtoDAsync(host_dst, staging, copy_len, stream);
+            if (rc != CUDA_SUCCESS) {
+                fprintf(stderr,
+                        "[cuda-executor] cuMemcpyHtoDAsync FAILED: rc=%d dst=0x%llx size=%zu stream_guest=0x%llx (vm=%u) -> fallback sync copy\n",
+                        (int)rc, (unsigned long long)host_dst, copy_len,
+                        (unsigned long long)stream_handle, call->vm_id);
+                rc = cuMemcpyHtoD(host_dst, staging, copy_len);
+                if (rc == CUDA_SUCCESS) {
+                    used_sync_fallback = 1;
+                    free(staging);
+                }
+            }
+            if (rc == CUDA_SUCCESS) {
+                if (!used_sync_fallback && !vm_add_pending_async_htod(vm, stream, staging, copy_len)) {
+                    /* Fall back to immediate completion if pending staging capacity is exhausted. */
+                    rc = cuStreamSynchronize(stream);
+                    free(staging);
+                    if (rc != CUDA_SUCCESS) {
+                        break;
+                    }
+                } else if (!used_sync_fallback && stream == NULL) {
+                    /* Default-stream async copies are ordered immediately here. */
+                    rc = cuCtxSynchronize();
+                    free(staging);
+                    if (rc != CUDA_SUCCESS) {
+                        break;
+                    }
+                }
+
+                vm->htod_total_bytes += (uint64_t)copy_len;
+                if (vm->htod_total_bytes - vm->htod_last_log_bytes >= HTOD_PROGRESS_LOG_INTERVAL) {
+                    fprintf(stderr, "[cuda-executor] HtoD progress: %llu MB total (vm=%u)\n",
+                            (unsigned long long)(vm->htod_total_bytes / (1024 * 1024)), call->vm_id);
+                    vm->htod_last_log_bytes = vm->htod_total_bytes;
+                }
+            } else {
+                free(staging);
             }
         }
         break;
@@ -1305,7 +1632,7 @@ int cuda_executor_call(cuda_executor_t *exec,
         }
 
         /* Resolve stream handle */
-        CUstream stream = vm_find_stream(vm, lp->stream_handle);
+        CUstream stream = vm_resolve_stream_handle(vm, lp->stream_handle);
 
         /* Parse kernel parameters */
         const uint8_t *payload_ptr = (const uint8_t *)data;
@@ -1390,31 +1717,42 @@ int cuda_executor_call(cuda_executor_t *exec,
 
     case CUDA_CALL_STREAM_DESTROY: {
         uint64_t guest_handle = CUDA_UNPACK_U64(call->args, 0);
-        CUstream stream = vm_find_stream(vm, guest_handle);
-        if (stream) {
-            rc = ensure_vm_context(exec, vm);
-            if (rc == CUDA_SUCCESS) {
-                rc = cuStreamDestroy(stream);
+        CUstream stream = vm_resolve_stream_handle(vm, guest_handle);
+        if (!stream) {
+            /* Must not return SUCCESS — guest would desync vs host (see WORK_NOTE_HOST_EVENT_STREAM_FIX.md) */
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
+        }
+        rc = ensure_vm_context(exec, vm);
+        if (rc == CUDA_SUCCESS) {
+            rc = cuStreamSynchronize(stream);
+        }
+        if (rc == CUDA_SUCCESS) {
+            vm_drain_pending_async_htod(vm, stream, 0);
+            rc = cuStreamDestroy(stream);
+            if (rc == CUDA_SUCCESS)
                 vm_remove_stream(vm, guest_handle);
-            }
         }
         break;
     }
 
     case CUDA_CALL_STREAM_SYNCHRONIZE: {
         uint64_t guest_handle = CUDA_UNPACK_U64(call->args, 0);
-        CUstream stream = vm_find_stream(vm, guest_handle);
+        CUstream stream = vm_resolve_stream_handle(vm, guest_handle);
 
         rc = ensure_vm_context(exec, vm);
         if (rc != CUDA_SUCCESS) break;
 
         rc = cuStreamSynchronize(stream);  /* NULL stream = default */
+        if (rc == CUDA_SUCCESS) {
+            vm_drain_pending_async_htod(vm, stream, 0);
+        }
         break;
     }
 
     case CUDA_CALL_STREAM_QUERY: {
         uint64_t guest_handle = CUDA_UNPACK_U64(call->args, 0);
-        CUstream stream = vm_find_stream(vm, guest_handle);
+        CUstream stream = vm_resolve_stream_handle(vm, guest_handle);
 
         rc = ensure_vm_context(exec, vm);
         if (rc != CUDA_SUCCESS) break;
@@ -1428,15 +1766,21 @@ int cuda_executor_call(cuda_executor_t *exec,
         uint64_t event_handle = CUDA_UNPACK_U64(call->args, 2);
         uint32_t flags = call->args[4];
 
-        CUstream stream = vm_find_stream(vm, stream_handle);
+        /* stream_handle 0 => NULL (default stream); non-zero must resolve */
+        CUstream stream = vm_resolve_stream_handle(vm, stream_handle);
         CUevent event = vm_find_event(vm, event_handle);
 
-        if (event) {
-            rc = ensure_vm_context(exec, vm);
-            if (rc == CUDA_SUCCESS) {
-                rc = cuStreamWaitEvent(stream, event, flags);
-            }
+        if (!event) {
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
         }
+        if (stream_handle != 0 && !stream) {
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
+        }
+        rc = ensure_vm_context(exec, vm);
+        if (rc == CUDA_SUCCESS)
+            rc = cuStreamWaitEvent(stream, event, flags);
         break;
     }
 
@@ -1452,9 +1796,13 @@ int cuda_executor_call(cuda_executor_t *exec,
         rc = cuEventCreate(&event, flags);
         if (rc == CUDA_SUCCESS) {
             uint64_t guest_handle = (uint64_t)(uintptr_t)event;
-            vm_add_event(vm, guest_handle, event);
-            result->num_results = 1;
-            result->results[0] = guest_handle;
+            if (!vm_add_event(vm, guest_handle, event)) {
+                (void)cuEventDestroy(event);
+                rc = CUDA_ERROR_OUT_OF_MEMORY;
+            } else {
+                result->num_results = 1;
+                result->results[0] = guest_handle;
+            }
         }
         break;
     }
@@ -1462,12 +1810,15 @@ int cuda_executor_call(cuda_executor_t *exec,
     case CUDA_CALL_EVENT_DESTROY: {
         uint64_t guest_handle = CUDA_UNPACK_U64(call->args, 0);
         CUevent event = vm_find_event(vm, guest_handle);
-        if (event) {
-            rc = ensure_vm_context(exec, vm);
-            if (rc == CUDA_SUCCESS) {
-                rc = cuEventDestroy(event);
+        if (!event) {
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
+        }
+        rc = ensure_vm_context(exec, vm);
+        if (rc == CUDA_SUCCESS) {
+            rc = cuEventDestroy(event);
+            if (rc == CUDA_SUCCESS)
                 vm_remove_event(vm, guest_handle);
-            }
         }
         break;
     }
@@ -1477,14 +1828,20 @@ int cuda_executor_call(cuda_executor_t *exec,
         uint64_t stream_handle = CUDA_UNPACK_U64(call->args, 2);
 
         CUevent event = vm_find_event(vm, event_handle);
-        CUstream stream = vm_find_stream(vm, stream_handle);
+        /* stream_handle 0 => NULL (default stream); non-zero must resolve */
+        CUstream stream = vm_resolve_stream_handle(vm, stream_handle);
 
-        if (event) {
-            rc = ensure_vm_context(exec, vm);
-            if (rc == CUDA_SUCCESS) {
-                rc = cuEventRecord(event, stream);
-            }
+        if (!event) {
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
         }
+        if (stream_handle != 0 && !stream) {
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
+        }
+        rc = ensure_vm_context(exec, vm);
+        if (rc == CUDA_SUCCESS)
+            rc = cuEventRecord(event, stream);
         break;
     }
 
@@ -1492,12 +1849,13 @@ int cuda_executor_call(cuda_executor_t *exec,
         uint64_t guest_handle = CUDA_UNPACK_U64(call->args, 0);
         CUevent event = vm_find_event(vm, guest_handle);
 
-        if (event) {
-            rc = ensure_vm_context(exec, vm);
-            if (rc == CUDA_SUCCESS) {
-                rc = cuEventSynchronize(event);
-            }
+        if (!event) {
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
         }
+        rc = ensure_vm_context(exec, vm);
+        if (rc == CUDA_SUCCESS)
+            rc = cuEventSynchronize(event);
         break;
     }
 
@@ -1505,12 +1863,13 @@ int cuda_executor_call(cuda_executor_t *exec,
         uint64_t guest_handle = CUDA_UNPACK_U64(call->args, 0);
         CUevent event = vm_find_event(vm, guest_handle);
 
-        if (event) {
-            rc = ensure_vm_context(exec, vm);
-            if (rc == CUDA_SUCCESS) {
-                rc = cuEventQuery(event);
-            }
+        if (!event) {
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
         }
+        rc = ensure_vm_context(exec, vm);
+        if (rc == CUDA_SUCCESS)
+            rc = cuEventQuery(event);
         break;
     }
 
@@ -1521,17 +1880,21 @@ int cuda_executor_call(cuda_executor_t *exec,
         CUevent start = vm_find_event(vm, start_handle);
         CUevent end = vm_find_event(vm, end_handle);
 
-        if (start && end) {
-            rc = ensure_vm_context(exec, vm);
+        if (!start || !end) {
+            rc = CUDA_ERROR_INVALID_HANDLE;
+            break;
+        }
+        rc = ensure_vm_context(exec, vm);
+        if (rc != CUDA_SUCCESS)
+            break;
+        {
+            float ms = 0.0f;
+            rc = cuEventElapsedTime(&ms, start, end);
             if (rc == CUDA_SUCCESS) {
-                float ms = 0.0f;
-                rc = cuEventElapsedTime(&ms, start, end);
-                if (rc == CUDA_SUCCESS) {
-                    uint32_t fbits;
-                    memcpy(&fbits, &ms, sizeof(float));
-                    result->num_results = 1;
-                    result->results[0] = (uint64_t)fbits;
-                }
+                uint32_t fbits;
+                memcpy(&fbits, &ms, sizeof(float));
+                result->num_results = 1;
+                result->results[0] = (uint64_t)fbits;
             }
         }
         break;
@@ -1542,11 +1905,19 @@ int cuda_executor_call(cuda_executor_t *exec,
         cublasHandle_t handle = NULL;
         cublasStatus_t cublas_rc;
 
-        /* Use primary context for CUBLAS; per-VM contexts can trigger ALLOC_FAILED in cublasCreate_v2 */
+        /* Use primary context for CUBLAS; per-VM contexts can trigger ALLOC_FAILED in cublasCreate_v2.
+         * cuBLAS also expects a current CUDA runtime device (see cublasCreate_v2 docs). */
         (void)cudaSetDevice(0);
         cuCtxSetCurrent(exec->primary_ctx);
 
         cublas_rc = cublasCreate_v2(&handle);
+        if (cublas_rc == CUBLAS_STATUS_NOT_INITIALIZED) {
+            cuda_executor_recover_primary_context(exec, vm->vm_id, "cublasCreate_v2 returned NOT_INITIALIZED");
+            (void)cudaSetDevice(0);
+            (void)cuCtxSetCurrent(exec->primary_ctx);
+            handle = NULL;
+            cublas_rc = cublasCreate_v2(&handle);
+        }
         if (executor_verbose_copy_logging() || cublas_rc != CUBLAS_STATUS_SUCCESS) {
             fprintf(stderr,
                     "[cuda-executor] vm_id=%u cublasCreate_v2 rc=%d handle=%p\n",
@@ -1587,7 +1958,7 @@ int cuda_executor_call(cuda_executor_t *exec,
         uint64_t guest_handle = CUDA_UNPACK_U64(call->args, 0);
         uint64_t stream_handle = CUDA_UNPACK_U64(call->args, 2);
         cublasHandle_t handle = vm_find_cublas(vm, guest_handle);
-        CUstream stream = vm_find_stream(vm, stream_handle);
+        CUstream stream = vm_resolve_stream_handle(vm, stream_handle);
         cublasStatus_t cublas_rc = CUBLAS_STATUS_NOT_INITIALIZED;
 
         if (handle) {
@@ -1672,6 +2043,24 @@ int cuda_executor_call(cuda_executor_t *exec,
                     (unsigned long long)sgemm->b,
                     (unsigned long long)sgemm->c);
         }
+        if (cublas_rc == CUBLAS_STATUS_SUCCESS) {
+            CUresult ec = cuCtxSynchronize();
+            if (ec != CUDA_SUCCESS) {
+                const char *en = NULL;
+                const char *es = NULL;
+                (void)cuGetErrorName(ec, &en);
+                (void)cuGetErrorString(ec, &es);
+                fprintf(stderr,
+                        "[cuda-executor] vm_id=%u after cublasSgemm_v2: cuCtxSynchronize rc=%d (%s) %s\n",
+                        vm->vm_id, (int)ec, en ? en : "?", es ? es : "?");
+                fprintf(stderr,
+                        "[cuda-executor] vm_id=%u SGEMM dims m=%d n=%d k=%d lda=%d ldb=%d ldc=%d alpha=%g beta=%g\n",
+                        vm->vm_id, sgemm->m, sgemm->n, sgemm->k,
+                        sgemm->lda, sgemm->ldb, sgemm->ldc,
+                        sgemm->alpha, sgemm->beta);
+                cublas_rc = CUBLAS_STATUS_EXECUTION_FAILED;
+            }
+        }
 
         result->num_results = 1;
         result->results[0] = (uint64_t)cublas_rc;
@@ -1692,6 +2081,9 @@ int cuda_executor_call(cuda_executor_t *exec,
         CUdeviceptr host_a = vm_find_mem(vm, gemm->a);
         CUdeviceptr host_b = vm_find_mem(vm, gemm->b);
         CUdeviceptr host_c = vm_find_mem(vm, gemm->c);
+        mem_entry_t *entry_a = vm_find_mem_entry(vm, gemm->a);
+        mem_entry_t *entry_b = vm_find_mem_entry(vm, gemm->b);
+        mem_entry_t *entry_c = vm_find_mem_entry(vm, gemm->c);
         if (!handle || !host_a || !host_b || !host_c) {
             fprintf(stderr,
                     "[cuda-executor] cublasGemmEx MAPPING FAILED vm_id=%u: handle=%p host_a=%p host_b=%p host_c=%p guest_a=0x%llx guest_b=0x%llx guest_c=0x%llx mem_count=%d\n",
@@ -1708,16 +2100,24 @@ int cuda_executor_call(cuda_executor_t *exec,
         {
             float alpha = gemm->alpha_f32;
             float beta = gemm->beta_f32;
+            uint16_t alpha_half = cuda_executor_float_to_half_bits(gemm->alpha_f32);
+            uint16_t beta_half = cuda_executor_float_to_half_bits(gemm->beta_f32);
+            const void *alpha_ptr = &alpha;
+            const void *beta_ptr = &beta;
+            if (cuda_executor_is_fp16_compute(gemm->computeType)) {
+                alpha_ptr = &alpha_half;
+                beta_ptr = &beta_half;
+            }
             cublas_rc = cublasGemmEx(handle,
                                      (cublasOperation_t)gemm->transa,
                                      (cublasOperation_t)gemm->transb,
                                      gemm->m, gemm->n, gemm->k,
-                                     &alpha,
+                                     alpha_ptr,
                                      (const void *)(uintptr_t)host_a,
                                      (cudaDataType_t)gemm->Atype, gemm->lda,
                                      (const void *)(uintptr_t)host_b,
                                      (cudaDataType_t)gemm->Btype, gemm->ldb,
-                                     &beta,
+                                     beta_ptr,
                                      (void *)(uintptr_t)host_c,
                                      (cudaDataType_t)gemm->Ctype, gemm->ldc,
                                      (cublasComputeType_t)gemm->computeType,
@@ -1734,7 +2134,286 @@ int cuda_executor_call(cuda_executor_t *exec,
                         (unsigned long long)gemm->b,
                         (unsigned long long)gemm->c);
             }
+            /* Async faults (e.g. illegal address) often appear on sync — same as GEMM_BATCHED_EX / E4. */
+            if (cublas_rc == CUBLAS_STATUS_SUCCESS) {
+                CUresult ec = cuCtxSynchronize();
+                if (ec != CUDA_SUCCESS) {
+                    const char *en = NULL;
+                    const char *es = NULL;
+                    (void)cuGetErrorName(ec, &en);
+                    (void)cuGetErrorString(ec, &es);
+                    fprintf(stderr,
+                            "[cuda-executor] vm_id=%u after cublasGemmEx: cuCtxSynchronize rc=%d (%s) %s\n",
+                            vm->vm_id, (int)ec, en ? en : "?", es ? es : "?");
+                    fprintf(stderr,
+                            "[cuda-executor] vm_id=%u GEMM_EX dims m=%d n=%d k=%d lda=%d ldb=%d ldc=%d "
+                            "Atype=%u Btype=%u Ctype=%u computeType=%d algo=%d alpha_f32=%g beta_f32=%g\n",
+                            vm->vm_id, gemm->m, gemm->n, gemm->k, gemm->lda, gemm->ldb, gemm->ldc,
+                            (unsigned)gemm->Atype, (unsigned)gemm->Btype, (unsigned)gemm->Ctype,
+                            gemm->computeType, gemm->algo, gemm->alpha_f32, gemm->beta_f32);
+                    fprintf(stderr,
+                            "[cuda-executor] vm_id=%u GEMM_EX ptrs guest=(0x%llx,0x%llx,0x%llx) "
+                            "host=(0x%llx,0x%llx,0x%llx) base_guest=(0x%llx,0x%llx,0x%llx) "
+                            "base_host=(0x%llx,0x%llx,0x%llx) sizes=(%zu,%zu,%zu)\n",
+                            vm->vm_id,
+                            (unsigned long long)gemm->a,
+                            (unsigned long long)gemm->b,
+                            (unsigned long long)gemm->c,
+                            (unsigned long long)host_a,
+                            (unsigned long long)host_b,
+                            (unsigned long long)host_c,
+                            (unsigned long long)(entry_a ? entry_a->guest_ptr : 0ull),
+                            (unsigned long long)(entry_b ? entry_b->guest_ptr : 0ull),
+                            (unsigned long long)(entry_c ? entry_c->guest_ptr : 0ull),
+                            (unsigned long long)(entry_a ? entry_a->host_ptr : 0ull),
+                            (unsigned long long)(entry_b ? entry_b->host_ptr : 0ull),
+                            (unsigned long long)(entry_c ? entry_c->host_ptr : 0ull),
+                            entry_a ? entry_a->size : 0u,
+                            entry_b ? entry_b->size : 0u,
+                            entry_c ? entry_c->size : 0u);
+                    cublas_rc = CUBLAS_STATUS_EXECUTION_FAILED;
+                    if (ec == CUDA_ERROR_ILLEGAL_ADDRESS) {
+                        cuda_executor_recover_primary_context(exec, vm->vm_id,
+                                                             "cublas GemmEx sync hit CUDA_ERROR_ILLEGAL_ADDRESS");
+                    }
+                }
+            }
         }
+
+        result->num_results = 1;
+        result->results[0] = (uint64_t)cublas_rc;
+        rc = CUDA_SUCCESS;
+        break;
+    }
+
+    case CUDA_CALL_CUBLAS_GEMM_STRIDED_BATCHED_EX: {
+        const CublasGemmStridedBatchedExCall *g = (const CublasGemmStridedBatchedExCall *)data;
+        cublasStatus_t cublas_rc = CUBLAS_STATUS_INVALID_VALUE;
+
+        if (!g || data_len < sizeof(*g)) {
+            rc = CUDA_ERROR_INVALID_VALUE;
+            break;
+        }
+
+        cublasHandle_t handle = vm_find_cublas(vm, g->handle);
+        CUdeviceptr host_a = vm_find_mem(vm, g->a);
+        CUdeviceptr host_b = vm_find_mem(vm, g->b);
+        CUdeviceptr host_c = vm_find_mem(vm, g->c);
+        if (!handle || !host_a || !host_b || !host_c) {
+            fprintf(stderr,
+                    "[cuda-executor] cublasGemmStridedBatchedEx MAPPING FAILED vm_id=%u handle=%p a=%p b=%p c=%p\n",
+                    vm->vm_id, (void *)(uintptr_t)handle, (void *)(uintptr_t)host_a,
+                    (void *)(uintptr_t)host_b, (void *)(uintptr_t)host_c);
+            result->num_results = 1;
+            result->results[0] = (uint64_t)CUBLAS_STATUS_INVALID_VALUE;
+            rc = CUDA_SUCCESS;
+            break;
+        }
+
+        cuCtxSetCurrent(exec->primary_ctx);
+        {
+            float alpha = g->alpha_f32;
+            float beta = g->beta_f32;
+            uint16_t alpha_half = cuda_executor_float_to_half_bits(g->alpha_f32);
+            uint16_t beta_half = cuda_executor_float_to_half_bits(g->beta_f32);
+            const void *alpha_ptr = &alpha;
+            const void *beta_ptr = &beta;
+            if (cuda_executor_is_fp16_compute(g->computeType)) {
+                alpha_ptr = &alpha_half;
+                beta_ptr = &beta_half;
+            }
+            cublas_rc = cublasGemmStridedBatchedEx(handle,
+                    (cublasOperation_t)g->transa, (cublasOperation_t)g->transb,
+                    g->m, g->n, g->k,
+                    alpha_ptr,
+                    (const void *)(uintptr_t)host_a, (cudaDataType_t)g->Atype, g->lda,
+                    g->strideA,
+                    (const void *)(uintptr_t)host_b, (cudaDataType_t)g->Btype, g->ldb,
+                    g->strideB,
+                    beta_ptr,
+                    (void *)(uintptr_t)host_c, (cudaDataType_t)g->Ctype, g->ldc,
+                    g->strideC,
+                    g->batchCount,
+                    (cublasComputeType_t)g->computeType,
+                    (cublasGemmAlgo_t)g->algo);
+            if (executor_verbose_copy_logging() || cublas_rc != CUBLAS_STATUS_SUCCESS) {
+                fprintf(stderr,
+                        "[cuda-executor] vm_id=%u cublasGemmStridedBatchedEx rc=%d batch=%d m=%d n=%d k=%d\n",
+                        vm->vm_id, (int)cublas_rc, g->batchCount, g->m, g->n, g->k);
+            }
+            if (cublas_rc == CUBLAS_STATUS_SUCCESS) {
+                CUresult ec = cuCtxSynchronize();
+                if (ec != CUDA_SUCCESS) {
+                    const char *en = NULL;
+                    const char *es = NULL;
+                    (void)cuGetErrorName(ec, &en);
+                    (void)cuGetErrorString(ec, &es);
+                    fprintf(stderr,
+                            "[cuda-executor] vm_id=%u after cublasGemmStridedBatchedEx: cuCtxSynchronize rc=%d (%s) %s\n",
+                            vm->vm_id, (int)ec, en ? en : "?", es ? es : "?");
+                    fprintf(stderr,
+                            "[cuda-executor] vm_id=%u GEMM_STRIDED_BATCHED dims m=%d n=%d k=%d batch=%d "
+                            "computeType=%d algo=%d\n",
+                            vm->vm_id, g->m, g->n, g->k, g->batchCount,
+                            g->computeType, g->algo);
+                    cublas_rc = CUBLAS_STATUS_EXECUTION_FAILED;
+                }
+            }
+        }
+
+        result->num_results = 1;
+        result->results[0] = (uint64_t)cublas_rc;
+        rc = CUDA_SUCCESS;
+        break;
+    }
+
+    case CUDA_CALL_CUBLAS_GEMM_BATCHED_EX: {
+        const CublasGemmBatchedExCallHdr *hdr = (const CublasGemmBatchedExCallHdr *)data;
+        cublasStatus_t cublas_rc = CUBLAS_STATUS_INVALID_VALUE;
+
+        if (!hdr || data_len < sizeof(CublasGemmBatchedExCallHdr)) {
+            rc = CUDA_ERROR_INVALID_VALUE;
+            break;
+        }
+        int bc = hdr->batchCount;
+        if (bc < 1) {
+            rc = CUDA_ERROR_INVALID_VALUE;
+            break;
+        }
+        size_t need = sizeof(CublasGemmBatchedExCallHdr) + (size_t)bc * 3u * sizeof(uint64_t);
+        if (data_len < need) {
+            rc = CUDA_ERROR_INVALID_VALUE;
+            break;
+        }
+
+        cublasHandle_t handle = vm_find_cublas(vm, hdr->handle);
+        if (!handle) {
+            result->num_results = 1;
+            result->results[0] = (uint64_t)CUBLAS_STATUS_INVALID_VALUE;
+            rc = CUDA_SUCCESS;
+            break;
+        }
+
+        const uint64_t *gp = (const uint64_t *)((const uint8_t *)data + sizeof(CublasGemmBatchedExCallHdr));
+        void **rowA = (void **)calloc((size_t)bc, sizeof(void *));
+        void **rowB = (void **)calloc((size_t)bc, sizeof(void *));
+        void **rowC = (void **)calloc((size_t)bc, sizeof(void *));
+        if (!rowA || !rowB || !rowC) {
+            free(rowA);
+            free(rowB);
+            free(rowC);
+            rc = CUDA_ERROR_OUT_OF_MEMORY;
+            break;
+        }
+
+        int map_ok = 1;
+        for (int i = 0; i < bc; i++) {
+            CUdeviceptr ha = vm_find_mem(vm, gp[i]);
+            CUdeviceptr hb = vm_find_mem(vm, gp[bc + (size_t)i]);
+            CUdeviceptr hc = vm_find_mem(vm, gp[2u * (size_t)bc + (size_t)i]);
+            if (!ha || !hb || !hc) {
+                map_ok = 0;
+                break;
+            }
+            rowA[i] = (void *)(uintptr_t)ha;
+            rowB[i] = (void *)(uintptr_t)hb;
+            rowC[i] = (void *)(uintptr_t)hc;
+        }
+        if (!map_ok) {
+            free(rowA);
+            free(rowB);
+            free(rowC);
+            fprintf(stderr,
+                    "[cuda-executor] cublasGemmBatchedEx MAPPING FAILED vm_id=%u batch=%d mem_count=%d\n",
+                    vm->vm_id, bc, vm->mem_count);
+            result->num_results = 1;
+            result->results[0] = (uint64_t)CUBLAS_STATUS_INVALID_VALUE;
+            rc = CUDA_SUCCESS;
+            break;
+        }
+
+        cuCtxSetCurrent(exec->primary_ctx);
+        {
+            float alpha = hdr->alpha_f32;
+            float beta = hdr->beta_f32;
+            uint16_t alpha_half = cuda_executor_float_to_half_bits(hdr->alpha_f32);
+            uint16_t beta_half = cuda_executor_float_to_half_bits(hdr->beta_f32);
+            const void *alpha_ptr = &alpha;
+            const void *beta_ptr = &beta;
+            if (cuda_executor_is_fp16_compute(hdr->computeType)) {
+                alpha_ptr = &alpha_half;
+                beta_ptr = &beta_half;
+            }
+            /* E4 (H100 + libcublas 12.3.x): mediated cublasGemmBatchedEx poisons the
+             * context with CUDA_ERROR_ILLEGAL_ADDRESS, while replaying the same batches
+             * as individual cublasGemmEx calls is stable. */
+            if (bc == 1) {
+                cublas_rc = cublasGemmEx(handle,
+                        (cublasOperation_t)hdr->transa, (cublasOperation_t)hdr->transb,
+                        hdr->m, hdr->n, hdr->k,
+                        alpha_ptr,
+                        rowA[0], (cudaDataType_t)hdr->Atype, hdr->lda,
+                        rowB[0], (cudaDataType_t)hdr->Btype, hdr->ldb,
+                        beta_ptr,
+                        rowC[0], (cudaDataType_t)hdr->Ctype, hdr->ldc,
+                        (cublasComputeType_t)hdr->computeType,
+                        (cublasGemmAlgo_t)hdr->algo);
+            } else {
+                cublas_rc = CUBLAS_STATUS_SUCCESS;
+                for (int i = 0; i < bc; ++i) {
+                    cublas_rc = cublasGemmEx(handle,
+                            (cublasOperation_t)hdr->transa, (cublasOperation_t)hdr->transb,
+                            hdr->m, hdr->n, hdr->k,
+                            alpha_ptr,
+                            rowA[i], (cudaDataType_t)hdr->Atype, hdr->lda,
+                            rowB[i], (cudaDataType_t)hdr->Btype, hdr->ldb,
+                            beta_ptr,
+                            rowC[i], (cudaDataType_t)hdr->Ctype, hdr->ldc,
+                            (cublasComputeType_t)hdr->computeType,
+                            (cublasGemmAlgo_t)hdr->algo);
+                    if (cublas_rc != CUBLAS_STATUS_SUCCESS) {
+                        fprintf(stderr,
+                                "[cuda-executor] vm_id=%u batched replay fallback failed at batch_idx=%d rc=%d\n",
+                                vm->vm_id, i, (int)cublas_rc);
+                        break;
+                    }
+                }
+            }
+            if (executor_verbose_copy_logging() || cublas_rc != CUBLAS_STATUS_SUCCESS) {
+                fprintf(stderr,
+                        "[cuda-executor] vm_id=%u cublasGemm%sEx rc=%d batch=%d m=%d n=%d k=%d\n",
+                        vm->vm_id, (bc == 1) ? "" : "Batched", (int)cublas_rc, bc,
+                        hdr->m, hdr->n, hdr->k);
+            }
+            /* Async kernel errors often appear here, not in cublas return */
+            if (cublas_rc == CUBLAS_STATUS_SUCCESS) {
+                CUresult ec = cuCtxSynchronize();
+                if (ec != CUDA_SUCCESS) {
+                    const char *en = NULL;
+                    const char *es = NULL;
+                    (void)cuGetErrorName(ec, &en);
+                    (void)cuGetErrorString(ec, &es);
+                    fprintf(stderr,
+                            "[cuda-executor] vm_id=%u after cublasGemm%sEx: cuCtxSynchronize rc=%d (%s) %s\n",
+                            vm->vm_id, (bc == 1) ? "" : "Batched", (int)ec, en ? en : "?", es ? es : "?");
+                    fprintf(stderr,
+                            "[cuda-executor] vm_id=%u GEMM_BATCHED dims m=%d n=%d k=%d lda=%d ldb=%d ldc=%d "
+                            "batch=%d Atype=%u Btype=%u Ctype=%u computeType=%d algo=%d alpha_f32=%g beta_f32=%g\n",
+                            vm->vm_id, hdr->m, hdr->n, hdr->k, hdr->lda, hdr->ldb, hdr->ldc, bc,
+                            (unsigned)hdr->Atype, (unsigned)hdr->Btype, (unsigned)hdr->Ctype,
+                            hdr->computeType, hdr->algo, hdr->alpha_f32, hdr->beta_f32);
+                    /* Guest must not treat SUCCESS if context is poisoned (E4 / rc=700). */
+                    cublas_rc = CUBLAS_STATUS_EXECUTION_FAILED;
+                    if (ec == CUDA_ERROR_ILLEGAL_ADDRESS) {
+                        cuda_executor_recover_primary_context(exec, vm->vm_id,
+                                                             "cublas GEMM sync hit CUDA_ERROR_ILLEGAL_ADDRESS");
+                    }
+                }
+            }
+        }
+        free(rowA);
+        free(rowB);
+        free(rowC);
 
         result->num_results = 1;
         result->results[0] = (uint64_t)cublas_rc;
@@ -1904,7 +2583,7 @@ void cuda_executor_cleanup_vm(cuda_executor_t *exec, uint32_t vm_id)
     }
 
     if (vm->ctx_valid) {
-        cuCtxSetCurrent(vm->ctx);
+        cuCtxSetCurrent(vm->ctx_is_primary ? exec->primary_ctx : vm->ctx);
 
         /* Destroy all CUBLAS handles before streams they may reference */
         for (int i = 0; i < vm->cublas_count; i++) {
@@ -1944,9 +2623,13 @@ void cuda_executor_cleanup_vm(cuda_executor_t *exec, uint32_t vm_id)
         }
         vm->mem_count = 0;
 
-        /* Destroy context */
-        cuCtxDestroy(vm->ctx);
+        /* Destroy only per-VM owned contexts; the executor owns the primary. */
+        if (!vm->ctx_is_primary) {
+            cuCtxDestroy(vm->ctx);
+        }
         vm->ctx_valid = 0;
+        vm->ctx = NULL;
+        vm->ctx_is_primary = 0;
     }
 
     /* Free any in-progress module-load chunk accumulation buffer */
@@ -1956,6 +2639,8 @@ void cuda_executor_cleanup_vm(cuda_executor_t *exec, uint32_t vm_id)
         vm->mod_chunk_alloc = 0;
         vm->mod_chunk_used  = 0;
     }
+
+    vm_drain_pending_async_htod(vm, NULL, 1);
 
     vm->active = 0;
     fprintf(stderr, "[cuda-executor] Cleaned up VM %u\n", vm_id);

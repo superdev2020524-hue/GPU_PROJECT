@@ -1,0 +1,11 @@
+=== mediator.log wc ===
+158 /tmp/mediator.log
+=== slice (grep; empty if no hits) ===
+[cuda-executor] Initialized: NVIDIA H100 PCIe, 81004 MB
+[cuda-executor] CUDA_CALL_INIT vm=9 — pipeline live
+[cuda-executor] CUDA_CALL_INIT vm=9 — pipeline live
+[cuda-executor] CUDA_CALL_INIT vm=9 — pipeline live
+[cuda-executor] cuMemAlloc: allocating 599126016 bytes on physical GPU (vm=9)
+[cuda-executor] cuMemAlloc SUCCESS: allocated 0x7fdfd8000000 on physical GPU (vm=9)
+=== fail401312.bin ===
+ls: cannot access /tmp/fail401312.bin: No such file or directory

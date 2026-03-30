@@ -1,0 +1,76 @@
+VA_START FIX - Summary
+======================
+
+Problem:
+--------
+lspci was crashing with segmentation fault after LD_PRELOAD was configured.
+The crash occurred because va_start/va_end macros were being used in the
+system process path, which can fail during early library loading.
+
+Root Cause:
+-----------
+When lspci calls open(), our intercepted function:
+1. Correctly detects lspci as a system process
+2. Returns 0 (system process)
+3. Then tries to use va_start/va_end to extract the mode argument
+4. These macros can fail or be intercepted during early library loading,
+   causing a segfault
+
+Solution:
+---------
+Removed variadic argument handling (va_start/va_end/va_arg) from the system
+process path in both open() and openat() functions.
+
+For system processes:
+- If O_CREAT is not set: mode is ignored by kernel, so we pass 0
+- If O_CREAT is set: use safe default mode 0644
+
+This eliminates the problematic va_start/va_end calls while maintaining
+compatibility.
+
+Files Modified:
+---------------
+- phase3/guest-shim/libvgpu_cuda.c
+  - open() function (lines 177-185)
+  - openat() function (lines 241-247)
+
+Changes:
+--------
+Before:
+  va_list args;
+  va_start(args, flags);
+  mode_t mode = (flags & O_CREAT) ? va_arg(args, mode_t) : 0;
+  va_end(args);
+  return syscall(__NR_open, pathname, flags, mode);
+
+After:
+  mode_t mode = (flags & O_CREAT) ? 0644 : 0;
+  return syscall(__NR_open, pathname, flags, mode);
+
+Testing:
+--------
+1. Build the library on the VM
+2. Test lspci BEFORE preload (baseline)
+3. Install library and configure preload
+4. Test lspci AFTER preload (critical test)
+5. Verify SSH still works
+6. Verify other system commands work
+
+Deployment:
+-----------
+Use DEPLOY_VA_START_FIX.sh script:
+  ./DEPLOY_VA_START_FIX.sh [vm_user@vm_ip]
+
+Or manually:
+  1. Copy libvgpu_cuda.c to VM
+  2. Build: gcc -shared -fPIC -o /tmp/libvgpu-cuda.so libvgpu_cuda.c cuda_transport.c -I../include -I. -ldl -lpthread -O2
+  3. Install: sudo cp /tmp/libvgpu-cuda.so /usr/lib64/
+  4. Configure: sudo sh -c "echo /usr/lib64/libvgpu-cuda.so > /etc/ld.so.preload"
+  5. Test: lspci (should work)
+
+Expected Results:
+-----------------
+- lspci should work both before and after preload
+- SSH should remain functional
+- System commands should work normally
+- No segmentation faults

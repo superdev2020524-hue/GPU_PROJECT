@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Deploy a Hopper-capable libggml-cuda.so to the test-3 VM.
+Deploy a Hopper-capable libggml-cuda.so to the VM (vm_config.py — e.g. test-4).
 
 Use this after building libggml-cuda.so with CMAKE_CUDA_ARCHITECTURES=90
 on a machine that has the CUDA toolkit (see BUILD_LIBGGML_CUDA_HOPPER.md).
@@ -34,11 +34,11 @@ SCP_TIMEOUT = 3600
 
 
 def run_ssh(cmd, timeout_sec=120):
-    """Run command on VM via ssh."""
+    """Run command on VM via ssh (no sudo — sshpass is OK)."""
     if USE_SSHPASS:
         full_cmd = [
             "sshpass", "-p", VM_PASSWORD,
-            "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=15",
+            "ssh", "-n", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=15",
             f"{VM_USER}@{VM_HOST}",
             cmd,
         ]
@@ -49,6 +49,25 @@ def run_ssh(cmd, timeout_sec=120):
         capture_output=True, text=True, timeout=timeout_sec, cwd=SCRIPT_DIR,
     )
     return r.returncode == 0, r.stdout or "", r.stderr or ""
+
+
+def run_connect_vm(cmd, timeout_sec=600):
+    """
+    Run command on VM via connect_vm.py (pexpect).
+    Use for any step that needs sudo: connect_vm answers [sudo] with VM_PASSWORD.
+    sshpass+ssh cannot feed an interactive sudo password.
+    """
+    env = {**os.environ, "CONNECT_VM_COMMAND_TIMEOUT_SEC": str(timeout_sec)}
+    r = subprocess.run(
+        [sys.executable, os.path.join(SCRIPT_DIR, "connect_vm.py"), cmd],
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec + 60,
+        cwd=SCRIPT_DIR,
+        env=env,
+    )
+    combined = (r.stdout or "") + (r.stderr or "")
+    return r.returncode == 0, r.stdout or "", combined
 
 
 def scp_to_vm(local_path, remote_path, timeout_sec=SCP_TIMEOUT):
@@ -84,7 +103,7 @@ def main():
         return 1
 
     size_mb = os.path.getsize(local_lib) / (1024 * 1024)
-    print(f"=== Deploy libggml-cuda.so (Hopper) to test-3 ===")
+    print(f"=== Deploy libggml-cuda.so (Hopper) to VM (vm_config) ===")
     print(f"Local: {local_lib} ({size_mb:.1f} MiB)")
     print(f"Target: {VM_USER}@{VM_HOST} -> {OLLAMA_CUDA_DIR}/")
     print()
@@ -103,8 +122,8 @@ def main():
         f"sudo systemctl restart ollama && "
         f"echo OK"
     )
-    print("Step 2: Installing and restarting ollama on VM...")
-    ok, out, err = run_ssh(install_cmd, timeout_sec=180)
+    print("Step 2: Installing and restarting ollama on VM (connect_vm — sudo uses VM_PASSWORD)...")
+    ok, out, err = run_connect_vm(install_cmd, timeout_sec=600)
     print(out or err)
     if not ok or "OK" not in (out or ""):
         print("ERROR: Install or restart failed.")

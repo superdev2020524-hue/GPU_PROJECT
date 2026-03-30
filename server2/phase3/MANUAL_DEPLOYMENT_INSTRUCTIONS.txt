@@ -1,0 +1,53 @@
+================================================================================
+MANUAL DEPLOYMENT INSTRUCTIONS FOR test-5@10.25.33.15
+================================================================================
+
+The automated file transfer is failing. Please follow these manual steps:
+
+1. COPY FILES TO VM:
+   From your local machine, run these commands:
+
+   scp /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c test-5@10.25.33.15:~/phase3/guest-shim/
+   scp /home/david/Downloads/gpu/phase3/guest-shim/cuda_transport.c test-5@10.25.33.15:~/phase3/guest-shim/
+   scp /home/david/Downloads/gpu/phase3/guest-shim/cuda_transport.h test-5@10.25.33.15:~/phase3/guest-shim/
+   scp /home/david/Downloads/gpu/phase3/guest-shim/gpu_properties.h test-5@10.25.33.15:~/phase3/guest-shim/
+   scp /home/david/Downloads/gpu/phase3/include/cuda_protocol.h test-5@10.25.33.15:~/phase3/include/
+
+   Password: Calvin@123
+
+2. VERIFY FILES ON VM:
+   SSH to the VM and verify:
+   
+   ssh test-5@10.25.33.15
+   ls -lh ~/phase3/guest-shim/*.c ~/phase3/guest-shim/*.h ~/phase3/include/*.h
+
+3. BUILD SHIM:
+   On the VM, run:
+   
+   cd ~/phase3/guest-shim
+   sudo gcc -shared -fPIC -o /usr/lib64/libvgpu-cuda.so libvgpu_cuda.c cuda_transport.c -I../include -I. -ldl -lpthread -O2 -Wall
+   ls -lh /usr/lib64/libvgpu-cuda.so
+
+4. CONFIGURE PRELOAD:
+   sudo bash -c "echo /usr/lib64/libvgpu-cuda.so > /etc/ld.so.preload"
+   cat /etc/ld.so.preload
+
+5. CONFIGURE OLLAMA SERVICE:
+   sudo mkdir -p /etc/systemd/system/ollama.service.d
+   echo -e "[Service]\nType=simple" | sudo tee /etc/systemd/system/ollama.service.d/override.conf
+   sudo systemctl daemon-reload
+
+6. START OLLAMA:
+   sudo systemctl start ollama
+   sleep 25
+   systemctl is-active ollama
+
+7. TEST GPU MODE:
+   timeout 50 ollama run llama3.2:1b "test"
+   
+   sudo journalctl -u ollama --since "2 minutes ago" --no-pager | grep "library=" | tail -5
+
+8. VERIFY SUCCESS:
+   Look for "library=cuda" in the journalctl output. If you see it, Ollama is using GPU mode!
+
+================================================================================

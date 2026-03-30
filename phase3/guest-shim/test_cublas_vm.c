@@ -60,6 +60,7 @@ static void print_matrix_2x2(const char *label, const float *m)
 
 int main(void)
 {
+    void *cudart = NULL;
     void *cuda = NULL;
     void *cublas = NULL;
     cublasHandle_t handle = NULL;
@@ -85,6 +86,17 @@ int main(void)
                                     const float *, float *, int);
 
     printf("=== CUBLAS VM-local SGEMM test (no host transfer) ===\n");
+
+    /* Step 1 (Mar 2026): Match Ollama wrapper order — load vGPU libcudart FIRST with
+     * RTLD_GLOBAL so NVIDIA libcublas (loaded later) resolves runtime symbols against
+     * the shim, not a different libcudart. See INVESTIGATION_CUBLASCREATE_V2.md. */
+    cudart = dlopen("/opt/vgpu/lib/libcudart.so.12", RTLD_NOW | RTLD_GLOBAL);
+    if (!cudart)
+        cudart = dlopen("libcudart.so.12", RTLD_NOW | RTLD_GLOBAL);
+    if (cudart)
+        printf("  libcudart.so.12 loaded (prefer /opt/vgpu/lib)\n");
+    else
+        printf("  WARN: libcudart not preloaded: %s\n", dlerror());
 
     cuda = dlopen("libcuda.so.1", RTLD_NOW | RTLD_GLOBAL);
     if (!cuda) {
@@ -144,6 +156,21 @@ int main(void)
         goto cleanup;
     }
     printf("  current CUDA context: %p\n", (void *)ctx);
+
+    /* Step 2: Many stacks pair driver primary context with runtime device selection.
+     * NVIDIA cuBLAS may assume cuda runtime state; try cudaSetDevice(0) from shim. */
+    if (cudart) {
+        typedef int (*cudaSetDevice_t)(int);
+        typedef int (*cudaGetLastError_t)(void);
+        cudaSetDevice_t p_set = (cudaSetDevice_t)dlsym(cudart, "cudaSetDevice");
+        cudaGetLastError_t p_err = (cudaGetLastError_t)dlsym(cudart, "cudaGetLastError");
+        if (p_set) {
+            int r = p_set(0);
+            printf("  cudaSetDevice(0) returned: %d\n", r);
+        }
+        if (p_err)
+            printf("  cudaGetLastError after setDevice: %d\n", p_err());
+    }
 
     {
         int status = cublasCreate_v2(&handle);
@@ -241,5 +268,6 @@ cleanup:
     if (handle && cublasDestroy_v2) (void)cublasDestroy_v2(handle);
     if (cublas) dlclose(cublas);
     if (cuda) dlclose(cuda);
+    if (cudart) dlclose(cudart);
     return exit_code;
 }

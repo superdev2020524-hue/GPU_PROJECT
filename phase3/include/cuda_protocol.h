@@ -124,6 +124,7 @@
 #define CUDA_CALL_CUBLAS_SGEMM               0x00B4
 #define CUDA_CALL_CUBLAS_GEMM_EX             0x00B5
 #define CUDA_CALL_CUBLAS_GEMM_STRIDED_BATCHED_EX 0x00B6
+#define CUDA_CALL_CUBLAS_GEMM_BATCHED_EX     0x00BA
 #define CUDA_CALL_CUBLASLT_CREATE            0x00B7
 #define CUDA_CALL_CUBLASLT_DESTROY           0x00B8
 #define CUDA_CALL_CUBLASLT_MATMUL            0x00B9
@@ -238,6 +239,63 @@ typedef struct __attribute__((packed)) CublasGemmExCall {
     float    alpha_f32;
     float    beta_f32;
 } CublasGemmExCall;
+
+/*
+ * CUBLAS GEMM_STRIDED_BATCHED_EX payload (single strided A/B/C + batchCount).
+ */
+typedef struct __attribute__((packed)) CublasGemmStridedBatchedExCall {
+    uint64_t handle;
+    uint64_t a;
+    uint64_t b;
+    uint64_t c;
+    int64_t  strideA;
+    int64_t  strideB;
+    int64_t  strideC;
+    int32_t  transa;
+    int32_t  transb;
+    int32_t  m;
+    int32_t  n;
+    int32_t  k;
+    int32_t  Atype;
+    int32_t  Btype;
+    int32_t  Ctype;
+    int32_t  lda;
+    int32_t  ldb;
+    int32_t  ldc;
+    int32_t  batchCount;
+    int32_t  computeType;
+    int32_t  algo;
+    float    alpha_f32;
+    float    beta_f32;
+} CublasGemmStridedBatchedExCall;
+
+/*
+ * CUBLAS GEMM_BATCHED_EX: fixed header + batchCount*3 guest device pointers
+ * (Aarray[], then Barray[], then Carray[] as uint64 each).
+ */
+typedef struct __attribute__((packed)) CublasGemmBatchedExCallHdr {
+    uint64_t handle;
+    int32_t  transa;
+    int32_t  transb;
+    int32_t  m;
+    int32_t  n;
+    int32_t  k;
+    int32_t  Atype;
+    int32_t  Btype;
+    int32_t  Ctype;
+    int32_t  lda;
+    int32_t  ldb;
+    int32_t  ldc;
+    int32_t  batchCount;
+    int32_t  computeType;
+    int32_t  algo;
+    float    alpha_f32;
+    float    beta_f32;
+} CublasGemmBatchedExCallHdr;
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(CublasGemmBatchedExCallHdr) == 72, "CublasGemmBatchedExCallHdr wire size");
+#endif
 
 /* ================================================================
  * GPU Info structure (returned by CUDA_CALL_GET_GPU_INFO)

@@ -1,0 +1,187 @@
+================================================================================
+IMPROVED WHITELIST FIX - DEPLOYMENT STATUS
+================================================================================
+
+DATE: 2026-02-23
+STATUS: Code fix complete, ready for deployment when VM is accessible
+
+================================================================================
+WHAT WAS FIXED
+================================================================================
+
+**Problem:**
+- Ollama reports `library=cpu` with empty `pci_id=""`
+- Whitelist was only checking `/proc/self/comm` (limited to 15 chars)
+- May not catch "ollama serve" or "ollama runner" subprocesses
+
+**Solution:**
+- Enhanced whitelist now checks BOTH:
+  1. `/proc/self/comm` - process name (catches "ollama")
+  2. `/proc/self/cmdline` - full command line (catches "ollama serve", "ollama runner", etc.)
+
+**Code Changes:**
+- Added cmdline check in `is_application_process()` function
+- Handles null-separated cmdline format correctly
+- Uses direct syscalls (async-signal-safe)
+- Catches all Ollama processes including subprocesses
+
+================================================================================
+CURRENT STATUS
+================================================================================
+
+✓ **Code Fix:** COMPLETE
+  - Enhanced whitelist implemented
+  - Checks both comm and cmdline
+  - No linter errors
+  - Ready for deployment
+
+✓ **Previous Test Results:**
+  - lspci works (no crashes) - whitelist working for system processes
+  - Shim built successfully
+  - Preload configured
+
+✗ **VM Access:** SSH connections resetting
+  - VM (test-7@10.25.33.17) is pingable but SSH is down
+  - Cannot deploy via automated script
+  - Need to wait for VM to be accessible
+
+================================================================================
+DEPLOYMENT STEPS (When VM is Accessible)
+================================================================================
+
+**From Local Machine:**
+
+1. **Copy improved file:**
+   ```bash
+   scp /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c test-7@10.25.33.17:~/phase3/guest-shim/libvgpu_cuda.c
+   ```
+
+**On VM (test-7@10.25.33.17):**
+
+2. **Build shim:**
+   ```bash
+   cd ~/phase3/guest-shim
+   sudo gcc -shared -fPIC -o /usr/lib64/libvgpu-cuda.so libvgpu_cuda.c cuda_transport.c -I../include -I. -ldl -lpthread -O2
+   ```
+
+3. **Verify build:**
+   ```bash
+   ls -lh /usr/lib64/libvgpu-cuda.so
+   # Should show ~103K file
+   ```
+
+4. **Verify preload:**
+   ```bash
+   cat /etc/ld.so.preload
+   # Should show: /usr/lib64/libvgpu-cuda.so
+   ```
+
+5. **Test lspci (should NOT crash):**
+   ```bash
+   lspci | grep -i nvidia
+   # Should show: 00:05.0 3D controller: NVIDIA Corporation Device 2331
+   ```
+
+6. **Restart Ollama:**
+   ```bash
+   sudo systemctl restart ollama
+   sleep 30
+   systemctl is-active ollama
+   ```
+
+7. **Check GPU mode:**
+   ```bash
+   journalctl -u ollama -n 300 --no-pager | grep -iE "library=" | tail -5
+   ```
+
+8. **Verify process detection:**
+   ```bash
+   OLLAMA_PID=$(pgrep -f ollama | head -1)
+   cat /proc/$OLLAMA_PID/comm
+   cat /proc/$OLLAMA_PID/cmdline | tr '\0' ' '
+   cat /proc/$OLLAMA_PID/maps | grep libvgpu-cuda
+   ```
+
+================================================================================
+EXPECTED RESULTS AFTER DEPLOYMENT
+================================================================================
+
+**Success Indicators:**
+
+1. **lspci works:**
+   - No segmentation fault
+   - Shows vGPU device: `00:05.0 3D controller: NVIDIA Corporation Device 2331`
+
+2. **Ollama reports GPU mode:**
+   - Logs show: `library=gpu` or `library=cuda`
+   - NOT: `library=cpu`
+
+3. **PCI ID populated:**
+   - Logs show: `pci_id="0000:00:05.0"`
+   - NOT: `pci_id=""`
+
+4. **Shim loaded:**
+   - `/proc/<pid>/maps` contains `libvgpu-cuda.so`
+   - Process comm or cmdline contains "ollama"
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+**If still showing `library=cpu`:**
+
+1. **Check if shim is loaded:**
+   ```bash
+   pgrep -f ollama | xargs -I {} cat /proc/{}/maps | grep libvgpu-cuda
+   ```
+   - If empty, shim is not loaded - check `/etc/ld.so.preload`
+
+2. **Check process name:**
+   ```bash
+   pgrep -f ollama | xargs -I {} sh -c 'echo "PID: {}"; cat /proc/{}/comm; cat /proc/{}/cmdline | tr "\0" " "; echo'
+   ```
+   - Verify process name contains "ollama"
+
+3. **Check file interception:**
+   - Add debug logging to see if interception is triggered
+   - Check if PCI files are being accessed
+
+4. **Check logs:**
+   ```bash
+   journalctl -u ollama -n 500 --no-pager | grep -iE "libvgpu|fopen|open.*pci|vendor|device"
+   ```
+
+================================================================================
+FILES READY FOR DEPLOYMENT
+================================================================================
+
+✓ `/home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c`
+  - Enhanced whitelist with cmdline check
+  - Ready to copy to VM
+
+✓ `/home/david/Downloads/gpu/phase3/DEPLOY_IMPROVED_WHITELIST.sh`
+  - Deployment script (run on VM)
+  - Automated deployment steps
+
+================================================================================
+SUMMARY
+================================================================================
+
+**What was done:**
+- Enhanced whitelist to check both comm and cmdline
+- Catches all Ollama processes including subprocesses
+- Code is complete and ready
+
+**What needs to happen:**
+- Wait for VM to be accessible
+- Copy improved file to VM
+- Rebuild shim
+- Restart Ollama
+- Verify GPU mode
+
+**Expected outcome:**
+- Ollama should report `library=gpu` or `library=cuda`
+- PCI ID should be populated: `pci_id="0000:00:05.0"`
+- System processes (lspci) should continue to work
+
+================================================================================

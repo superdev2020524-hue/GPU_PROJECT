@@ -1,0 +1,26 @@
+================================================================================
+CRITICAL FIX: dlsym() ORDER ISSUE
+================================================================================
+
+ROOT CAUSE OF lspci CRASH:
+
+The whitelist check was happening AFTER dlsym() calls. This means:
+1. Function is called (e.g., open())
+2. dlsym(RTLD_NEXT, "open") is called to get real function
+3. dlsym() itself might trigger file operations or library loading
+4. These operations might be intercepted by our own shim
+5. This causes recursion or crashes
+6. THEN whitelist check happens (too late!)
+
+FIX:
+
+Move whitelist check to happen FIRST, before any dlsym() calls.
+This ensures system processes never enter interception code at all.
+
+STATUS:
+
+✓ open() - Fixed
+✓ fopen() - Fixed
+⏳ openat(), stat(), lstat(), access(), fread(), fgets() - Need to fix
+
+================================================================================

@@ -1,0 +1,738 @@
+===== 2026-03-28T11:57:23Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:07:31Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:17:39Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:27:47Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:37:55Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:48:02Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T12:58:10Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T13:08:18Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+
+===== 2026-03-28T13:18:27Z =====
+RUN_BASE=/tmp/e3_bounded_20260328_075716
+
+[vm status]
+alive_pids test-4    248060       1  0 07:57 ?        S      0:00 journalctl -u ollama -f --no-pager
+test-4    248061       1  0 07:57 ?        S      0:00 curl -sS -m 7200 -w \nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nSIZE_DOWNLOAD:%{size_download}\n -X POST http://127.0.0.1:11434/api/generate -H Content-Type: application/json -d @/tmp/e3_bounded_20260328_075716/generate_request.json -o /tmp/e3_bounded_20260328_075716/curl_generate.out.json -D /tmp/e3_bounded_20260328_075716/curl_generate.response_headers.txt
+--- journal
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rip    0x4c2d01
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: rflags 0x286
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: cs     0x33
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: fs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: gs     0x0
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=ERROR source=sched.go:575 msg="error loading llama server" error="llama runner process has terminated: signal: aborted (core dumped)"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.415-04:00 level=DEBUG source=sched.go:577 msg="triggering expiration for failed load" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:356 msg="runner expired event received" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: [GIN] 2026/03/28 - 07:47:54 | 500 |         55m8s |       127.0.0.1 | POST     "/api/generate"
+Mar 28 07:47:54 test4-HVM-domU ollama_vgpu_wrapper.sh[221764]: time=2026-03-28T07:47:54.416-04:00 level=DEBUG source=sched.go:371 msg="got lock to unload expired event" runner.name=registry.ollama.ai/library/tinyllama:latest runner.inference="[{ID:GPU-00000000-1400-0000-00c0-000000000000 Library:CUDA}]" runner.size="0 B" runner.vram="0 B" runner.parallel=1 runner.pid=228736 runner.model=/usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 runner.num_ctx=2048
+--- curl stdout
+--- curl stderr
+
+[host status]
+[MEDIATOR] CUDA result sent vm_id=9 request_id=24 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=5 call_id=0xb5 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=33 call_id=0x26 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=9 request_id=34 call_id=0x26 result.status=0 -> stub sets DONE
+[cuda-executor] HtoD progress: 671 MB total (vm=9)
+[cuda-executor] HtoD progress: 681 MB total (vm=9)
+[cuda-executor] HtoD progress: 691 MB total (vm=9)
+[cuda-executor] HtoD progress: 701 MB total (vm=9)
+[cuda-executor] HtoD progress: 711 MB total (vm=9)
+[cuda-executor] HtoD progress: 721 MB total (vm=9)
+[cuda-executor] HtoD progress: 731 MB total (vm=9)
+[cuda-executor] HtoD progress: 742 MB total (vm=9)
+[cuda-executor] HtoD progress: 752 MB total (vm=9)
+[cuda-executor] HtoD progress: 762 MB total (vm=9)
+[cuda-executor] HtoD progress: 773 MB total (vm=9)
+[cuda-executor] HtoD progress: 783 MB total (vm=9)
+[cuda-executor] HtoD progress: 793 MB total (vm=9)
+[cuda-executor] HtoD progress: 803 MB total (vm=9)
+[cuda-executor] HtoD progress: 814 MB total (vm=9)
+[cuda-executor] HtoD progress: 824 MB total (vm=9)
+[cuda-executor] HtoD progress: 834 MB total (vm=9)
+[cuda-executor] HtoD progress: 844 MB total (vm=9)
+[cuda-executor] HtoD progress: 855 MB total (vm=9)
+[cuda-executor] HtoD progress: 865 MB total (vm=9)
+[cuda-executor] HtoD progress: 875 MB total (vm=9)
+[cuda-executor] HtoD progress: 886 MB total (vm=9)
+[cuda-executor] HtoD progress: 896 MB total (vm=9)
+[cuda-executor] HtoD progress: 906 MB total (vm=9)
+[cuda-executor] HtoD progress: 916 MB total (vm=9)
+[cuda-executor] HtoD progress: 927 MB total (vm=9)
+[cuda-executor] HtoD progress: 937 MB total (vm=9)
+[cuda-executor] HtoD progress: 947 MB total (vm=9)
+[cuda-executor] HtoD progress: 957 MB total (vm=9)
+[cuda-executor] HtoD progress: 968 MB total (vm=9)
+[cuda-executor] HtoD progress: 978 MB total (vm=9)
+[cuda-executor] HtoD progress: 988 MB total (vm=9)
+[cuda-executor] HtoD progress: 999 MB total (vm=9)
+[cuda-executor] HtoD progress: 1009 MB total (vm=9)
+[cuda-executor] HtoD progress: 1019 MB total (vm=9)
+[cuda-executor] HtoD progress: 1029 MB total (vm=9)
+[cuda-executor] HtoD progress: 1040 MB total (vm=9)
+[cuda-executor] HtoD progress: 1050 MB total (vm=9)
+[cuda-executor] HtoD progress: 1060 MB total (vm=9)
+[cuda-executor] HtoD progress: 1071 MB total (vm=9)
+[cuda-executor] HtoD progress: 1081 MB total (vm=9)
+[cuda-executor] HtoD progress: 1091 MB total (vm=9)
+[cuda-executor] HtoD progress: 1101 MB total (vm=9)
+[cuda-executor] HtoD progress: 1112 MB total (vm=9)
+[cuda-executor] HtoD progress: 1122 MB total (vm=9)
+[cuda-executor] HtoD progress: 1132 MB total (vm=9)
+[cuda-executor] HtoD progress: 1142 MB total (vm=9)
+[cuda-executor] HtoD progress: 1153 MB total (vm=9)
+[cuda-executor] HtoD progress: 1163 MB total (vm=9)
+[cuda-executor] HtoD progress: 1173 MB total (vm=9)
+[cuda-executor] HtoD progress: 1184 MB total (vm=9)
+[cuda-executor] HtoD progress: 1194 MB total (vm=9)
+[cuda-executor] HtoD progress: 1204 MB total (vm=9)
+[cuda-executor] HtoD progress: 1214 MB total (vm=9)
+[cuda-executor] HtoD progress: 1225 MB total (vm=9)
+[cuda-executor] HtoD progress: 1235 MB total (vm=9)
+

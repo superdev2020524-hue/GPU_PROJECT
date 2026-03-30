@@ -1,0 +1,67 @@
+================================================================================
+DEPLOYMENT STATUS - FIXED SHIM FOR SYSTEM PROCESSES
+================================================================================
+
+FIX IMPLEMENTED
+---------------
+
+Problem: The shim's file interception was breaking PCI device enumeration,
+causing the vGPU-stub device to disappear from lspci after shim installation.
+
+Solution: Added system process detection to ALL file interception functions
+so they only intercept for application processes, not system processes.
+
+Files Modified:
+  - phase3/guest-shim/libvgpu_cuda.c
+    * Added is_system_process() check to fopen()
+    * Added is_system_process() check to fread() and fgets()
+    * Added is_system_process() check to open(), openat(), stat(), lstat(), access()
+    * Expanded is_system_process() to detect udev, systemd-udevd, lspci
+
+STATUS
+------
+
+✓ Fixed code ready in: /home/david/Downloads/gpu/phase3/guest-shim/libvgpu_cuda.c
+✓ File copied to VM: test-5@10.25.33.15:~/phase3/guest-shim/libvgpu_cuda.c
+⚠ Build status: Unknown (VM connection unstable)
+⚠ Device visibility: Unknown (needs verification)
+⚠ Ollama GPU mode: Unknown (needs verification)
+
+NEXT STEPS (Manual)
+-------------------
+
+1. SSH to the VM:
+   ssh test-5@10.25.33.15
+   Password: Calvin@123
+
+2. Rebuild the shim:
+   cd ~/phase3/guest-shim
+   sudo gcc -shared -fPIC -o /usr/lib64/libvgpu-cuda.so \
+       libvgpu_cuda.c cuda_transport.c \
+       -I../include -I. -ldl -lpthread -O2 -Wall
+
+3. Verify device appears:
+   lspci | grep -i "2331\|3d controller"
+   # Should show the vGPU-stub device
+
+4. Restart Ollama:
+   sudo systemctl restart ollama
+   sleep 25
+   systemctl is-active ollama
+
+5. Test and verify GPU mode:
+   timeout 50 ollama run llama3.2:1b "test"
+   sudo journalctl -u ollama --since "2 minutes ago" --no-pager | grep "library="
+   # Should show library=cuda
+
+EXPECTED RESULTS
+----------------
+
+After rebuilding with the fix:
+  ✓ vGPU-stub device visible in lspci
+  ✓ System processes can enumerate PCI devices normally
+  ✓ Application processes (like Ollama) still get file interception
+  ✓ Ollama discovers and uses the vGPU
+  ✓ GPU mode active (library=cuda in logs)
+
+================================================================================

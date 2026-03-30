@@ -1,0 +1,42 @@
+================================================================================
+SSH SAFETY FIX - PREVENTING SSH BREAKAGE
+================================================================================
+
+CRITICAL ISSUE:
+After deploying the shim via /etc/ld.so.preload, SSH connections stop working.
+This happens because the shim is loaded into ALL processes, including sshd (SSH daemon).
+
+ROOT CAUSE:
+1. /etc/ld.so.preload loads the shim into ALL processes
+2. sshd (SSH daemon) gets the shim loaded
+3. If the shim causes any issues (even during initialization), SSH breaks
+4. VM becomes inaccessible
+
+FIX IMPLEMENTED:
+1. **Explicit SSH daemon exclusion** - Check for "sshd" in process name and cmdline
+2. **Early return** - If sshd detected, return 0 immediately without caching
+3. **System process exclusion** - Also exclude systemd, init
+4. **Safe whitelist check** - Uses syscalls only, no library dependencies
+5. **Check before dlsym()** - Whitelist check happens FIRST, before any dlsym() calls
+
+KEY CHANGES:
+- Added explicit check for "sshd" in comm
+- Added explicit check for "sshd" in cmdline (first word)
+- Return 0 immediately for sshd/systemd/init (don't cache)
+- This ensures SSH daemon is NEVER intercepted
+
+SAFETY GUARANTEES:
+✓ sshd processes are explicitly excluded
+✓ systemd processes are explicitly excluded  
+✓ init processes are explicitly excluded
+✓ Whitelist check uses only syscalls (async-signal-safe)
+✓ Check happens BEFORE any dlsym() calls
+✓ Early return for critical system processes
+
+EXPECTED BEHAVIOR:
+- SSH daemon (sshd) will never be intercepted
+- SSH connections will continue to work
+- Only ollama processes will be intercepted
+- System processes remain unaffected
+
+================================================================================

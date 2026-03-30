@@ -749,10 +749,12 @@ cudaError_t cudaGetDeviceProperties_v2(cudaDeviceProp *prop, int device) {
     *old_major_ptr = GPU_DEFAULT_CC_MAJOR;
     *old_minor_ptr = GPU_DEFAULT_CC_MINOR;
 
-    /* 0x168 = texturePitchAlignment, 0x16C = deviceOverlap (CUDA 12 layout) — must be sane. */
+    /* The deployed GGML build is reading 0x168/0x16C as the legacy major/minor pair.
+     * Keep the primary CUDA 12 slots patched above, and also mirror CC=9.0 here so
+     * GGML does not see the bogus 512.1 capability that steers it into bad paths. */
     prop->textureAlignment = 512;
-    prop->texturePitchAlignment = 512;
-    prop->deviceOverlap = 1;
+    *((int32_t *)((char*)prop + 0x168)) = GPU_DEFAULT_CC_MAJOR;
+    *((int32_t *)((char*)prop + 0x16C)) = GPU_DEFAULT_CC_MINOR;
 
     int *warpSize_ptr = (int*)((char*)prop + 0x114);
     *warpSize_ptr = GPU_DEFAULT_WARP_SIZE;
@@ -1162,18 +1164,64 @@ cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, int kind) {
 
 /* cudaMemcpyAsync - async memory copy */
 cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, int kind, void *stream) {
-    (void)stream;
     if (cudart_debug_logging()) {
         char log_msg[256];
         int log_len = snprintf(log_msg, sizeof(log_msg),
-                              "[libvgpu-cudart] cudaMemcpyAsync() CALLED: dst=%p src=%p count=%zu kind=%d (pid=%d)\n",
-                              dst, src, count, kind, (int)getpid());
+                              "[libvgpu-cudart] cudaMemcpyAsync() CALLED: dst=%p src=%p count=%zu kind=%d stream=%p (pid=%d)\n",
+                              dst, src, count, kind, stream, (int)getpid());
         if (log_len > 0 && log_len < (int)sizeof(log_msg))
             syscall(__NR_write, 2, log_msg, log_len);
     }
-    /* For now, async operations are treated as synchronous */
-    /* TODO: Implement proper async support with streams */
-    return cudaMemcpy(dst, src, count, kind);
+    if (!dst || !src) return cudaErrorInvalidValue;
+    if (count == 0) return cudaSuccess;
+
+    typedef int (*cuMemcpyHtoDAsync_func)(void *, const void *, size_t, void *);
+    typedef int (*cuMemcpyDtoHAsync_func)(void *, void *, size_t, void *);
+    typedef int (*cuMemcpyDtoDAsync_func)(void *, void *, size_t, void *);
+
+    int cuda_result = 0;
+
+    if (kind == cudaMemcpyHostToDevice || kind == cudaMemcpyDefault) {
+        cuMemcpyHtoDAsync_func fn = (cuMemcpyHtoDAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyHtoDAsync_v2");
+        if (!fn) {
+            fn = (cuMemcpyHtoDAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyHtoDAsync");
+        }
+        if (!fn) {
+            return cudaMemcpy(dst, src, count, kind);
+        }
+        cuda_result = fn(dst, src, count, stream);
+    } else if (kind == cudaMemcpyDeviceToHost) {
+        cuMemcpyDtoHAsync_func fn = (cuMemcpyDtoHAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyDtoHAsync_v2");
+        if (!fn) {
+            fn = (cuMemcpyDtoHAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyDtoHAsync");
+        }
+        if (!fn) {
+            return cudaMemcpy(dst, src, count, kind);
+        }
+        cuda_result = fn(dst, (void *)src, count, stream);
+    } else if (kind == cudaMemcpyDeviceToDevice) {
+        cuMemcpyDtoDAsync_func fn = (cuMemcpyDtoDAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyDtoDAsync_v2");
+        if (!fn) {
+            fn = (cuMemcpyDtoDAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyDtoDAsync");
+        }
+        if (!fn) {
+            return cudaMemcpy(dst, src, count, kind);
+        }
+        cuda_result = fn(dst, (void *)src, count, stream);
+    } else {
+        return cudaErrorInvalidValue;
+    }
+
+    if (cuda_result != 0) {
+        char err_msg[256];
+        int n = snprintf(err_msg, sizeof(err_msg),
+                        "[libvgpu-cudart] cudaMemcpyAsync FAILED: kind=%d dst=%p src=%p count=%zu stream=%p pid=%d cuda_result=%d",
+                        kind, dst, src, count, stream, (int)getpid(), cuda_result);
+        if (n > 0 && n < (int)sizeof(err_msg))
+            cudart_log_error_to_file(err_msg);
+    }
+
+    return (cuda_result == 0) ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* cudaMemcpy2DAsync - async 2D memory copy */
@@ -1198,18 +1246,38 @@ cudaError_t cudaMemcpyPeerAsync(void *dst, int dstDevice, const void *src, int s
  * CUDA Runtime API — Stream Management
  * ================================================================ */
 
+/* cudaStreamCreate - create stream */
+cudaError_t cudaStreamCreate(void **pStream) {
+    return cudaStreamCreateWithFlags(pStream, 0);
+}
+
 /* cudaStreamCreateWithFlags - create stream with flags */
 cudaError_t cudaStreamCreateWithFlags(void **pStream, unsigned int flags) {
-    (void)flags;
     if (!pStream) return cudaErrorInvalidValue;
-    *pStream = (void*)0x3000; /* Dummy stream pointer */
-    return cudaSuccess;
+
+    typedef int (*cuStreamCreate_t)(void **, unsigned int);
+    cuStreamCreate_t fn = (cuStreamCreate_t)dlsym(RTLD_DEFAULT, "cuStreamCreate");
+    if (!fn) {
+        fn = (cuStreamCreate_t)dlsym(RTLD_DEFAULT, "cuStreamCreateWithFlags");
+    }
+    if (!fn) {
+        return cudaErrorInitializationError;
+    }
+
+    return fn(pStream, flags) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* cudaStreamDestroy - destroy stream */
 cudaError_t cudaStreamDestroy(void *stream) {
-    (void)stream;
-    return cudaSuccess;
+    typedef int (*cuStreamDestroy_t)(void *);
+    cuStreamDestroy_t fn = (cuStreamDestroy_t)dlsym(RTLD_DEFAULT, "cuStreamDestroy");
+    if (!fn) {
+        fn = (cuStreamDestroy_t)dlsym(RTLD_DEFAULT, "cuStreamDestroy_v2");
+    }
+    if (!fn) {
+        return cudaSuccess;
+    }
+    return fn(stream) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* cudaStreamSynchronize - forward to driver; on failure return success to avoid GGML exit(2) */
@@ -1249,8 +1317,12 @@ cudaError_t cudaStreamIsCapturing(void *stream, int *pIsCapturing) {
 
 /* cudaStreamWaitEvent - wait for event in stream */
 cudaError_t cudaStreamWaitEvent(void *stream, void *event, unsigned int flags) {
-    (void)stream; (void)event; (void)flags;
-    return cudaSuccess;
+    typedef int (*cuStreamWaitEvent_t)(void *, void *, unsigned int);
+    cuStreamWaitEvent_t fn = (cuStreamWaitEvent_t)dlsym(RTLD_DEFAULT, "cuStreamWaitEvent");
+    if (!fn) {
+        return cudaSuccess;
+    }
+    return fn(stream, event, flags) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* ================================================================
@@ -1259,28 +1331,48 @@ cudaError_t cudaStreamWaitEvent(void *stream, void *event, unsigned int flags) {
 
 /* cudaEventCreateWithFlags - create event with flags */
 cudaError_t cudaEventCreateWithFlags(void **event, unsigned int flags) {
-    (void)flags;
     if (!event) return cudaErrorInvalidValue;
-    *event = (void*)0x5000;
-    return cudaSuccess;
+
+    typedef int (*cuEventCreate_t)(void **, unsigned int);
+    cuEventCreate_t fn = (cuEventCreate_t)dlsym(RTLD_DEFAULT, "cuEventCreate");
+    if (!fn) {
+        fn = (cuEventCreate_t)dlsym(RTLD_DEFAULT, "cuEventCreateWithFlags");
+    }
+    if (!fn) {
+        return cudaErrorInitializationError;
+    }
+
+    return fn(event, flags) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* cudaEventDestroy - destroy event */
 cudaError_t cudaEventDestroy(void *event) {
-    (void)event;
-    return cudaSuccess;
+    typedef int (*cuEventDestroy_t)(void *);
+    cuEventDestroy_t fn = (cuEventDestroy_t)dlsym(RTLD_DEFAULT, "cuEventDestroy");
+    if (!fn) {
+        return cudaSuccess;
+    }
+    return fn(event) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* cudaEventRecord - record event */
 cudaError_t cudaEventRecord(void *event, void *stream) {
-    (void)event; (void)stream;
-    return cudaSuccess;
+    typedef int (*cuEventRecord_t)(void *, void *);
+    cuEventRecord_t fn = (cuEventRecord_t)dlsym(RTLD_DEFAULT, "cuEventRecord");
+    if (!fn) {
+        return cudaSuccess;
+    }
+    return fn(event, stream) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* cudaEventSynchronize - synchronize event */
 cudaError_t cudaEventSynchronize(void *event) {
-    (void)event;
-    return cudaSuccess;
+    typedef int (*cuEventSynchronize_t)(void *);
+    cuEventSynchronize_t fn = (cuEventSynchronize_t)dlsym(RTLD_DEFAULT, "cuEventSynchronize");
+    if (!fn) {
+        return cudaSuccess;
+    }
+    return fn(event) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* ================================================================

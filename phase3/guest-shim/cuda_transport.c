@@ -83,11 +83,31 @@ static const char *call_id_to_name(uint32_t call_id)
         case CUDA_CALL_MEMCPY_HTOD: return "cuMemcpyHtoD_v2";
         case CUDA_CALL_MEMCPY_DTOH: return "cuMemcpyDtoH_v2";
         case CUDA_CALL_MEMCPY_DTOD: return "cuMemcpyDtoD_v2";
+        case CUDA_CALL_MEMSET_D8: return "cuMemsetD8_v2";
+        case CUDA_CALL_MEMSET_D16: return "cuMemsetD16_v2";
+        case CUDA_CALL_MEMSET_D32: return "cuMemsetD32_v2";
         case CUDA_CALL_MODULE_LOAD_DATA: return "cuModuleLoadData";
+        case CUDA_CALL_MODULE_LOAD_DATA_EX: return "cuModuleLoadDataEx";
+        case CUDA_CALL_MODULE_LOAD_FAT_BINARY: return "cuModuleLoadFatBinary";
+        case CUDA_CALL_MODULE_UNLOAD: return "cuModuleUnload";
         case CUDA_CALL_MODULE_GET_FUNCTION: return "cuModuleGetFunction";
+        case CUDA_CALL_MODULE_GET_GLOBAL: return "cuModuleGetGlobal";
         case CUDA_CALL_LAUNCH_KERNEL: return "cuLaunchKernel";
+        case CUDA_CALL_LAUNCH_COOPERATIVE_KERNEL: return "cuLaunchCooperativeKernel";
         case CUDA_CALL_STREAM_CREATE: return "cuStreamCreate";
+        case CUDA_CALL_STREAM_CREATE_WITH_FLAGS: return "cuStreamCreateWithFlags";
+        case CUDA_CALL_STREAM_CREATE_WITH_PRIORITY: return "cuStreamCreateWithPriority";
+        case CUDA_CALL_STREAM_DESTROY: return "cuStreamDestroy";
         case CUDA_CALL_STREAM_SYNCHRONIZE: return "cuStreamSynchronize";
+        case CUDA_CALL_STREAM_QUERY: return "cuStreamQuery";
+        case CUDA_CALL_STREAM_WAIT_EVENT: return "cuStreamWaitEvent";
+        case CUDA_CALL_EVENT_CREATE: return "cuEventCreate";
+        case CUDA_CALL_EVENT_CREATE_WITH_FLAGS: return "cuEventCreateWithFlags";
+        case CUDA_CALL_EVENT_DESTROY: return "cuEventDestroy";
+        case CUDA_CALL_EVENT_RECORD: return "cuEventRecord";
+        case CUDA_CALL_EVENT_SYNCHRONIZE: return "cuEventSynchronize";
+        case CUDA_CALL_EVENT_QUERY: return "cuEventQuery";
+        case CUDA_CALL_EVENT_ELAPSED_TIME: return "cuEventElapsedTime";
         case CUDA_CALL_GET_GPU_INFO: return "cuGetGpuInfo";
         default: return "?(call_id)";
     }
@@ -395,8 +415,9 @@ struct cuda_transport {
     char           pci_bdf[64];
 
     /* VHOST-style shared memory */
-    void          *shmem;        /* mmap base (full region)              */
-    size_t         shmem_size;   /* total size (G2H + H2G)               */
+    void          *shmem;        /* mmap base (may be larger than window) */
+    size_t         shmem_alloc_size; /* total mmap+mlock span            */
+    size_t         shmem_size;   /* registered contiguous GPA window     */
     void          *shmem_g2h;   /* first half: guest → host data        */
     void          *shmem_h2g;   /* second half: host → guest data       */
     size_t         shmem_half;  /* shmem_size / 2                       */
@@ -578,10 +599,52 @@ static int find_vgpu_device(char *res0_path, size_t res0_sz,
  * or 0 on failure.  The page must already be faulted in (e.g. by
  * mlock or a dummy write).
  * ================================================================ */
-static uint64_t virt_to_phys(const void *vaddr)
+enum vgpu_pagemap_probe_status {
+    VGPU_PAGEMAP_OK = 0,
+    VGPU_PAGEMAP_OPEN_FAILED,
+    VGPU_PAGEMAP_READ_FAILED,
+    VGPU_PAGEMAP_NOT_PRESENT,
+    VGPU_PAGEMAP_PFN_HIDDEN,
+    VGPU_PAGEMAP_NONCONTIGUOUS,
+};
+
+static const char *vgpu_pagemap_probe_status_str(int status)
+{
+    switch (status) {
+        case VGPU_PAGEMAP_OK: return "ok";
+        case VGPU_PAGEMAP_OPEN_FAILED: return "open_failed";
+        case VGPU_PAGEMAP_READ_FAILED: return "read_failed";
+        case VGPU_PAGEMAP_NOT_PRESENT: return "not_present";
+        case VGPU_PAGEMAP_PFN_HIDDEN: return "pfn_hidden";
+        case VGPU_PAGEMAP_NONCONTIGUOUS: return "noncontiguous";
+        default: return "unknown";
+    }
+}
+
+static uint64_t current_effective_caps(void)
+{
+    FILE *fp = fopen("/proc/self/status", "r");
+    char line[256];
+    uint64_t caps = 0;
+
+    if (!fp) return 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "CapEff:", 7) == 0) {
+            unsigned long long parsed = 0;
+            if (sscanf(line + 7, "%llx", &parsed) == 1) {
+                caps = (uint64_t)parsed;
+            }
+            break;
+        }
+    }
+    fclose(fp);
+    return caps;
+}
+
+static int pagemap_entry_for(const void *vaddr, uint64_t *pme_out)
 {
     int fd = open("/proc/self/pagemap", O_RDONLY);
-    if (fd < 0) return 0;
+    if (fd < 0) return VGPU_PAGEMAP_OPEN_FAILED;
 
     uint64_t page_size = (uint64_t)sysconf(_SC_PAGESIZE);
     uint64_t vfn       = (uintptr_t)vaddr / page_size;
@@ -589,14 +652,110 @@ static uint64_t virt_to_phys(const void *vaddr)
 
     if (pread(fd, &pme, sizeof(pme), (off_t)(vfn * sizeof(pme))) != (ssize_t)sizeof(pme)) {
         close(fd);
-        return 0;
+        return VGPU_PAGEMAP_READ_FAILED;
     }
     close(fd);
+    *pme_out = pme;
 
     /* Bit 63 = present; bits 54:0 = PFN */
-    if (!(pme & (1ULL << 63))) return 0;  /* page not present */
-    uint64_t pfn = pme & 0x007FFFFFFFFFFFFFULL;
-    return pfn * page_size + ((uintptr_t)vaddr & (page_size - 1));
+    if (!(pme & (1ULL << 63))) return VGPU_PAGEMAP_NOT_PRESENT;
+    if ((pme & 0x007FFFFFFFFFFFFFULL) == 0) return VGPU_PAGEMAP_PFN_HIDDEN;
+    return VGPU_PAGEMAP_OK;
+}
+
+static int find_contiguous_gpa_span(void *base,
+                                    size_t span_len,
+                                    size_t min_len,
+                                    void **best_virt_out,
+                                    uint64_t *best_gpa_out,
+                                    size_t *best_len_out,
+                                    uint64_t *detail_out)
+{
+    size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    size_t total_pages;
+    size_t min_pages;
+    size_t cur_pages = 0;
+    size_t best_pages = 0;
+    uint64_t prev_phys = 0;
+    uint64_t cur_start_phys = 0;
+    void *cur_start_virt = NULL;
+    void *best_start_virt = NULL;
+    uint64_t best_start_phys = 0;
+    uint64_t last_pme = 0;
+    int last_status = VGPU_PAGEMAP_OK;
+
+    if (page_size == 0 || span_len < min_len || min_len < page_size) {
+        if (best_virt_out) *best_virt_out = NULL;
+        if (best_gpa_out) *best_gpa_out = 0;
+        if (best_len_out) *best_len_out = 0;
+        if (detail_out) *detail_out = 0;
+        return VGPU_PAGEMAP_NONCONTIGUOUS;
+    }
+
+    total_pages = span_len / page_size;
+    min_pages = (min_len + page_size - 1) / page_size;
+
+    for (size_t i = 0; i < total_pages; ++i) {
+        char *page = (char *)base + (i * page_size);
+        uint64_t pme = 0;
+        int st = pagemap_entry_for(page, &pme);
+
+        if (st != VGPU_PAGEMAP_OK) {
+            cur_pages = 0;
+            cur_start_virt = NULL;
+            cur_start_phys = 0;
+            last_status = st;
+            last_pme = pme;
+            continue;
+        }
+
+        uint64_t phys = (pme & 0x007FFFFFFFFFFFFFULL) * (uint64_t)page_size;
+        if (cur_pages == 0 || phys != prev_phys + page_size) {
+            cur_pages = 1;
+            cur_start_virt = page;
+            cur_start_phys = phys;
+        } else {
+            cur_pages++;
+        }
+        prev_phys = phys;
+
+        if (cur_pages > best_pages) {
+            best_pages = cur_pages;
+            best_start_virt = cur_start_virt;
+            best_start_phys = cur_start_phys;
+        }
+        if (cur_pages >= min_pages) {
+            size_t run_len = cur_pages * page_size;
+            /* Keep the registered window evenly split into G2H/H2G halves. */
+            run_len &= ~(size_t)((2 * page_size) - 1);
+            if (run_len >= min_len) {
+                *best_virt_out = cur_start_virt;
+                *best_gpa_out = cur_start_phys;
+                *best_len_out = run_len;
+                if (detail_out) *detail_out = pme;
+                return VGPU_PAGEMAP_OK;
+            }
+        }
+    }
+
+    if (detail_out) {
+        if (best_pages > 0) {
+            *detail_out = best_pages * page_size;
+        } else {
+            *detail_out = last_pme;
+        }
+    }
+    if (best_pages > 0) {
+        size_t best_len = best_pages * page_size;
+        best_len &= ~(size_t)((2 * page_size) - 1);
+        if (best_len >= min_len) {
+            *best_virt_out = best_start_virt;
+            *best_gpa_out = best_start_phys;
+            *best_len_out = best_len;
+            return VGPU_PAGEMAP_OK;
+        }
+    }
+    return (last_status == VGPU_PAGEMAP_OK) ? VGPU_PAGEMAP_NONCONTIGUOUS : last_status;
 }
 
 /* ================================================================
@@ -612,116 +771,136 @@ static int setup_shmem(cuda_transport_t *t)
         return 0;
     }
 
-    /* Try SHMEM_DEFAULT_SIZE (256 MB) first; fall back to SHMEM_MIN_SIZE */
-    size_t try_sizes[] = { SHMEM_DEFAULT_SIZE, SHMEM_MIN_SIZE, 0 };
-    void *shmem = MAP_FAILED;
-    size_t shmem_size = 0;
+    /* Try a large span first, but allow smaller windows if the guest cannot
+     * lock or expose a large enough contiguous GPA run. */
+    size_t try_sizes[] = {
+        SHMEM_DEFAULT_SIZE,
+        64u * 1024u * 1024u,
+        16u * 1024u * 1024u,
+        SHMEM_MIN_SIZE,
+        0
+    };
 
-    for (int i = 0; try_sizes[i] != 0; i++) {
-        shmem = mmap(NULL, try_sizes[i],
-                     PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_LOCKED,
-                     -1, 0);
-        if (shmem != MAP_FAILED) {
-            shmem_size = try_sizes[i];
-            break;
-        }
-        fprintf(stderr, "[cuda-transport] mmap shmem %zu MB failed: %s\n",
-                try_sizes[i] >> 20, strerror(errno));
-    }
+    for (int size_idx = 0; try_sizes[size_idx] != 0; size_idx++) {
+        size_t req_size = try_sizes[size_idx];
+        int max_attempts = (req_size == SHMEM_DEFAULT_SIZE) ? 6 : 3;
 
-    if (shmem == MAP_FAILED || shmem_size == 0) {
-        fprintf(stderr, "[cuda-transport] Cannot allocate shared memory "
-                "— falling back to BAR1\n");
-        return 0;
-    }
-
-    /* Touch every page to ensure they are faulted in before mlock */
-    memset(shmem, 0, shmem_size);
-
-    /* Lock in RAM so pages cannot be swapped out (GPA must remain valid) */
-    if (mlock(shmem, shmem_size) != 0) {
-        fprintf(stderr, "[cuda-transport] mlock(%zu MB) failed: %s "
-                "— trying smaller region\n",
-                shmem_size >> 20, strerror(errno));
-        /* If mlock failed for 256 MB, the kernel may allow 8 MB */
-        if (shmem_size > SHMEM_MIN_SIZE) {
-            munmap(shmem, shmem_size);
-            shmem_size = SHMEM_MIN_SIZE;
-            shmem = mmap(NULL, shmem_size,
-                         PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_LOCKED,
-                         -1, 0);
+        for (int attempt = 0; attempt < max_attempts; attempt++) {
+            int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_32BIT
+            int use_map32 = (attempt & 1);
+            if (use_map32) {
+                mmap_flags |= MAP_32BIT;
+            }
+#else
+            int use_map32 = 0;
+#endif
+            void *shmem = mmap(NULL, req_size,
+                               PROT_READ | PROT_WRITE,
+                               mmap_flags,
+                               -1, 0);
+            size_t shmem_alloc_size = req_size;
             if (shmem == MAP_FAILED) {
-                fprintf(stderr, "[cuda-transport] Fallback mmap failed: %s"
-                        " — using BAR1\n", strerror(errno));
-                return 0;
+                fprintf(stderr, "[cuda-transport] mmap shmem %zu MB failed "
+                        "(attempt=%d map32=%d): %s\n",
+                        req_size >> 20, attempt + 1, use_map32, strerror(errno));
+                continue;
             }
-            memset(shmem, 0, shmem_size);
-            if (mlock(shmem, shmem_size) != 0) {
-                fprintf(stderr, "[cuda-transport] Fallback mlock failed: %s"
-                        " — using BAR1\n", strerror(errno));
-                munmap(shmem, shmem_size);
-                return 0;
+
+            memset(shmem, 0, shmem_alloc_size);
+
+            if (mlock(shmem, shmem_alloc_size) != 0) {
+                fprintf(stderr, "[cuda-transport] mlock(%zu MB) failed "
+                        "(attempt=%d map32=%d): %s\n",
+                        shmem_alloc_size >> 20, attempt + 1, use_map32, strerror(errno));
+                munmap(shmem, shmem_alloc_size);
+                continue;
             }
-        } else {
-            munmap(shmem, shmem_size);
-            return 0;
+
+            void *shmem_window = NULL;
+            uint64_t gpa = 0;
+            size_t shmem_size = 0;
+            uint64_t detail = 0;
+            int gpa_rc = find_contiguous_gpa_span(shmem, shmem_alloc_size, SHMEM_MIN_SIZE,
+                                                  &shmem_window, &gpa, &shmem_size, &detail);
+            if (gpa_rc != VGPU_PAGEMAP_OK) {
+                uint64_t caps_eff = current_effective_caps();
+                if (gpa_rc == VGPU_PAGEMAP_NONCONTIGUOUS) {
+                    fprintf(stderr, "[cuda-transport] No contiguous GPA span >= %zu MB "
+                            "inside %zu MB shmem mapping (attempt=%d map32=%d best=%zu MB capeff=0x%llx)\n",
+                            (size_t)(SHMEM_MIN_SIZE >> 20), shmem_alloc_size >> 20,
+                            attempt + 1, use_map32, detail >> 20,
+                            (unsigned long long)caps_eff);
+                } else {
+                    fprintf(stderr, "[cuda-transport] Cannot resolve GPA for shmem "
+                            "(attempt=%d map32=%d reason=%s detail=0x%llx capeff=0x%llx)\n",
+                            attempt + 1, use_map32,
+                            vgpu_pagemap_probe_status_str(gpa_rc),
+                            (unsigned long long)detail,
+                            (unsigned long long)caps_eff);
+                }
+                munlock(shmem, shmem_alloc_size);
+                munmap(shmem, shmem_alloc_size);
+                continue;
+            }
+
+            REG32(t->bar0, REG_SHMEM_GPA_LO) = (uint32_t)(gpa & 0xFFFFFFFFu);
+            REG32(t->bar0, REG_SHMEM_GPA_HI) = (uint32_t)(gpa >> 32);
+            REG32(t->bar0, REG_SHMEM_SIZE)   = (uint32_t)shmem_size;
+            REG32(t->bar0, REG_SHMEM_CTRL)   = 1;  /* register */
+
+            time_t start = time(NULL);
+            uint32_t st;
+            while (1) {
+                st = REG32(t->bar0, REG_STATUS);
+                if (st == STATUS_DONE || st == STATUS_ERROR) break;
+                if (time(NULL) - start >= 5) { st = 0xFF; break; }
+                usleep(1000);
+            }
+
+            if (st == STATUS_DONE) {
+                t->shmem      = shmem;
+                t->shmem_alloc_size = shmem_alloc_size;
+                t->shmem_size = shmem_size;
+                t->shmem_half = shmem_size / 2;
+                t->shmem_g2h  = shmem_window;
+                t->shmem_h2g  = (char *)shmem_window + shmem_size / 2;
+                t->has_shmem  = 1;
+
+                if (vgpu_debug_logging()) {
+                    fprintf(stderr, "[cuda-transport] Shared-memory registered: "
+                            "gpa=0x%016llx size=%zu MB (mapped=%zu MB window_off=%zu MB "
+                            "G2H=%zu MB H2G=%zu MB, attempt=%d map32=%d)\n",
+                            (unsigned long long)gpa,
+                            shmem_size >> 20, shmem_alloc_size >> 20,
+                            ((size_t)((char *)shmem_window - (char *)shmem)) >> 20,
+                            (shmem_size / 2) >> 20, (shmem_size / 2) >> 20,
+                            attempt + 1, use_map32);
+                }
+                return 1;
+            }
+
+            {
+                uint32_t err = REG32(t->bar0, REG_ERROR_CODE);
+                fprintf(stderr, "[cuda-transport] vgpu-stub rejected shmem registration "
+                        "(gpa=0x%016llx size=%zu MB attempt=%d map32=%d status=0x%02x err=0x%08x:%s)\n",
+                        (unsigned long long)gpa, shmem_size >> 20, attempt + 1, use_map32,
+                        st, err, vgpu_err_to_str(err));
+                REG32(t->bar0, REG_SHMEM_CTRL) = 0;
+                munlock(shmem, shmem_alloc_size);
+                munmap(shmem, shmem_alloc_size);
+
+                if (err != VGPU_ERR_INVALID_REQUEST) {
+                    fprintf(stderr, "[cuda-transport] Non-retryable shmem registration failure "
+                            "— using BAR1\n");
+                    return 0;
+                }
+            }
         }
     }
 
-    /* Get the Guest Physical Address of the base page */
-    uint64_t gpa = virt_to_phys(shmem);
-    if (gpa == 0) {
-        fprintf(stderr, "[cuda-transport] Cannot resolve GPA for shmem "
-                "(need CAP_SYS_ADMIN or /proc/self/pagemap access) "
-                "— using BAR1\n");
-        munlock(shmem, shmem_size);
-        munmap(shmem, shmem_size);
-        return 0;
-    }
-
-    /* Register with the vgpu-stub */
-    REG32(t->bar0, REG_SHMEM_GPA_LO) = (uint32_t)(gpa & 0xFFFFFFFFu);
-    REG32(t->bar0, REG_SHMEM_GPA_HI) = (uint32_t)(gpa >> 32);
-    REG32(t->bar0, REG_SHMEM_SIZE)   = (uint32_t)shmem_size;
-    REG32(t->bar0, REG_SHMEM_CTRL)   = 1;  /* register */
-
-    /* Poll for acknowledgement (max 5 s) */
-    time_t start = time(NULL);
-    uint32_t st;
-    while (1) {
-        st = REG32(t->bar0, REG_STATUS);
-        if (st == STATUS_DONE || st == STATUS_ERROR) break;
-        if (time(NULL) - start >= 5) { st = 0xFF; break; }
-        usleep(1000);
-    }
-
-    if (st != STATUS_DONE) {
-        uint32_t err = REG32(t->bar0, REG_ERROR_CODE);
-        fprintf(stderr, "[cuda-transport] vgpu-stub rejected shmem registration "
-                "(status=0x%02x err=0x%08x:%s) — using BAR1\n",
-                st, err, vgpu_err_to_str(err));
-        /* Unregister */
-        REG32(t->bar0, REG_SHMEM_CTRL) = 0;
-        munlock(shmem, shmem_size);
-        munmap(shmem, shmem_size);
-        return 0;
-    }
-
-    t->shmem      = shmem;
-    t->shmem_size = shmem_size;
-    t->shmem_half = shmem_size / 2;
-    t->shmem_g2h  = shmem;
-    t->shmem_h2g  = (char *)shmem + shmem_size / 2;
-    t->has_shmem  = 1;
-
-    if (vgpu_debug_logging())
-        fprintf(stderr, "[cuda-transport] Shared-memory registered: "
-                "gpa=0x%016llx size=%zu MB (G2H=%zu MB H2G=%zu MB)\n",
-                (unsigned long long)gpa,
-                shmem_size >> 20, (shmem_size / 2) >> 20, (shmem_size / 2) >> 20);
-    return 1;
+    fprintf(stderr, "[cuda-transport] Exhausted shmem registration retries — using BAR1\n");
+    return 0;
 }
 
 /* ================================================================
@@ -869,9 +1048,10 @@ void cuda_transport_destroy(cuda_transport_t *tp)
     /* Release shared memory */
     if (tp->has_shmem && tp->shmem) {
         REG32(tp->bar0, REG_SHMEM_CTRL) = 0;  /* unregister */
-        munlock(tp->shmem, tp->shmem_size);
-        munmap(tp->shmem, tp->shmem_size);
+        munlock(tp->shmem, tp->shmem_alloc_size);
+        munmap(tp->shmem, tp->shmem_alloc_size);
         tp->shmem    = NULL;
+        tp->shmem_alloc_size = 0;
         tp->has_shmem = 0;
     }
 
@@ -1115,8 +1295,8 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             (void)syscall(__NR_close, tfd);
         }
     }
-    /* Verification: record that we are about to poll for this call (so we can see if HtoD/0x0032 is ever reached) */
-    if (call_id == 0x0030u || call_id == 0x0032u) {
+    /* Verification: record that we are about to poll for this call (alloc/HtoD/DtoH) */
+    if (call_id == 0x0030u || call_id == 0x0032u || call_id == 0x0033u) {
         int vfd = (int)syscall(__NR_open, "/tmp/vgpu_host_response_verify.log",
                 O_WRONLY | O_CREAT | O_APPEND, 0666);
         if (vfd >= 0) {
@@ -1127,6 +1307,19 @@ static int do_single_cuda_call(cuda_transport_t *tp,
         }
     }
     REG32(tp->bar0, REG_CUDA_DOORBELL) = 1;
+
+    /* Stuck detector: overwrite current call so we can read it while blocking (e.g. after 40+ min) */
+    {
+        int cfd = (int)syscall(__NR_open, "/tmp/vgpu_current_call.txt",
+                               O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (cfd >= 0) {
+            char cbuf[128];
+            int cn = snprintf(cbuf, sizeof(cbuf), "call_id=0x%04x %s seq=%u pid=%d\n",
+                              call_id, call_id_to_name(call_id), seq, (int)getpid());
+            if (cn > 0) (void)syscall(__NR_write, cfd, cbuf, (size_t)cn);
+            (void)syscall(__NR_close, cfd);
+        }
+    }
 
     /* Poll for completion */
     start = time(NULL);
@@ -1486,12 +1679,25 @@ static int cuda_transport_call_module_load_chunked(
         limit = CUDA_SMALL_DATA_MAX;
     }
 
+    /* Large cuModuleLoadFatBinary payloads (e.g. GGML ~400 KiB) previously used a
+     * single chunk with CUDA_CHUNK_FLAG_SINGLE and one large BAR1/shmem copy.
+     * The host executor path for SINGLE vs chunked FIRST/.../LAST differs; the
+     * smaller module load succeeded via multi-chunk accumulation. Cap chunk size
+     * for FAT_BINARY so we always use FIRST/MIDDLE/LAST and mod_chunk_buf. */
+    if (call_id == CUDA_CALL_MODULE_LOAD_FAT_BINARY && send_len > (64u * 1024u)) {
+        uint32_t cap = 64u * 1024u;
+        if (limit > cap) limit = cap;
+    }
+
     while (offset < send_len) {
         uint32_t chunk = send_len - offset;
         if (chunk > limit) chunk = limit;
 
         memset(chunk_args, 0, sizeof(chunk_args));
-        if (send_len <= limit) {
+        /* SINGLE only when this chunk carries the *entire* payload in one RPC.
+         * Do NOT use (send_len <= limit): with a large BAR1/shmem limit, that is
+         * true for ~400 KiB images and wrongly emits SINGLE instead of FIRST/.../LAST. */
+        if (chunk == send_len) {
             chunk_args[14] = CUDA_CHUNK_FLAG_SINGLE;
         } else if (offset == 0) {
             chunk_args[14] = CUDA_CHUNK_FLAG_FIRST;

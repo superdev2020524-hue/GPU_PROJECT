@@ -577,12 +577,10 @@ static void vgpu_mmio_write(void *opaque, hwaddr addr,
                     s->shmem_h2g   = NULL;
                     s->shmem_active = 0;
 
-                    /* Also free the legacy BAR1 buffer now that shared
-                     * memory takes over the data path */
-                    if (s->bar1_data) {
-                        g_free(s->bar1_data);
-                        s->bar1_data = NULL;
-                    }
+                    /* Keep the BAR1 backing store alive even when shmem is active.
+                     * Reconnects and transient shmem registration failures can fall
+                     * back to BAR1 on the next request; freeing it here makes later
+                     * large copies fail as REQUEST_TOO_LARGE despite BAR1 existing. */
                 }
 
                 /* Map G2H (read-only from device perspective) */

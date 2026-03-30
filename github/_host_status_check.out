@@ -1,0 +1,30 @@
+ ( hostname; uptime; echo '--- mediator module-load<( hostname; uptime; echo '--- mediator module-load                          / E1 (tail) ---'; grep -E<--- mediator module-load / E1 (tail) ---'; grep -E                          'module-load|401312|INVAL< E1 (tail) ---'; grep -E 'module-load|401312|INVALI                         D_IMAGE|data_len=401312' <module-load|401312|INVALID_IMAGE|data_len=401312' /                         tmp/mediator.log 2>/dev/n<_IMAGE|data_len=401312' /tmp/mediator.log 2>/dev/nu                         ll | tail -25 ); __rc=$?;<mp/mediator.log 2>/dev/null | tail -25 ); __rc=$?;                          printf '\n__CONNECT_HOST_<l | tail -25 ); __rc=$?; printf '\n__CONNECT_HOST_D                         ONE__:%s\n' "$__rc"
+xcp-ng-syovfxoz
+ 15:55:05 up 49 days, 10:50,  1 user,  load average: 0.15, 0.25, 0.21
+--- mediator module-load / E1 (tail) ---
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=28120 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2b132f0
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=401312 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] dumped /tmp/fail401312.bin (401312 bytes)
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=200 name=CUDA_ERROR_INVALID_IMAGE detail=device kernel image is invalid module=(nil)
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=28120 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2b3c8b0
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=401312 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] dumped /tmp/fail401312.bin (401312 bytes)
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=200 name=CUDA_ERROR_INVALID_IMAGE detail=device kernel image is invalid module=(nil)
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=9360 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2b55220
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=28120 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2b54c40
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=4432 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2b79070
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=9360 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2b88da0
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=28120 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2b88640
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=4432 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2bb0030
+[cuda-executor] vm_id=9 module-load start call_id=0x0042 path=cuModuleLoadFatBinary data_len=6232 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=9 module-load done call_id=0x0042 rc=0 name=CUDA_SUCCESS detail=no error module=0x2cfe360
+
+

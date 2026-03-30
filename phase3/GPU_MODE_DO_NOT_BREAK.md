@@ -113,6 +113,19 @@ If any of these fail, the executor sets `result->status` to the CUDA error and t
 
 ---
 
+## Addendum (Mar 2026): **cuBLAS must use `libvgpu-cublas` (RPC)**
+
+The earlier rule **“no `libcublas.so.12` shim in `/opt/vgpu/lib`”** targeted a **dummy** cuBLAS that broke **discovery**. The situation here is different:
+
+- **Real** NVIDIA **`libcublas`** in the guest cannot **`cublasCreate_v2`** on the shim stack (**`INTERNAL_ERROR`**).
+- **`libvgpu-cublas.so.12`** forwards create/GEMM to the **host** mediator (**real GPU**).
+
+**Do:** Prefer **`libcublas.so.12` → `libvgpu-cublas`** under **`cuda_v12`** (or equivalent **`LD_LIBRARY_PATH`** ordering), with the **vendor** `*.3.2.9` file kept for **`dlopen`** fallback inside the shim — see **`CUBLAS_VENDOR_SYMLINK_DEPLOY.md`**.
+
+**After deploy:** Re-verify discovery (`inference compute`, **`library=CUDA`**) with a short **`/api/tags`** check.
+
+---
+
 ## Related files
 
 - **RESTORE_GPU_LOGIC_CHECKLIST.md** — Step-by-step restore and verify.

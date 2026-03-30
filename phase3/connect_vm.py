@@ -105,13 +105,15 @@ def connect_and_run_command(command):
             if index == 0 or index == 1:
                 print("Sending password...")
                 child.sendline(VM_PASSWORD)
-                child.expect([r'\$', '#', pexpect.EOF, pexpect.TIMEOUT], timeout=PROMPT_TIMEOUT_SEC)
-                
+                # Some VM sessions do not present a clean prompt even after successful
+                # authentication (e.g. login banners, PTY quirks, or prompt suppression).
+                # Do not block here on a brittle prompt regex; the wrapped command below
+                # already waits for a unique completion marker and can handle sudo prompts.
+                time.sleep(1)
                 if child.isalive():
                     return run_remote_command()
-                else:
-                    print("Connection failed after password")
-                    print(child.before)
+                print("Connection failed after password")
+                print(child.before)
             elif index == 2 or index == 3:
                 return run_remote_command()
             else:

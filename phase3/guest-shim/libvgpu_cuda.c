@@ -3835,6 +3835,14 @@ static int fetch_gpu_info(void)
 
     if (rc == 0 && recv_len >= sizeof(live_info)) {
         g_gpu_info = live_info;
+        /* Override name with our configured vGPU display name */
+        strncpy(g_gpu_info.name, GPU_DEFAULT_NAME, sizeof(g_gpu_info.name) - 1);
+        g_gpu_info.name[sizeof(g_gpu_info.name) - 1] = '\0';
+        /* Force advertised CC for kernel selection (libcublasLt, GGML paths).
+         * Host GET_GPU_INFO may leave values that trigger wrong fatbin arch
+         * on H100; see FATBIN_CUBLAS_CC_ANALYSIS_MAR21.md. */
+        g_gpu_info.compute_cap_major = GPU_DEFAULT_CC_MAJOR;
+        g_gpu_info.compute_cap_minor = GPU_DEFAULT_CC_MINOR;
         sanitize_gpu_info(&g_gpu_info);
         g_gpu_info_valid = 1;
         fprintf(stderr, "[libvgpu-cuda] GPU info (live): %s, mem=%llu MB, CC=%d.%d\n",
@@ -5102,8 +5110,25 @@ CUresult cuGetExportTable(const void **ppExportTable, const void *pExportTableId
         if (unknown_len > 0 && unknown_len < (int)sizeof(unknown_msg)) {
             syscall(__NR_write, 2, unknown_msg, unknown_len);
         }
-        *ppExportTable = NULL;
-        return CUDA_ERROR_NOT_SUPPORTED;
+        /*
+         * Compatibility fallback:
+         * 1) Try forwarding unknown UUIDs to the real driver's export table.
+         * 2) If unavailable, return a small non-failing table so callers that
+         *    probe optional interfaces don't abort with NOT_SUPPORTED.
+         */
+        {
+            static CUresult (*real_cuGetExportTable)(const void **, const void *) = NULL;
+            if (!real_cuGetExportTable) {
+                real_cuGetExportTable = (CUresult (*)(const void **, const void *))dlsym(RTLD_NEXT, "cuGetExportTable");
+            }
+            if (real_cuGetExportTable) {
+                CUresult r = real_cuGetExportTable(ppExportTable, pExportTableId);
+                if (r == CUDA_SUCCESS && ppExportTable && *ppExportTable) {
+                    return CUDA_SUCCESS;
+                }
+            }
+        }
+        *ppExportTable = (const void *)g_context_wrapper;
     }
 
     char log_msg[768];
@@ -5146,6 +5171,73 @@ CUresult cuGetExportTable(const void **ppExportTable, const void *pExportTableId
 /* Forward declarations used by VMM helpers below. */
 CUresult cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize);
 CUresult cuMemFree_v2(CUdeviceptr dptr);
+
+#define VGPU_VMM_ALIAS_MAX 4096
+typedef struct {
+    CUdeviceptr reserved_ptr;
+    size_t      size;
+    CUdeviceptr backing_ptr;
+} vgpu_vmm_alias_t;
+
+static vgpu_vmm_alias_t g_vgpu_vmm_aliases[VGPU_VMM_ALIAS_MAX];
+static size_t g_vgpu_vmm_alias_count = 0;
+static pthread_mutex_t g_vgpu_vmm_alias_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void vgpu_vmm_alias_add(CUdeviceptr reserved_ptr, size_t size, CUdeviceptr backing_ptr)
+{
+    pthread_mutex_lock(&g_vgpu_vmm_alias_mutex);
+    for (size_t i = 0; i < g_vgpu_vmm_alias_count; ++i) {
+        if (g_vgpu_vmm_aliases[i].reserved_ptr == reserved_ptr) {
+            g_vgpu_vmm_aliases[i].size = size;
+            g_vgpu_vmm_aliases[i].backing_ptr = backing_ptr;
+            pthread_mutex_unlock(&g_vgpu_vmm_alias_mutex);
+            return;
+        }
+    }
+    if (g_vgpu_vmm_alias_count < VGPU_VMM_ALIAS_MAX) {
+        g_vgpu_vmm_aliases[g_vgpu_vmm_alias_count].reserved_ptr = reserved_ptr;
+        g_vgpu_vmm_aliases[g_vgpu_vmm_alias_count].size = size;
+        g_vgpu_vmm_aliases[g_vgpu_vmm_alias_count].backing_ptr = backing_ptr;
+        g_vgpu_vmm_alias_count++;
+    }
+    pthread_mutex_unlock(&g_vgpu_vmm_alias_mutex);
+}
+
+static CUdeviceptr vgpu_vmm_alias_remove(CUdeviceptr reserved_ptr, size_t size)
+{
+    CUdeviceptr backing_ptr = 0;
+    pthread_mutex_lock(&g_vgpu_vmm_alias_mutex);
+    for (size_t i = 0; i < g_vgpu_vmm_alias_count; ++i) {
+        CUdeviceptr base = g_vgpu_vmm_aliases[i].reserved_ptr;
+        size_t span = g_vgpu_vmm_aliases[i].size;
+        if (reserved_ptr == base && size == span) {
+            backing_ptr = g_vgpu_vmm_aliases[i].backing_ptr;
+            g_vgpu_vmm_aliases[i] = g_vgpu_vmm_aliases[g_vgpu_vmm_alias_count - 1];
+            g_vgpu_vmm_alias_count--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_vgpu_vmm_alias_mutex);
+    return backing_ptr;
+}
+
+CUdeviceptr libvgpu_cuda_resolve_mapped_ptr(CUdeviceptr ptr)
+{
+    pthread_mutex_lock(&g_vgpu_vmm_alias_mutex);
+    for (size_t i = 0; i < g_vgpu_vmm_alias_count; ++i) {
+        CUdeviceptr base = g_vgpu_vmm_aliases[i].reserved_ptr;
+        if (ptr >= base) {
+            uint64_t off = (uint64_t)(ptr - base);
+            if (off < g_vgpu_vmm_aliases[i].size) {
+                CUdeviceptr resolved = g_vgpu_vmm_aliases[i].backing_ptr + off;
+                pthread_mutex_unlock(&g_vgpu_vmm_alias_mutex);
+                return resolved;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_vgpu_vmm_alias_mutex);
+    return ptr;
+}
 
 CUresult cuMemCreate(CUmemGenericAllocationHandle *handle, size_t size,
                      const CUmemAllocationProp *prop __attribute__((unused)), unsigned long long flags)
@@ -5226,7 +5318,16 @@ CUresult cuMemUnmap(CUdeviceptr ptr, size_t size)
     CUresult rc = ensure_init();
     if (rc != CUDA_SUCCESS) return rc;
     
-    /* Always succeed - unmapping is a no-op for dummy addresses */
+    CUdeviceptr backing_ptr = vgpu_vmm_alias_remove(ptr, size);
+    if (backing_ptr != 0) {
+        CUresult free_rc = cuMemFree_v2(backing_ptr);
+        if (free_rc != CUDA_SUCCESS) {
+            fprintf(stderr, "[libvgpu-cuda] cuMemUnmap: deferred cuMemFree_v2 failed (backing=0x%llx rc=%d)\n",
+                    (unsigned long long)backing_ptr, free_rc);
+            return free_rc;
+        }
+    }
+    /* Always succeed once the deferred backing allocation is released here. */
     fprintf(stderr, "[libvgpu-cuda] cuMemUnmap returning SUCCESS\n");
     return CUDA_SUCCESS;
 }
@@ -5253,7 +5354,16 @@ CUresult cuMemAddressFree(CUdeviceptr ptr, size_t size)
     CUresult rc = ensure_init();
     if (rc != CUDA_SUCCESS) return rc;
     
-    /* Always succeed - freeing is a no-op for dummy addresses */
+    CUdeviceptr backing_ptr = vgpu_vmm_alias_remove(ptr, size);
+    if (backing_ptr != 0) {
+        CUresult free_rc = cuMemFree_v2(backing_ptr);
+        if (free_rc != CUDA_SUCCESS) {
+            fprintf(stderr, "[libvgpu-cuda] cuMemAddressFree: deferred cuMemFree_v2 failed (backing=0x%llx rc=%d)\n",
+                    (unsigned long long)backing_ptr, free_rc);
+            return free_rc;
+        }
+    }
+    /* Always succeed once the deferred backing allocation is released here. */
     fprintf(stderr, "[libvgpu-cuda] cuMemAddressFree returning SUCCESS\n");
     return CUDA_SUCCESS;
 }
@@ -5274,10 +5384,10 @@ CUresult cuMemMap(CUdeviceptr ptr, size_t size, size_t offset,
         return CUDA_ERROR_INVALID_VALUE;
     }
 
-    /* The actual allocation was performed by cuMemCreate (backed by
-     * cuMemAlloc_v2). We do not need to perform an additional mapping step
-     * in the remoted environment, so this is effectively a no-op that
-     * validates the handle. */
+    /* Record the reserved VA -> real device allocation mapping so later
+     * pointer-bearing RPCs (e.g. cuBLAS/GGML) can translate fake VMM
+     * addresses back to the host-tracked device pointers. */
+    vgpu_vmm_alias_add(ptr, size, (CUdeviceptr)(uintptr_t)handle + offset);
     fprintf(stderr, "[libvgpu-cuda] cuMemMap SUCCESS (ptr=0x%llx, size=%zu, offset=%zu, handle=0x%llx)\n",
             (unsigned long long)ptr, size, offset,
             (unsigned long long)(uintptr_t)handle);
@@ -5297,19 +5407,11 @@ CUresult cuMemRelease(CUmemGenericAllocationHandle handle)
         return CUDA_ERROR_INVALID_VALUE;
     }
 
-    /* Convert the generic allocation handle back to the device pointer and
-     * free it via cuMemFree_v2 so GPU memory is actually released on the
-     * host. */
-    CUdeviceptr dev = (CUdeviceptr)(uintptr_t)handle;
-    rc = cuMemFree_v2(dev);
-    if (rc != CUDA_SUCCESS) {
-        fprintf(stderr, "[libvgpu-cuda] cuMemRelease: cuMemFree_v2 failed (devptr=0x%llx, rc=%d)\n",
-                (unsigned long long)dev, rc);
-        return rc;
-    }
-
-    fprintf(stderr, "[libvgpu-cuda] cuMemRelease SUCCESS: devptr=0x%llx\n",
-            (unsigned long long)dev);
+    /* VMM semantics: releasing the allocation handle must not destroy memory
+     * that is still mapped. We defer the actual cuMemFree_v2 until unmap or
+     * address-free removes the final alias. */
+    fprintf(stderr, "[libvgpu-cuda] cuMemRelease SUCCESS: deferred free for handle=0x%llx\n",
+            (unsigned long long)(uintptr_t)handle);
     return CUDA_SUCCESS;
 }
 
@@ -5662,6 +5764,7 @@ CUresult cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib, CUdevice dev)
     case CU_DEVICE_ATTRIBUTE_LOCAL_L1_CACHE_SUPPORTED:
         *pi = GPU_DEFAULT_LOCAL_L1_CACHE_SUPPORT; break;
     case CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED:
+    case 102: /* CUDA 12.x VMM support probe used by the deployed GGML build */
         /* CRITICAL: GGML checks this attribute. H100 supports VMM, return 1 */
         *pi = 1;
         fprintf(stderr, "[libvgpu-cuda] cuDeviceGetAttribute(VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED) returning: 1 (pid=%d)\n", 
@@ -6653,8 +6756,15 @@ CUresult cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize)
                           bytesize, (int)getpid());
     if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
+        /* Phase3: touch file so we can confirm from VM whether runner ever calls alloc */
+        int fd = (int)syscall(__NR_open, "/tmp/vgpu_cuMemAlloc_called.log",
+                O_WRONLY | O_CREAT | O_APPEND, 0666);
+        if (fd >= 0) {
+            syscall(__NR_write, fd, log_msg, (size_t)log_len);
+            syscall(__NR_close, fd);
+        }
     }
-    
+
     CUresult rc = ensure_init();
     if (rc != CUDA_SUCCESS) return rc;
     if (!dptr) return CUDA_ERROR_INVALID_VALUE;
@@ -7256,7 +7366,8 @@ CUresult cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N)
 
     CUDACallResult result;
     uint32_t args[6];
-    CUDA_PACK_U64(args, 0, (uint64_t)dstDevice);
+    CUdeviceptr resolved_dst = libvgpu_cuda_resolve_mapped_ptr(dstDevice);
+    CUDA_PACK_U64(args, 0, (uint64_t)resolved_dst);
     args[2] = (uint32_t)uc;
     args[3] = 0;
     CUDA_PACK_U64(args, 4, (uint64_t)N);
@@ -7825,7 +7936,8 @@ CUresult cuMemsetD32_v2(CUdeviceptr dstDevice, unsigned int ui, size_t N)
 
     CUDACallResult result;
     uint32_t args[6];
-    CUDA_PACK_U64(args, 0, (uint64_t)dstDevice);
+    CUdeviceptr resolved_dst = libvgpu_cuda_resolve_mapped_ptr(dstDevice);
+    CUDA_PACK_U64(args, 0, (uint64_t)resolved_dst);
     args[2] = ui;
     args[3] = 0;
     CUDA_PACK_U64(args, 4, (uint64_t)N);
@@ -7888,9 +8000,62 @@ CUresult cuMemGetInfo(size_t *free, size_t *total)
 CUresult cuMemcpyHtoDAsync_v2(CUdeviceptr dstDevice, const void *srcHost,
                                size_t byteCount, CUstream hStream)
 {
-    /* For simplicity, async = sync for now */
-    (void)hStream;
-    return cuMemcpyHtoD_v2(dstDevice, srcHost, byteCount);
+    if (vgpu_debug_logging()) {
+        char log_msg[256];
+        int log_len = snprintf(log_msg, sizeof(log_msg),
+                              "[libvgpu-cuda] cuMemcpyHtoDAsync() CALLED: dst=0x%llx size=%zu stream=%p (pid=%d)\n",
+                              (unsigned long long)dstDevice, byteCount, (void *)hStream, (int)getpid());
+        if (log_len > 0 && log_len < (int)sizeof(log_msg))
+            syscall(__NR_write, 2, log_msg, log_len);
+    }
+
+    CUresult rc = ensure_connected();
+    if (rc != CUDA_SUCCESS) return rc;
+    if (!srcHost && byteCount > 0) return CUDA_ERROR_INVALID_VALUE;
+
+    CUDACallResult result;
+    uint32_t args[6];
+    CUDA_PACK_U64(args, 0, (uint64_t)dstDevice);
+    CUDA_PACK_U64(args, 2, (uint64_t)byteCount);
+    CUDA_PACK_U64(args, 4, (uint64_t)(uintptr_t)hStream);
+
+    rc = (CUresult)cuda_transport_call(g_transport,
+                                       CUDA_CALL_MEMCPY_HTOD_ASYNC,
+                                       args, 6,
+                                       srcHost, (uint32_t)byteCount,
+                                       &result, NULL, 0, NULL);
+
+    if (rc != CUDA_SUCCESS) {
+        ensure_mutex_init();
+        pthread_mutex_lock(&g_mutex);
+        if (g_transport) {
+            cuda_transport_destroy(g_transport);
+            g_transport = NULL;
+        }
+        pthread_mutex_unlock(&g_mutex);
+
+        CUresult reconnect_rc = ensure_connected();
+        if (reconnect_rc == CUDA_SUCCESS) {
+            rc = (CUresult)cuda_transport_call(g_transport,
+                                               CUDA_CALL_MEMCPY_HTOD_ASYNC,
+                                               args, 6,
+                                               srcHost, (uint32_t)byteCount,
+                                               &result, NULL, 0, NULL);
+        } else {
+            rc = reconnect_rc;
+        }
+    }
+
+    if (rc != CUDA_SUCCESS) {
+        char err_msg[256];
+        int n = snprintf(err_msg, sizeof(err_msg),
+                        "[libvgpu-cuda] cuMemcpyHtoDAsync FAILED: dst=0x%llx size=%zu stream=%p pid=%d rc=%d",
+                        (unsigned long long)dstDevice, byteCount, (void *)hStream, (int)getpid(), (int)rc);
+        if (n > 0 && n < (int)sizeof(err_msg))
+            vgpu_log_error_to_file(err_msg);
+    }
+
+    return rc;
 }
 
 CUresult cuMemcpyHtoDAsync(CUdeviceptr dstDevice, const void *srcHost,
@@ -8340,6 +8505,37 @@ CUresult cuModuleLoadFatBinary(CUmodule *module, const void *fatCubin)
     dark_resolve_module_image(fatCubin, &resolved_image, &image_size, &image_kind);
     if (!resolved_image || image_size == 0) {
         return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    /* Fingerprint for error tracking (compare with host module-load logs). */
+    {
+        uint64_t h = 14695981039346656037ULL;
+        const uint8_t *pb = (const uint8_t *)resolved_image;
+        for (size_t i = 0; i < image_size; i++) {
+            h ^= (uint64_t)pb[i];
+            h *= 1099511628211ULL;
+        }
+        /* stderr → journalctl (reliable); file may fail under PrivateTmp / perms */
+        fprintf(stderr,
+                "[vgpu-fp] cuModuleLoadFatBinary pid=%d size=%zu fnv1a64=0x%016llx "
+                "first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                (int)getpid(), image_size, (unsigned long long)h,
+                image_size > 0 ? pb[0] : 0, image_size > 1 ? pb[1] : 0,
+                image_size > 2 ? pb[2] : 0, image_size > 3 ? pb[3] : 0,
+                image_size > 4 ? pb[4] : 0, image_size > 5 ? pb[5] : 0,
+                image_size > 6 ? pb[6] : 0, image_size > 7 ? pb[7] : 0);
+        fflush(stderr);
+        FILE *fp = fopen("/var/tmp/vgpu_fatbinary_fingerprint.log", "a");
+        if (fp) {
+            fprintf(fp,
+                    "cuModuleLoadFatBinary pid=%d size=%zu fnv1a64=0x%016llx first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                    (int)getpid(), image_size, (unsigned long long)h,
+                    image_size > 0 ? pb[0] : 0, image_size > 1 ? pb[1] : 0,
+                    image_size > 2 ? pb[2] : 0, image_size > 3 ? pb[3] : 0,
+                    image_size > 4 ? pb[4] : 0, image_size > 5 ? pb[5] : 0,
+                    image_size > 6 ? pb[6] : 0, image_size > 7 ? pb[7] : 0);
+            fclose(fp);
+        }
     }
 
     rc = (CUresult)cuda_transport_call(g_transport,
