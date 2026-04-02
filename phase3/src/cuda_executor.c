@@ -22,6 +22,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <stddef.h>
+#include <dlfcn.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -36,9 +38,9 @@
  * ================================================================ */
 #define MAX_VMS             64
 #define MAX_MEM_ENTRIES     4096
-#define MAX_MODULE_ENTRIES  256
-#define MAX_LIBRARY_ENTRIES 256
-#define MAX_FUNC_ENTRIES    1024
+#define MAX_MODULE_ENTRIES  2048
+#define MAX_LIBRARY_ENTRIES 4096
+#define MAX_FUNC_ENTRIES    8192
 #define MAX_STREAM_ENTRIES  128
 #define MAX_EVENT_ENTRIES   256
 #define MAX_CUBLAS_ENTRIES  128
@@ -51,6 +53,1178 @@
 #ifndef CU_STREAM_PER_THREAD
 #define CU_STREAM_PER_THREAD ((CUstream)0x2)
 #endif
+
+typedef CUresult (*pfn_cuFuncGetParamInfo_t)(CUfunction func,
+                                             size_t paramIndex,
+                                             size_t *paramOffset,
+                                             size_t *paramSize);
+typedef CUresult (*pfn_cuGetProcAddress_t)(const char *symbol,
+                                           void **pfn,
+                                           int cudaVersion,
+                                           cuuint64_t flags,
+                                           CUdriverProcAddressQueryResult *symbolStatus);
+
+static pfn_cuFuncGetParamInfo_t resolve_cuFuncGetParamInfo(void)
+{
+    static pfn_cuFuncGetParamInfo_t fn = NULL;
+    static int resolved = 0;
+
+    if (!resolved) {
+        fn = (pfn_cuFuncGetParamInfo_t)dlsym(RTLD_DEFAULT, "cuFuncGetParamInfo");
+        if (!fn) {
+            pfn_cuGetProcAddress_t cuGetProcAddress_fn =
+                (pfn_cuGetProcAddress_t)dlsym(RTLD_DEFAULT, "cuGetProcAddress");
+            if (cuGetProcAddress_fn) {
+                void *sym = NULL;
+                CUdriverProcAddressQueryResult symbol_status = 0;
+                CUresult rc = cuGetProcAddress_fn("cuFuncGetParamInfo",
+                                                  &sym,
+                                                  12000,
+                                                  0,
+                                                  &symbol_status);
+                if (rc == CUDA_SUCCESS && sym) {
+                    fn = (pfn_cuFuncGetParamInfo_t)sym;
+                }
+            }
+        }
+        resolved = 1;
+    }
+
+    return fn;
+}
+
+typedef struct {
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
+} vgpu_uint3_host_t;
+
+typedef struct {
+    const void *x_bias;
+    const void *gate;
+    const void *gate_bias;
+    int32_t glu_op;
+} ggml_cuda_mm_fusion_args_device_host_t;
+
+typedef struct {
+    const void *x;
+    const void *mask;
+    const void *sinks;
+    const void *dst;
+    uint8_t soft_max_params[128];
+} soft_max_f32_params_host_t;
+
+typedef struct {
+    const float *x;
+    void *vy;
+    int64_t ne00;
+    int64_t s01;
+    int64_t s02;
+    int64_t s03;
+    int64_t ne0;
+    uint32_t ne1;
+    vgpu_uint3_host_t ne2;
+} quantize_q8_1_params_host_t;
+
+typedef struct {
+    const float *x;
+    const int32_t *ids;
+    void *vy;
+    int64_t ne00;
+    int64_t s01;
+    int64_t s02;
+    int64_t s03;
+    int64_t ne0;
+    int32_t ne1;
+    int32_t ne2;
+} quantize_mmq_q8_1_params_host_t;
+
+typedef struct {
+    const float *x;
+    float *dst;
+    int32_t ncols;
+    int64_t stride_row;
+    int64_t stride_channel;
+    int64_t stride_sample;
+    float eps;
+} rms_norm_f32_params_host_t;
+
+typedef struct {
+    const float *x;
+    float *dst;
+    int32_t ncols;
+    int64_t stride_row;
+    int64_t stride_channel;
+    int64_t stride_sample;
+    float eps;
+    const float *mul;
+    int64_t mul_stride_row;
+    int64_t mul_stride_channel;
+    int64_t mul_stride_sample;
+    vgpu_uint3_host_t mul_ncols_packed;
+    vgpu_uint3_host_t mul_nrows_packed;
+    vgpu_uint3_host_t mul_nchannels_packed;
+    vgpu_uint3_host_t mul_nsamples_packed;
+} rms_norm_f32_mul_params_host_t;
+
+typedef struct {
+    const float *x;
+    float *dst;
+    int32_t ncols;
+    int64_t stride_row;
+    int64_t stride_channel;
+    int64_t stride_sample;
+    float eps;
+    const float *mul;
+    int64_t mul_stride_row;
+    int64_t mul_stride_channel;
+    int64_t mul_stride_sample;
+    vgpu_uint3_host_t mul_ncols_packed;
+    vgpu_uint3_host_t mul_nrows_packed;
+    vgpu_uint3_host_t mul_nchannels_packed;
+    vgpu_uint3_host_t mul_nsamples_packed;
+    const float *add;
+    int64_t add_stride_row;
+    int64_t add_stride_channel;
+    int64_t add_stride_sample;
+    vgpu_uint3_host_t add_ncols_packed;
+    vgpu_uint3_host_t add_nrows_packed;
+    vgpu_uint3_host_t add_nchannels_packed;
+    vgpu_uint3_host_t add_nsamples_packed;
+} rms_norm_f32_mul_add_params_host_t;
+
+typedef struct {
+    const void *vx;
+    const void *vy;
+    const int32_t *ids;
+    ggml_cuda_mm_fusion_args_device_host_t fusion;
+    float *dst;
+    uint32_t ncols_x;
+    vgpu_uint3_host_t nchannels_y;
+    uint32_t stride_row_x;
+    uint32_t stride_col_y;
+    uint32_t stride_col_dst;
+    vgpu_uint3_host_t channel_ratio;
+    uint32_t stride_channel_x;
+    uint32_t stride_channel_y;
+    uint32_t stride_channel_dst;
+    vgpu_uint3_host_t sample_ratio;
+    uint32_t stride_sample_x;
+    uint32_t stride_sample_y;
+    uint32_t stride_sample_dst;
+} mul_mat_vec_q_params_host_t;
+
+/* mul_mat_vec_f: same as mul_mat_vec_q except nchannels_y is int (not uint3)
+ * and subsequent int/uint3 fields are packed 8 bytes earlier. */
+typedef struct {
+    const void *vx;                                   /* param 0: 8 bytes */
+    const void *vy;                                   /* param 1: 8 bytes */
+    const int32_t *ids;                               /* param 2: 8 bytes */
+    ggml_cuda_mm_fusion_args_device_host_t fusion;    /* param 3: 32 bytes */
+    float *dst;                                       /* param 4: 8 bytes */
+    uint32_t ncols_x;                                 /* param 5: 4 bytes */
+    uint32_t nchannels_y;                             /* param 6: 4 bytes (int, not uint3) */
+    uint32_t stride_row_x;                            /* param 7: 4 bytes */
+    uint32_t stride_col_y;                            /* param 8: 4 bytes */
+    uint32_t stride_col_dst;                          /* param 9: 4 bytes */
+    vgpu_uint3_host_t channel_ratio;                  /* param 10: 12 bytes */
+    uint32_t stride_channel_x;                        /* param 11: 4 bytes */
+    uint32_t stride_channel_y;                        /* param 12: 4 bytes */
+    uint32_t stride_channel_dst;                      /* param 13: 4 bytes */
+    vgpu_uint3_host_t sample_ratio;                   /* param 14: 12 bytes */
+    uint32_t stride_sample_x;                         /* param 15: 4 bytes */
+    uint32_t stride_sample_y;                         /* param 16: 4 bytes */
+    uint32_t stride_sample_dst;                       /* param 17: 4 bytes */
+} mul_mat_vec_f_params_host_t;
+
+typedef struct {
+    const void *src0;
+    const void *src1;
+    void *dst;
+    int64_t ne_total;
+    int64_t ne10;
+    int64_t ne11;
+    int64_t ne12;
+    int64_t ne13;
+    int64_t s01;
+    int64_t s02;
+    int64_t s03;
+    int64_t s10;
+    int64_t s11;
+    int64_t s12;
+    int64_t s1;
+    int64_t s2;
+    int64_t s3;
+    vgpu_uint3_host_t ne00;
+    vgpu_uint3_host_t ne01;
+    vgpu_uint3_host_t ne02;
+    vgpu_uint3_host_t ne11_fd;
+    vgpu_uint3_host_t ne12_fd;
+} k_set_rows_params_host_t;
+
+typedef struct {
+    const void *src0;
+    const void *src1;
+    void *dst;
+    int32_t ne0;
+    int32_t ne1;
+    int32_t ne2;
+    vgpu_uint3_host_t ne3;
+    vgpu_uint3_host_t ne10;
+    vgpu_uint3_host_t ne11;
+    vgpu_uint3_host_t ne12;
+    vgpu_uint3_host_t ne13;
+    int32_t s1;
+    int32_t s2;
+    int32_t s3;
+    int32_t s01;
+    int32_t s02;
+    int32_t s03;
+    int32_t s11;
+    int32_t s12;
+    int32_t s13;
+    const void *extra_src1;
+} k_bin_bcast_params_host_t;
+
+typedef struct {
+    const void *src0;
+    const void *src1;
+    void *dst;
+    vgpu_uint3_host_t ne0;
+    vgpu_uint3_host_t ne1;
+    vgpu_uint3_host_t ne2;
+    uint32_t ne3;
+    vgpu_uint3_host_t prod_012;
+    vgpu_uint3_host_t prod_01;
+    vgpu_uint3_host_t ne10;
+    vgpu_uint3_host_t ne11;
+    vgpu_uint3_host_t ne12;
+    vgpu_uint3_host_t ne13;
+    int32_t s1;
+    int32_t s2;
+    int32_t s3;
+    int32_t s01;
+    int32_t s02;
+    int32_t s03;
+    int32_t s11;
+    int32_t s12;
+    int32_t s13;
+    const void *extra_src1;
+} k_bin_bcast_unravel_params_host_t;
+
+typedef struct {
+    const char *x;
+    const int *y;
+    const int32_t *ids_dst;
+    const int32_t *expert_bounds;
+    float *dst;
+    float *tmp_fixup;
+    int32_t ncols_x;
+    int32_t nrows_x;
+    int32_t ncols_dst;
+    int32_t stride_row_x;
+    int32_t ncols_y;
+    int32_t stride_col_dst;
+    int32_t channel_ratio;
+    int32_t nchannels_y;
+    int32_t stride_channel_x;
+    int32_t stride_channel_y;
+    int32_t stride_channel_dst;
+    int32_t sample_ratio;
+    int32_t nsamples_y;
+    int32_t stride_sample_x;
+    int32_t stride_sample_y;
+    int32_t stride_sample_dst;
+    int32_t ncols_max;
+} mul_mat_q_params_host_t;
+
+typedef struct {
+    const int32_t *ids_dst;
+    const int32_t *expert_bounds;
+    float *dst;
+    const float *tmp_last_tile;
+    int32_t ncols_x;
+    int32_t nrows_x;
+    int32_t ncols_dst;
+    int32_t stride_col_dst;
+    int32_t nchannels_y;
+    int32_t stride_channel_dst;
+    int32_t nsamples_y;
+    int32_t stride_sample_dst;
+    int32_t ncols_max;
+} mul_mat_q_stream_k_fixup_params_host_t;
+
+typedef struct {
+    const void *x;
+    void *dst;
+    int32_t ne0;
+    int32_t ne1;
+    int32_t s1;
+    int32_t s2;
+    int32_t n_dims;
+    const int32_t *pos;
+    float freq_scale;
+    float ext_factor;
+    float attn_factor;
+    float corr_dims[2];
+    float theta_scale;
+    const float *freq_factors;
+    const int64_t *row_indices;
+    int32_t set_rows_stride;
+} rope_norm_params_host_t;
+
+typedef struct {
+    const void *vx;
+    void *y;
+    int64_t ne00;
+    int64_t ne01;
+    int64_t ne02;
+    int64_t s01;
+    int64_t s02;
+    int64_t s03;
+} convert_unary_params_host_t;
+
+static int cuda_executor_copy_param_info(size_t param_index,
+                                         const size_t *offsets,
+                                         const size_t *sizes,
+                                         size_t count,
+                                         size_t *param_offset,
+                                         size_t *param_size)
+{
+    if (param_index >= count) {
+        return 0;
+    }
+
+    *param_offset = offsets[param_index];
+    *param_size = sizes[param_index];
+    return 1;
+}
+
+static int cuda_executor_copy_param_info_with_trailing_ptrs(size_t param_index,
+                                                            const size_t *offsets,
+                                                            const size_t *sizes,
+                                                            size_t fixed_count,
+                                                            size_t extra_ptr_offset,
+                                                            size_t extra_ptr_count,
+                                                            size_t *param_offset,
+                                                            size_t *param_size)
+{
+    if (param_index < fixed_count) {
+        return cuda_executor_copy_param_info(param_index,
+                                             offsets,
+                                             sizes,
+                                             fixed_count,
+                                             param_offset,
+                                             param_size);
+    }
+
+    param_index -= fixed_count;
+    if (param_index >= extra_ptr_count) {
+        return 0;
+    }
+
+    *param_offset = extra_ptr_offset + (param_index * sizeof(void *));
+    *param_size = sizeof(void *);
+    return 1;
+}
+
+static size_t cuda_executor_count_template_pack_ptrs(const char *func_name)
+{
+    const char *pack_begin;
+    const char *pack_end;
+    size_t count = 0;
+
+    if (!func_name) {
+        return 0;
+    }
+
+    pack_begin = strchr(func_name, 'J');
+    if (!pack_begin) {
+        return 0;
+    }
+    pack_end = strstr(pack_begin, "EEv");
+    if (!pack_end || pack_end <= pack_begin) {
+        return 0;
+    }
+
+    for (const char *p = pack_begin; p + 1 < pack_end; ++p) {
+        if (p[0] == 'P' && p[1] == 'K') {
+            count++;
+        }
+    }
+    return count;
+}
+
+static int cuda_executor_try_synth_param_info(const char *func_name,
+                                              size_t param_index,
+                                              size_t *param_offset,
+                                              size_t *param_size)
+{
+    static const size_t k_soft_max_offsets[] = {
+        offsetof(soft_max_f32_params_host_t, x),
+        offsetof(soft_max_f32_params_host_t, mask),
+        offsetof(soft_max_f32_params_host_t, sinks),
+        offsetof(soft_max_f32_params_host_t, dst),
+        offsetof(soft_max_f32_params_host_t, soft_max_params),
+    };
+    static const size_t k_soft_max_sizes[] = {
+        sizeof(((soft_max_f32_params_host_t *)0)->x),
+        sizeof(((soft_max_f32_params_host_t *)0)->mask),
+        sizeof(((soft_max_f32_params_host_t *)0)->sinks),
+        sizeof(((soft_max_f32_params_host_t *)0)->dst),
+        sizeof(((soft_max_f32_params_host_t *)0)->soft_max_params),
+    };
+    static const size_t k_quantize_q8_1_offsets[] = {
+        offsetof(quantize_q8_1_params_host_t, x),
+        offsetof(quantize_q8_1_params_host_t, vy),
+        offsetof(quantize_q8_1_params_host_t, ne00),
+        offsetof(quantize_q8_1_params_host_t, s01),
+        offsetof(quantize_q8_1_params_host_t, s02),
+        offsetof(quantize_q8_1_params_host_t, s03),
+        offsetof(quantize_q8_1_params_host_t, ne0),
+        offsetof(quantize_q8_1_params_host_t, ne1),
+        offsetof(quantize_q8_1_params_host_t, ne2),
+    };
+    static const size_t k_quantize_q8_1_sizes[] = {
+        sizeof(((quantize_q8_1_params_host_t *)0)->x),
+        sizeof(((quantize_q8_1_params_host_t *)0)->vy),
+        sizeof(((quantize_q8_1_params_host_t *)0)->ne00),
+        sizeof(((quantize_q8_1_params_host_t *)0)->s01),
+        sizeof(((quantize_q8_1_params_host_t *)0)->s02),
+        sizeof(((quantize_q8_1_params_host_t *)0)->s03),
+        sizeof(((quantize_q8_1_params_host_t *)0)->ne0),
+        sizeof(((quantize_q8_1_params_host_t *)0)->ne1),
+        sizeof(((quantize_q8_1_params_host_t *)0)->ne2),
+    };
+    static const size_t k_quantize_mmq_q8_1_offsets[] = {
+        offsetof(quantize_mmq_q8_1_params_host_t, x),
+        offsetof(quantize_mmq_q8_1_params_host_t, ids),
+        offsetof(quantize_mmq_q8_1_params_host_t, vy),
+        offsetof(quantize_mmq_q8_1_params_host_t, ne00),
+        offsetof(quantize_mmq_q8_1_params_host_t, s01),
+        offsetof(quantize_mmq_q8_1_params_host_t, s02),
+        offsetof(quantize_mmq_q8_1_params_host_t, s03),
+        offsetof(quantize_mmq_q8_1_params_host_t, ne0),
+        offsetof(quantize_mmq_q8_1_params_host_t, ne1),
+        offsetof(quantize_mmq_q8_1_params_host_t, ne2),
+    };
+    static const size_t k_quantize_mmq_q8_1_sizes[] = {
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->x),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->ids),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->vy),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->ne00),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->s01),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->s02),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->s03),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->ne0),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->ne1),
+        sizeof(((quantize_mmq_q8_1_params_host_t *)0)->ne2),
+    };
+    static const size_t k_rms_norm_offsets[] = {
+        offsetof(rms_norm_f32_params_host_t, x),
+        offsetof(rms_norm_f32_params_host_t, dst),
+        offsetof(rms_norm_f32_params_host_t, ncols),
+        offsetof(rms_norm_f32_params_host_t, stride_row),
+        offsetof(rms_norm_f32_params_host_t, stride_channel),
+        offsetof(rms_norm_f32_params_host_t, stride_sample),
+        offsetof(rms_norm_f32_params_host_t, eps),
+    };
+    static const size_t k_rms_norm_sizes[] = {
+        sizeof(((rms_norm_f32_params_host_t *)0)->x),
+        sizeof(((rms_norm_f32_params_host_t *)0)->dst),
+        sizeof(((rms_norm_f32_params_host_t *)0)->ncols),
+        sizeof(((rms_norm_f32_params_host_t *)0)->stride_row),
+        sizeof(((rms_norm_f32_params_host_t *)0)->stride_channel),
+        sizeof(((rms_norm_f32_params_host_t *)0)->stride_sample),
+        sizeof(((rms_norm_f32_params_host_t *)0)->eps),
+    };
+    static const size_t k_rms_norm_mul_offsets[] = {
+        offsetof(rms_norm_f32_mul_params_host_t, x),
+        offsetof(rms_norm_f32_mul_params_host_t, dst),
+        offsetof(rms_norm_f32_mul_params_host_t, ncols),
+        offsetof(rms_norm_f32_mul_params_host_t, stride_row),
+        offsetof(rms_norm_f32_mul_params_host_t, stride_channel),
+        offsetof(rms_norm_f32_mul_params_host_t, stride_sample),
+        offsetof(rms_norm_f32_mul_params_host_t, eps),
+        offsetof(rms_norm_f32_mul_params_host_t, mul),
+        offsetof(rms_norm_f32_mul_params_host_t, mul_stride_row),
+        offsetof(rms_norm_f32_mul_params_host_t, mul_stride_channel),
+        offsetof(rms_norm_f32_mul_params_host_t, mul_stride_sample),
+        offsetof(rms_norm_f32_mul_params_host_t, mul_ncols_packed),
+        offsetof(rms_norm_f32_mul_params_host_t, mul_nrows_packed),
+        offsetof(rms_norm_f32_mul_params_host_t, mul_nchannels_packed),
+        offsetof(rms_norm_f32_mul_params_host_t, mul_nsamples_packed),
+    };
+    static const size_t k_rms_norm_mul_sizes[] = {
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->x),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->dst),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->ncols),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->stride_row),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->stride_channel),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->stride_sample),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->eps),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->mul),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->mul_stride_row),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->mul_stride_channel),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->mul_stride_sample),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->mul_ncols_packed),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->mul_nrows_packed),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->mul_nchannels_packed),
+        sizeof(((rms_norm_f32_mul_params_host_t *)0)->mul_nsamples_packed),
+    };
+    static const size_t k_rms_norm_mul_add_offsets[] = {
+        offsetof(rms_norm_f32_mul_add_params_host_t, x),
+        offsetof(rms_norm_f32_mul_add_params_host_t, dst),
+        offsetof(rms_norm_f32_mul_add_params_host_t, ncols),
+        offsetof(rms_norm_f32_mul_add_params_host_t, stride_row),
+        offsetof(rms_norm_f32_mul_add_params_host_t, stride_channel),
+        offsetof(rms_norm_f32_mul_add_params_host_t, stride_sample),
+        offsetof(rms_norm_f32_mul_add_params_host_t, eps),
+        offsetof(rms_norm_f32_mul_add_params_host_t, mul),
+        offsetof(rms_norm_f32_mul_add_params_host_t, mul_stride_row),
+        offsetof(rms_norm_f32_mul_add_params_host_t, mul_stride_channel),
+        offsetof(rms_norm_f32_mul_add_params_host_t, mul_stride_sample),
+        offsetof(rms_norm_f32_mul_add_params_host_t, mul_ncols_packed),
+        offsetof(rms_norm_f32_mul_add_params_host_t, mul_nrows_packed),
+        offsetof(rms_norm_f32_mul_add_params_host_t, mul_nchannels_packed),
+        offsetof(rms_norm_f32_mul_add_params_host_t, mul_nsamples_packed),
+        offsetof(rms_norm_f32_mul_add_params_host_t, add),
+        offsetof(rms_norm_f32_mul_add_params_host_t, add_stride_row),
+        offsetof(rms_norm_f32_mul_add_params_host_t, add_stride_channel),
+        offsetof(rms_norm_f32_mul_add_params_host_t, add_stride_sample),
+        offsetof(rms_norm_f32_mul_add_params_host_t, add_ncols_packed),
+        offsetof(rms_norm_f32_mul_add_params_host_t, add_nrows_packed),
+        offsetof(rms_norm_f32_mul_add_params_host_t, add_nchannels_packed),
+        offsetof(rms_norm_f32_mul_add_params_host_t, add_nsamples_packed),
+    };
+    static const size_t k_rms_norm_mul_add_sizes[] = {
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->x),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->dst),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->ncols),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->stride_row),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->stride_channel),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->stride_sample),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->eps),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->mul),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->mul_stride_row),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->mul_stride_channel),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->mul_stride_sample),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->mul_ncols_packed),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->mul_nrows_packed),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->mul_nchannels_packed),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->mul_nsamples_packed),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->add),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->add_stride_row),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->add_stride_channel),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->add_stride_sample),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->add_ncols_packed),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->add_nrows_packed),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->add_nchannels_packed),
+        sizeof(((rms_norm_f32_mul_add_params_host_t *)0)->add_nsamples_packed),
+    };
+    static const size_t k_mul_mat_vec_q_offsets[] = {
+        offsetof(mul_mat_vec_q_params_host_t, vx),
+        offsetof(mul_mat_vec_q_params_host_t, vy),
+        offsetof(mul_mat_vec_q_params_host_t, ids),
+        offsetof(mul_mat_vec_q_params_host_t, fusion),
+        offsetof(mul_mat_vec_q_params_host_t, dst),
+        offsetof(mul_mat_vec_q_params_host_t, ncols_x),
+        offsetof(mul_mat_vec_q_params_host_t, nchannels_y),
+        offsetof(mul_mat_vec_q_params_host_t, stride_row_x),
+        offsetof(mul_mat_vec_q_params_host_t, stride_col_y),
+        offsetof(mul_mat_vec_q_params_host_t, stride_col_dst),
+        offsetof(mul_mat_vec_q_params_host_t, channel_ratio),
+        offsetof(mul_mat_vec_q_params_host_t, stride_channel_x),
+        offsetof(mul_mat_vec_q_params_host_t, stride_channel_y),
+        offsetof(mul_mat_vec_q_params_host_t, stride_channel_dst),
+        offsetof(mul_mat_vec_q_params_host_t, sample_ratio),
+        offsetof(mul_mat_vec_q_params_host_t, stride_sample_x),
+        offsetof(mul_mat_vec_q_params_host_t, stride_sample_y),
+        offsetof(mul_mat_vec_q_params_host_t, stride_sample_dst),
+    };
+    static const size_t k_mul_mat_vec_q_sizes[] = {
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->vx),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->vy),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->ids),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->fusion),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->dst),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->ncols_x),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->nchannels_y),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_row_x),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_col_y),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_col_dst),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->channel_ratio),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_channel_x),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_channel_y),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_channel_dst),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->sample_ratio),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_sample_x),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_sample_y),
+        sizeof(((mul_mat_vec_q_params_host_t *)0)->stride_sample_dst),
+    };
+    static const size_t k_mul_mat_vec_f_offsets[] = {
+        offsetof(mul_mat_vec_f_params_host_t, vx),
+        offsetof(mul_mat_vec_f_params_host_t, vy),
+        offsetof(mul_mat_vec_f_params_host_t, ids),
+        offsetof(mul_mat_vec_f_params_host_t, fusion),
+        offsetof(mul_mat_vec_f_params_host_t, dst),
+        offsetof(mul_mat_vec_f_params_host_t, ncols_x),
+        offsetof(mul_mat_vec_f_params_host_t, nchannels_y),
+        offsetof(mul_mat_vec_f_params_host_t, stride_row_x),
+        offsetof(mul_mat_vec_f_params_host_t, stride_col_y),
+        offsetof(mul_mat_vec_f_params_host_t, stride_col_dst),
+        offsetof(mul_mat_vec_f_params_host_t, channel_ratio),
+        offsetof(mul_mat_vec_f_params_host_t, stride_channel_x),
+        offsetof(mul_mat_vec_f_params_host_t, stride_channel_y),
+        offsetof(mul_mat_vec_f_params_host_t, stride_channel_dst),
+        offsetof(mul_mat_vec_f_params_host_t, sample_ratio),
+        offsetof(mul_mat_vec_f_params_host_t, stride_sample_x),
+        offsetof(mul_mat_vec_f_params_host_t, stride_sample_y),
+        offsetof(mul_mat_vec_f_params_host_t, stride_sample_dst),
+    };
+    static const size_t k_mul_mat_vec_f_sizes[] = {
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->vx),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->vy),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->ids),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->fusion),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->dst),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->ncols_x),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->nchannels_y),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_row_x),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_col_y),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_col_dst),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->channel_ratio),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_channel_x),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_channel_y),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_channel_dst),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->sample_ratio),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_sample_x),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_sample_y),
+        sizeof(((mul_mat_vec_f_params_host_t *)0)->stride_sample_dst),
+    };
+    static const size_t k_set_rows_offsets[] = {
+        offsetof(k_set_rows_params_host_t, src0),
+        offsetof(k_set_rows_params_host_t, src1),
+        offsetof(k_set_rows_params_host_t, dst),
+        offsetof(k_set_rows_params_host_t, ne_total),
+        offsetof(k_set_rows_params_host_t, ne10),
+        offsetof(k_set_rows_params_host_t, ne11),
+        offsetof(k_set_rows_params_host_t, ne12),
+        offsetof(k_set_rows_params_host_t, ne13),
+        offsetof(k_set_rows_params_host_t, s01),
+        offsetof(k_set_rows_params_host_t, s02),
+        offsetof(k_set_rows_params_host_t, s03),
+        offsetof(k_set_rows_params_host_t, s10),
+        offsetof(k_set_rows_params_host_t, s11),
+        offsetof(k_set_rows_params_host_t, s12),
+        offsetof(k_set_rows_params_host_t, s1),
+        offsetof(k_set_rows_params_host_t, s2),
+        offsetof(k_set_rows_params_host_t, s3),
+        offsetof(k_set_rows_params_host_t, ne00),
+        offsetof(k_set_rows_params_host_t, ne01),
+        offsetof(k_set_rows_params_host_t, ne02),
+        offsetof(k_set_rows_params_host_t, ne11_fd),
+        offsetof(k_set_rows_params_host_t, ne12_fd),
+    };
+    static const size_t k_set_rows_sizes[] = {
+        sizeof(((k_set_rows_params_host_t *)0)->src0),
+        sizeof(((k_set_rows_params_host_t *)0)->src1),
+        sizeof(((k_set_rows_params_host_t *)0)->dst),
+        sizeof(((k_set_rows_params_host_t *)0)->ne_total),
+        sizeof(((k_set_rows_params_host_t *)0)->ne10),
+        sizeof(((k_set_rows_params_host_t *)0)->ne11),
+        sizeof(((k_set_rows_params_host_t *)0)->ne12),
+        sizeof(((k_set_rows_params_host_t *)0)->ne13),
+        sizeof(((k_set_rows_params_host_t *)0)->s01),
+        sizeof(((k_set_rows_params_host_t *)0)->s02),
+        sizeof(((k_set_rows_params_host_t *)0)->s03),
+        sizeof(((k_set_rows_params_host_t *)0)->s10),
+        sizeof(((k_set_rows_params_host_t *)0)->s11),
+        sizeof(((k_set_rows_params_host_t *)0)->s12),
+        sizeof(((k_set_rows_params_host_t *)0)->s1),
+        sizeof(((k_set_rows_params_host_t *)0)->s2),
+        sizeof(((k_set_rows_params_host_t *)0)->s3),
+        sizeof(((k_set_rows_params_host_t *)0)->ne00),
+        sizeof(((k_set_rows_params_host_t *)0)->ne01),
+        sizeof(((k_set_rows_params_host_t *)0)->ne02),
+        sizeof(((k_set_rows_params_host_t *)0)->ne11_fd),
+        sizeof(((k_set_rows_params_host_t *)0)->ne12_fd),
+    };
+    static const size_t k_bin_bcast_offsets[] = {
+        offsetof(k_bin_bcast_params_host_t, src0),
+        offsetof(k_bin_bcast_params_host_t, src1),
+        offsetof(k_bin_bcast_params_host_t, dst),
+        offsetof(k_bin_bcast_params_host_t, ne0),
+        offsetof(k_bin_bcast_params_host_t, ne1),
+        offsetof(k_bin_bcast_params_host_t, ne2),
+        offsetof(k_bin_bcast_params_host_t, ne3),
+        offsetof(k_bin_bcast_params_host_t, ne10),
+        offsetof(k_bin_bcast_params_host_t, ne11),
+        offsetof(k_bin_bcast_params_host_t, ne12),
+        offsetof(k_bin_bcast_params_host_t, ne13),
+        offsetof(k_bin_bcast_params_host_t, s1),
+        offsetof(k_bin_bcast_params_host_t, s2),
+        offsetof(k_bin_bcast_params_host_t, s3),
+        offsetof(k_bin_bcast_params_host_t, s01),
+        offsetof(k_bin_bcast_params_host_t, s02),
+        offsetof(k_bin_bcast_params_host_t, s03),
+        offsetof(k_bin_bcast_params_host_t, s11),
+        offsetof(k_bin_bcast_params_host_t, s12),
+        offsetof(k_bin_bcast_params_host_t, s13),
+    };
+    static const size_t k_bin_bcast_sizes[] = {
+        sizeof(((k_bin_bcast_params_host_t *)0)->src0),
+        sizeof(((k_bin_bcast_params_host_t *)0)->src1),
+        sizeof(((k_bin_bcast_params_host_t *)0)->dst),
+        sizeof(((k_bin_bcast_params_host_t *)0)->ne0),
+        sizeof(((k_bin_bcast_params_host_t *)0)->ne1),
+        sizeof(((k_bin_bcast_params_host_t *)0)->ne2),
+        sizeof(((k_bin_bcast_params_host_t *)0)->ne3),
+        sizeof(((k_bin_bcast_params_host_t *)0)->ne10),
+        sizeof(((k_bin_bcast_params_host_t *)0)->ne11),
+        sizeof(((k_bin_bcast_params_host_t *)0)->ne12),
+        sizeof(((k_bin_bcast_params_host_t *)0)->ne13),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s1),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s2),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s3),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s01),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s02),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s03),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s11),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s12),
+        sizeof(((k_bin_bcast_params_host_t *)0)->s13),
+    };
+    static const size_t k_bin_bcast_unravel_offsets[] = {
+        offsetof(k_bin_bcast_unravel_params_host_t, src0),
+        offsetof(k_bin_bcast_unravel_params_host_t, src1),
+        offsetof(k_bin_bcast_unravel_params_host_t, dst),
+        offsetof(k_bin_bcast_unravel_params_host_t, ne0),
+        offsetof(k_bin_bcast_unravel_params_host_t, ne1),
+        offsetof(k_bin_bcast_unravel_params_host_t, ne2),
+        offsetof(k_bin_bcast_unravel_params_host_t, ne3),
+        offsetof(k_bin_bcast_unravel_params_host_t, prod_012),
+        offsetof(k_bin_bcast_unravel_params_host_t, prod_01),
+        offsetof(k_bin_bcast_unravel_params_host_t, ne10),
+        offsetof(k_bin_bcast_unravel_params_host_t, ne11),
+        offsetof(k_bin_bcast_unravel_params_host_t, ne12),
+        offsetof(k_bin_bcast_unravel_params_host_t, ne13),
+        offsetof(k_bin_bcast_unravel_params_host_t, s1),
+        offsetof(k_bin_bcast_unravel_params_host_t, s2),
+        offsetof(k_bin_bcast_unravel_params_host_t, s3),
+        offsetof(k_bin_bcast_unravel_params_host_t, s01),
+        offsetof(k_bin_bcast_unravel_params_host_t, s02),
+        offsetof(k_bin_bcast_unravel_params_host_t, s03),
+        offsetof(k_bin_bcast_unravel_params_host_t, s11),
+        offsetof(k_bin_bcast_unravel_params_host_t, s12),
+        offsetof(k_bin_bcast_unravel_params_host_t, s13),
+    };
+    static const size_t k_bin_bcast_unravel_sizes[] = {
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->src0),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->src1),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->dst),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->ne0),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->ne1),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->ne2),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->ne3),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->prod_012),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->prod_01),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->ne10),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->ne11),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->ne12),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->ne13),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s1),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s2),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s3),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s01),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s02),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s03),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s11),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s12),
+        sizeof(((k_bin_bcast_unravel_params_host_t *)0)->s13),
+    };
+    static const size_t k_mul_mat_q_offsets[] = {
+        offsetof(mul_mat_q_params_host_t, x),
+        offsetof(mul_mat_q_params_host_t, y),
+        offsetof(mul_mat_q_params_host_t, ids_dst),
+        offsetof(mul_mat_q_params_host_t, expert_bounds),
+        offsetof(mul_mat_q_params_host_t, dst),
+        offsetof(mul_mat_q_params_host_t, tmp_fixup),
+        offsetof(mul_mat_q_params_host_t, ncols_x),
+        offsetof(mul_mat_q_params_host_t, nrows_x),
+        offsetof(mul_mat_q_params_host_t, ncols_dst),
+        offsetof(mul_mat_q_params_host_t, stride_row_x),
+        offsetof(mul_mat_q_params_host_t, ncols_y),
+        offsetof(mul_mat_q_params_host_t, stride_col_dst),
+        offsetof(mul_mat_q_params_host_t, channel_ratio),
+        offsetof(mul_mat_q_params_host_t, nchannels_y),
+        offsetof(mul_mat_q_params_host_t, stride_channel_x),
+        offsetof(mul_mat_q_params_host_t, stride_channel_y),
+        offsetof(mul_mat_q_params_host_t, stride_channel_dst),
+        offsetof(mul_mat_q_params_host_t, sample_ratio),
+        offsetof(mul_mat_q_params_host_t, nsamples_y),
+        offsetof(mul_mat_q_params_host_t, stride_sample_x),
+        offsetof(mul_mat_q_params_host_t, stride_sample_y),
+        offsetof(mul_mat_q_params_host_t, stride_sample_dst),
+        offsetof(mul_mat_q_params_host_t, ncols_max),
+    };
+    static const size_t k_mul_mat_q_sizes[] = {
+        sizeof(((mul_mat_q_params_host_t *)0)->x),
+        sizeof(((mul_mat_q_params_host_t *)0)->y),
+        sizeof(((mul_mat_q_params_host_t *)0)->ids_dst),
+        sizeof(((mul_mat_q_params_host_t *)0)->expert_bounds),
+        sizeof(((mul_mat_q_params_host_t *)0)->dst),
+        sizeof(((mul_mat_q_params_host_t *)0)->tmp_fixup),
+        sizeof(((mul_mat_q_params_host_t *)0)->ncols_x),
+        sizeof(((mul_mat_q_params_host_t *)0)->nrows_x),
+        sizeof(((mul_mat_q_params_host_t *)0)->ncols_dst),
+        sizeof(((mul_mat_q_params_host_t *)0)->stride_row_x),
+        sizeof(((mul_mat_q_params_host_t *)0)->ncols_y),
+        sizeof(((mul_mat_q_params_host_t *)0)->stride_col_dst),
+        sizeof(((mul_mat_q_params_host_t *)0)->channel_ratio),
+        sizeof(((mul_mat_q_params_host_t *)0)->nchannels_y),
+        sizeof(((mul_mat_q_params_host_t *)0)->stride_channel_x),
+        sizeof(((mul_mat_q_params_host_t *)0)->stride_channel_y),
+        sizeof(((mul_mat_q_params_host_t *)0)->stride_channel_dst),
+        sizeof(((mul_mat_q_params_host_t *)0)->sample_ratio),
+        sizeof(((mul_mat_q_params_host_t *)0)->nsamples_y),
+        sizeof(((mul_mat_q_params_host_t *)0)->stride_sample_x),
+        sizeof(((mul_mat_q_params_host_t *)0)->stride_sample_y),
+        sizeof(((mul_mat_q_params_host_t *)0)->stride_sample_dst),
+        sizeof(((mul_mat_q_params_host_t *)0)->ncols_max),
+    };
+    static const size_t k_mul_mat_q_stream_k_fixup_offsets[] = {
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, ids_dst),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, expert_bounds),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, dst),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, tmp_last_tile),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, ncols_x),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, nrows_x),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, ncols_dst),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, stride_col_dst),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, nchannels_y),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, stride_channel_dst),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, nsamples_y),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, stride_sample_dst),
+        offsetof(mul_mat_q_stream_k_fixup_params_host_t, ncols_max),
+    };
+    static const size_t k_mul_mat_q_stream_k_fixup_sizes[] = {
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->ids_dst),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->expert_bounds),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->dst),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->tmp_last_tile),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->ncols_x),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->nrows_x),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->ncols_dst),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->stride_col_dst),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->nchannels_y),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->stride_channel_dst),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->nsamples_y),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->stride_sample_dst),
+        sizeof(((mul_mat_q_stream_k_fixup_params_host_t *)0)->ncols_max),
+    };
+    static const size_t k_rope_norm_offsets[] = {
+        offsetof(rope_norm_params_host_t, x),
+        offsetof(rope_norm_params_host_t, dst),
+        offsetof(rope_norm_params_host_t, ne0),
+        offsetof(rope_norm_params_host_t, ne1),
+        offsetof(rope_norm_params_host_t, s1),
+        offsetof(rope_norm_params_host_t, s2),
+        offsetof(rope_norm_params_host_t, n_dims),
+        offsetof(rope_norm_params_host_t, pos),
+        offsetof(rope_norm_params_host_t, freq_scale),
+        offsetof(rope_norm_params_host_t, ext_factor),
+        offsetof(rope_norm_params_host_t, attn_factor),
+        offsetof(rope_norm_params_host_t, corr_dims),
+        offsetof(rope_norm_params_host_t, theta_scale),
+        offsetof(rope_norm_params_host_t, freq_factors),
+        offsetof(rope_norm_params_host_t, row_indices),
+        offsetof(rope_norm_params_host_t, set_rows_stride),
+    };
+    static const size_t k_rope_norm_sizes[] = {
+        sizeof(((rope_norm_params_host_t *)0)->x),
+        sizeof(((rope_norm_params_host_t *)0)->dst),
+        sizeof(((rope_norm_params_host_t *)0)->ne0),
+        sizeof(((rope_norm_params_host_t *)0)->ne1),
+        sizeof(((rope_norm_params_host_t *)0)->s1),
+        sizeof(((rope_norm_params_host_t *)0)->s2),
+        sizeof(((rope_norm_params_host_t *)0)->n_dims),
+        sizeof(((rope_norm_params_host_t *)0)->pos),
+        sizeof(((rope_norm_params_host_t *)0)->freq_scale),
+        sizeof(((rope_norm_params_host_t *)0)->ext_factor),
+        sizeof(((rope_norm_params_host_t *)0)->attn_factor),
+        sizeof(((rope_norm_params_host_t *)0)->corr_dims),
+        sizeof(((rope_norm_params_host_t *)0)->theta_scale),
+        sizeof(((rope_norm_params_host_t *)0)->freq_factors),
+        sizeof(((rope_norm_params_host_t *)0)->row_indices),
+        sizeof(((rope_norm_params_host_t *)0)->set_rows_stride),
+    };
+    static const size_t k_convert_unary_offsets[] = {
+        offsetof(convert_unary_params_host_t, vx),
+        offsetof(convert_unary_params_host_t, y),
+        offsetof(convert_unary_params_host_t, ne00),
+        offsetof(convert_unary_params_host_t, ne01),
+        offsetof(convert_unary_params_host_t, ne02),
+        offsetof(convert_unary_params_host_t, s01),
+        offsetof(convert_unary_params_host_t, s02),
+        offsetof(convert_unary_params_host_t, s03),
+    };
+    static const size_t k_convert_unary_sizes[] = {
+        sizeof(((convert_unary_params_host_t *)0)->vx),
+        sizeof(((convert_unary_params_host_t *)0)->y),
+        sizeof(((convert_unary_params_host_t *)0)->ne00),
+        sizeof(((convert_unary_params_host_t *)0)->ne01),
+        sizeof(((convert_unary_params_host_t *)0)->ne02),
+        sizeof(((convert_unary_params_host_t *)0)->s01),
+        sizeof(((convert_unary_params_host_t *)0)->s02),
+        sizeof(((convert_unary_params_host_t *)0)->s03),
+    };
+
+    if (!func_name || !param_offset || !param_size) {
+        return 0;
+    }
+
+    if (strncmp(func_name, "_Z12soft_max_f32", strlen("_Z12soft_max_f32")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_soft_max_offsets,
+                                             k_soft_max_sizes,
+                                             sizeof(k_soft_max_sizes) / sizeof(k_soft_max_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z13quantize_q8_1", strlen("_Z13quantize_q8_1")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_quantize_q8_1_offsets,
+                                             k_quantize_q8_1_sizes,
+                                             sizeof(k_quantize_q8_1_sizes) / sizeof(k_quantize_q8_1_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z17quantize_mmq_q8_1", strlen("_Z17quantize_mmq_q8_1")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_quantize_mmq_q8_1_offsets,
+                                             k_quantize_mmq_q8_1_sizes,
+                                             sizeof(k_quantize_mmq_q8_1_sizes) / sizeof(k_quantize_mmq_q8_1_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z12rms_norm_f32", strlen("_Z12rms_norm_f32")) == 0) {
+        if (strstr(func_name, "ELb1ELb1E") != NULL) {
+            return cuda_executor_copy_param_info(param_index,
+                                                 k_rms_norm_mul_add_offsets,
+                                                 k_rms_norm_mul_add_sizes,
+                                                 sizeof(k_rms_norm_mul_add_sizes) / sizeof(k_rms_norm_mul_add_sizes[0]),
+                                                 param_offset,
+                                                 param_size);
+        }
+        if (strstr(func_name, "ELb1ELb0E") != NULL) {
+            return cuda_executor_copy_param_info(param_index,
+                                                 k_rms_norm_mul_offsets,
+                                                 k_rms_norm_mul_sizes,
+                                                 sizeof(k_rms_norm_mul_sizes) / sizeof(k_rms_norm_mul_sizes[0]),
+                                                 param_offset,
+                                                 param_size);
+        }
+        return cuda_executor_copy_param_info(param_index,
+                                             k_rms_norm_offsets,
+                                             k_rms_norm_sizes,
+                                             sizeof(k_rms_norm_sizes) / sizeof(k_rms_norm_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z13mul_mat_vec_q", strlen("_Z13mul_mat_vec_q")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_mul_mat_vec_q_offsets,
+                                             k_mul_mat_vec_q_sizes,
+                                             sizeof(k_mul_mat_vec_q_sizes) / sizeof(k_mul_mat_vec_q_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z13mul_mat_vec_f", strlen("_Z13mul_mat_vec_f")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_mul_mat_vec_f_offsets,
+                                             k_mul_mat_vec_f_sizes,
+                                             sizeof(k_mul_mat_vec_f_sizes) / sizeof(k_mul_mat_vec_f_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z10k_set_rows", strlen("_Z10k_set_rows")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_set_rows_offsets,
+                                             k_set_rows_sizes,
+                                             sizeof(k_set_rows_sizes) / sizeof(k_set_rows_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z16k_set_rows_quant", strlen("_Z16k_set_rows_quant")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_set_rows_offsets,
+                                             k_set_rows_sizes,
+                                             sizeof(k_set_rows_sizes) / sizeof(k_set_rows_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z11k_bin_bcast", strlen("_Z11k_bin_bcast")) == 0) {
+        return cuda_executor_copy_param_info_with_trailing_ptrs(
+            param_index,
+            k_bin_bcast_offsets,
+            k_bin_bcast_sizes,
+            sizeof(k_bin_bcast_sizes) / sizeof(k_bin_bcast_sizes[0]),
+            offsetof(k_bin_bcast_params_host_t, extra_src1),
+            cuda_executor_count_template_pack_ptrs(func_name),
+            param_offset,
+            param_size);
+    }
+
+    if (strncmp(func_name, "_Z19k_bin_bcast_unravel", strlen("_Z19k_bin_bcast_unravel")) == 0) {
+        return cuda_executor_copy_param_info_with_trailing_ptrs(
+            param_index,
+            k_bin_bcast_unravel_offsets,
+            k_bin_bcast_unravel_sizes,
+            sizeof(k_bin_bcast_unravel_sizes) / sizeof(k_bin_bcast_unravel_sizes[0]),
+            offsetof(k_bin_bcast_unravel_params_host_t, extra_src1),
+            cuda_executor_count_template_pack_ptrs(func_name),
+            param_offset,
+            param_size);
+    }
+
+    if (strncmp(func_name, "_Z9mul_mat_q", strlen("_Z9mul_mat_q")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_mul_mat_q_offsets,
+                                             k_mul_mat_q_sizes,
+                                             sizeof(k_mul_mat_q_sizes) / sizeof(k_mul_mat_q_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z24mul_mat_q_stream_k_fixup", strlen("_Z24mul_mat_q_stream_k_fixup")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_mul_mat_q_stream_k_fixup_offsets,
+                                             k_mul_mat_q_stream_k_fixup_sizes,
+                                             sizeof(k_mul_mat_q_stream_k_fixup_sizes) / sizeof(k_mul_mat_q_stream_k_fixup_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z9rope_norm", strlen("_Z9rope_norm")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_rope_norm_offsets,
+                                             k_rope_norm_sizes,
+                                             sizeof(k_rope_norm_sizes) / sizeof(k_rope_norm_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    if (strncmp(func_name, "_Z13convert_unary", strlen("_Z13convert_unary")) == 0) {
+        return cuda_executor_copy_param_info(param_index,
+                                             k_convert_unary_offsets,
+                                             k_convert_unary_sizes,
+                                             sizeof(k_convert_unary_sizes) / sizeof(k_convert_unary_sizes[0]),
+                                             param_offset,
+                                             param_size);
+    }
+
+    /* k_compute_batched_ptrs(src0_f16, src1_f16, dst, ptrs_src, ptrs_dst,
+     *                        ne12, ne13, ne23, nb02, nb03, nb12, nb13,
+     *                        nbd2, nbd3, r2, r3)
+     * 16 params, all pointers or 8-byte integers — tight packing, stride=8. */
+    if (strncmp(func_name, "_Z22k_compute_batched_ptrs",
+                strlen("_Z22k_compute_batched_ptrs")) == 0) {
+        static const size_t k_compute_batched_ptrs_count = 16u;
+        if (param_index >= k_compute_batched_ptrs_count) {
+            return 0;
+        }
+        *param_offset = param_index * 8u;
+        *param_size   = 8u;
+        return 1;
+    }
+
+    /* unary_gated_op_kernel<F>(x, g, dst, k, n, o0, o1)
+     * Used for SiLU/gated activations in LLaMA MLP blocks.
+     * 7 params, all 8-byte (pointers or int64_t) — tight packing, stride=8. */
+    if (strncmp(func_name, "_Z21unary_gated_op_kernel",
+                strlen("_Z21unary_gated_op_kernel")) == 0) {
+        static const size_t unary_gated_count = 7u;
+        if (param_index >= unary_gated_count) {
+            return 0;
+        }
+        *param_offset = param_index * 8u;
+        *param_size   = 8u;
+        return 1;
+    }
+
+    /* k_get_rows_float<src0_t,dst_t>(src0, src1, dst, ne00, ne11, ne12,
+     *                                s1, s2, s3, nb01, nb02, nb03, s10, s11, s12)
+     * k_get_rows<qk,qr,dequant_fn,dst_t>(src0, src1, dst, ne00, ne11, ne12,
+     *                                    s1, s2, s3, nb01, nb02, nb03, s10, s11, s12)
+     * Both have 15 params, all pointers or 8-byte integers — tight packing, stride=8. */
+    if (strncmp(func_name, "_Z16k_get_rows_float",
+                strlen("_Z16k_get_rows_float")) == 0 ||
+        strncmp(func_name, "_Z9k_get_rows",
+                strlen("_Z9k_get_rows")) == 0) {
+        static const size_t k_get_rows_count = 15u;
+        if (param_index >= k_get_rows_count) {
+            return 0;
+        }
+        *param_offset = param_index * 8u;
+        *param_size   = 8u;
+        return 1;
+    }
+
+    /* mul_mat_f<T,rows_per_block,...>(x, y, ids, dst,
+     *           ncols, ncols_dst_total, nchannels_dst, stride_row,
+     *           stride_col_y, stride_col_dst, stride_col_id, stride_row_id,
+     *           channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
+     *           sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst)
+     * 4 pointers (8 bytes) + 16 int32 (4 bytes) = 20 params, 96 bytes total. */
+    if (strncmp(func_name, "_Z9mul_mat_f",
+                strlen("_Z9mul_mat_f")) == 0) {
+        static const size_t mul_mat_f_count = 20u;
+        static const size_t mul_mat_f_ptr_count = 4u;
+        if (param_index >= mul_mat_f_count) {
+            return 0;
+        }
+        if (param_index < mul_mat_f_ptr_count) {
+            *param_offset = param_index * 8u;
+            *param_size   = 8u;
+        } else {
+            *param_offset = mul_mat_f_ptr_count * 8u +
+                            (param_index - mul_mat_f_ptr_count) * 4u;
+            *param_size   = 4u;
+        }
+        return 1;
+    }
+
+    /* cpy_scalar<F>(cx, cdst, ne, ne00..ne02, nb00..nb03, ne10..ne12, nb10..nb13)
+     * cpy_scalar_transpose<T>(cx, cdst, ne, ne00..ne02, nb00..nb03, ne10..ne12, nb10..nb13)
+     * Layout: 2 x ptr (8 bytes each) + 15 x int32 (4 bytes each) = 76 bytes total.
+     * All template variants share the same parameter layout. */
+    if (strncmp(func_name, "_Z10cpy_scalar",
+                strlen("_Z10cpy_scalar")) == 0) {
+        static const size_t cpy_scalar_count = 17u;
+        /* offsets: 0,8 for the two ptrs; then 16,20,...72 for the 15 ints */
+        if (param_index >= cpy_scalar_count) {
+            return 0;
+        }
+        if (param_index < 2u) {
+            *param_offset = param_index * 8u;
+            *param_size   = 8u;
+        } else {
+            *param_offset = 16u + (param_index - 2u) * 4u;
+            *param_size   = 4u;
+        }
+        return 1;
+    }
+
+    return 0;
+}
 
 static uint16_t cuda_executor_float_to_half_bits(float value)
 {
@@ -96,6 +1270,100 @@ static int cuda_executor_is_fp16_compute(int computeType)
            computeType == CUBLAS_COMPUTE_16F_PEDANTIC;
 }
 
+static void cuda_executor_log_prefix_bytes(const char *label,
+                                           const void *data,
+                                           size_t len,
+                                           uint32_t vm_id)
+{
+    if (!data || len == 0) {
+        return;
+    }
+
+    const unsigned char *bytes = (const unsigned char *)data;
+    char hexbuf[196 * 3 + 1];
+    size_t pos = 0;
+    size_t log_len = (len < 196) ? len : 196;
+
+    for (size_t i = 0; i < log_len && pos + 4 < sizeof(hexbuf); i++) {
+        int n = snprintf(hexbuf + pos, sizeof(hexbuf) - pos,
+                         "%02x%s", bytes[i], (i + 1 < log_len) ? " " : "");
+        if (n <= 0) {
+            break;
+        }
+        pos += (size_t)n;
+    }
+
+    fprintf(stderr,
+            "[cuda-executor] %s prefix vm=%u len=%zu prefix_len=%zu bytes=[%s]\n",
+            label, vm_id, len, log_len, hexbuf);
+}
+
+static void cuda_executor_log_k_set_rows_params(const char *func_name,
+                                                const void *param_data,
+                                                size_t len,
+                                                uint32_t vm_id)
+{
+    if (!func_name || !param_data) {
+        return;
+    }
+
+    if (strncmp(func_name, "_Z10k_set_rows", strlen("_Z10k_set_rows")) != 0 &&
+        strncmp(func_name, "_Z16k_set_rows_quant", strlen("_Z16k_set_rows_quant")) != 0) {
+        return;
+    }
+
+    /* Use the actual last-field offset + size (196 bytes) rather than sizeof()
+     * which may include trailing struct padding (200 bytes). */
+    static const size_t k_set_rows_min_len =
+        offsetof(k_set_rows_params_host_t, ne12_fd) +
+        sizeof(((k_set_rows_params_host_t *)0)->ne12_fd);
+    if (len < k_set_rows_min_len) {
+        fprintf(stderr,
+                "[cuda-executor] %s decoded params vm=%u len=%zu expected=%zu (truncated)\n",
+                func_name,
+                vm_id,
+                len,
+                sizeof(k_set_rows_params_host_t));
+        return;
+    }
+
+    k_set_rows_params_host_t p;
+    memset(&p, 0, sizeof(p));
+    memcpy(&p, param_data, sizeof(p));
+
+    fprintf(stderr,
+            "[cuda-executor] %s decoded params vm=%u "
+            "src0=%p src1=%p dst=%p "
+            "ne_total=%lld ne10=%lld ne11=%lld ne12=%lld ne13=%lld "
+            "s01=%lld s02=%lld s03=%lld s10=%lld s11=%lld s12=%lld s1=%lld s2=%lld s3=%lld "
+            "ne00=(%u,%u,%u) ne01=(%u,%u,%u) ne02=(%u,%u,%u) "
+            "ne11_fd=(%u,%u,%u) ne12_fd=(%u,%u,%u)\n",
+            func_name,
+            vm_id,
+            p.src0,
+            p.src1,
+            p.dst,
+            (long long)p.ne_total,
+            (long long)p.ne10,
+            (long long)p.ne11,
+            (long long)p.ne12,
+            (long long)p.ne13,
+            (long long)p.s01,
+            (long long)p.s02,
+            (long long)p.s03,
+            (long long)p.s10,
+            (long long)p.s11,
+            (long long)p.s12,
+            (long long)p.s1,
+            (long long)p.s2,
+            (long long)p.s3,
+            p.ne00.x, p.ne00.y, p.ne00.z,
+            p.ne01.x, p.ne01.y, p.ne01.z,
+            p.ne02.x, p.ne02.y, p.ne02.z,
+            p.ne11_fd.x, p.ne11_fd.y, p.ne11_fd.z,
+            p.ne12_fd.x, p.ne12_fd.y, p.ne12_fd.z);
+}
+
 /* ================================================================
  * Per-VM mapping tables
  * ================================================================ */
@@ -121,6 +1389,8 @@ typedef struct {
 typedef struct {
     uint64_t guest_handle;
     CUfunction host_function;
+    uint64_t module_guest_handle;
+    char     name[128];
 } func_entry_t;
 
 typedef struct {
@@ -342,8 +1612,8 @@ static void vm_remove_module(vm_state_t *vm, uint64_t guest)
     }
 }
 
-static void vm_add_library(vm_state_t *vm, uint64_t guest, CUlibrary host,
-                           void *owned_image, size_t owned_image_size)
+static int vm_add_library(vm_state_t *vm, uint64_t guest, CUlibrary host,
+                          void *owned_image, size_t owned_image_size)
 {
     if (vm->library_count < MAX_LIBRARY_ENTRIES) {
         vm->libraries[vm->library_count].guest_handle = guest;
@@ -351,7 +1621,13 @@ static void vm_add_library(vm_state_t *vm, uint64_t guest, CUlibrary host,
         vm->libraries[vm->library_count].owned_image = owned_image;
         vm->libraries[vm->library_count].owned_image_size = owned_image_size;
         vm->library_count++;
+        return 1;
     }
+
+    fprintf(stderr,
+            "[cuda-executor] library table full vm=%u max=%d guest_handle=0x%llx\n",
+            vm->vm_id, MAX_LIBRARY_ENTRIES, (unsigned long long)guest);
+    return 0;
 }
 
 static CUlibrary vm_find_library(vm_state_t *vm, uint64_t guest)
@@ -376,11 +1652,19 @@ static void vm_remove_library(vm_state_t *vm, uint64_t guest)
 }
 
 /* Function mapping helpers */
-static void vm_add_func(vm_state_t *vm, uint64_t guest, CUfunction host)
+static void vm_add_func(vm_state_t *vm, uint64_t guest, CUfunction host,
+                        uint64_t module_guest_handle, const char *name)
 {
     if (vm->func_count < MAX_FUNC_ENTRIES) {
         vm->funcs[vm->func_count].guest_handle = guest;
         vm->funcs[vm->func_count].host_function = host;
+        vm->funcs[vm->func_count].module_guest_handle = module_guest_handle;
+        vm->funcs[vm->func_count].name[0] = '\0';
+        if (name && name[0] != '\0') {
+            snprintf(vm->funcs[vm->func_count].name,
+                     sizeof(vm->funcs[vm->func_count].name),
+                     "%s", name);
+        }
         vm->func_count++;
     }
 }
@@ -390,6 +1674,16 @@ static CUfunction vm_find_func(vm_state_t *vm, uint64_t guest)
     for (int i = 0; i < vm->func_count; i++) {
         if (vm->funcs[i].guest_handle == guest)
             return vm->funcs[i].host_function;
+    }
+    return NULL;
+}
+
+static func_entry_t *vm_find_func_entry(vm_state_t *vm, uint64_t guest)
+{
+    for (int i = 0; i < vm->func_count; i++) {
+        if (vm->funcs[i].guest_handle == guest) {
+            return &vm->funcs[i];
+        }
     }
     return NULL;
 }
@@ -615,20 +1909,29 @@ static CUresult load_host_module(uint32_t vm_id, uint32_t call_id,
             void *fatbin_copy = malloc(data_len);
 
             if (!fatbin_copy) {
+                fprintf(stderr,
+                        "[cuda-executor] vm_id=%u cuModuleLoadFatBinary: malloc(%u) failed (host heap)\n",
+                        vm_id, data_len);
+                fflush(stderr);
                 return CUDA_ERROR_OUT_OF_MEMORY;
             }
             memcpy(fatbin_copy, data, data_len);
 
-            /* Debug: persist the 401312-byte cuBLASLt fatbin for E1 tracing (cuobjdump).
-             * See FAIL401312_DUMP_WHY_AND_HOW.md, host_fatbin_isolation_directive.sh */
-            if (data_len == 401312U) {
-                FILE *df = fopen("/tmp/fail401312.bin", "wb");
+            /* Persist suspicious large fatbins so they can be replayed directly on the host.
+             * This helps compare the live mediator path against a clean primary-context test. */
+            if (data_len == 401312U || data_len == 214857U || data_len == 640561U) {
+                char dump_path[128];
+                snprintf(dump_path, sizeof(dump_path),
+                         data_len == 401312U ? "/tmp/fail401312.bin"
+                                             : "/tmp/fatbin_vm%u_len%u.bin",
+                         vm_id, data_len);
+                FILE *df = fopen(dump_path, "wb");
                 if (df) {
                     fwrite(fatbin_copy, 1, data_len, df);
                     fclose(df);
                     fprintf(stderr,
-                            "[cuda-executor] dumped /tmp/fail401312.bin (%u bytes)\n",
-                            data_len);
+                            "[cuda-executor] dumped %s (%u bytes)\n",
+                            dump_path, data_len);
                     fflush(stderr);
                 }
             }
@@ -643,6 +1946,12 @@ static CUresult load_host_module(uint32_t vm_id, uint32_t call_id,
                 wrapper.data = fatbin_copy;
                 wrapper.filename_or_fatbins = NULL;
                 rc = cuModuleLoadFatBinary(mod_out, &wrapper);
+            }
+            if (rc == CUDA_ERROR_OUT_OF_MEMORY) {
+                fprintf(stderr,
+                        "[cuda-executor] vm_id=%u cuModuleLoadFatBinary OOM after copy data_len=%u\n",
+                        vm_id, data_len);
+                fflush(stderr);
             }
             free(fatbin_copy);
         } else {
@@ -725,6 +2034,8 @@ static void vm_discard_runtime_state(vm_state_t *vm)
 
 static void cuda_executor_recover_primary_context(cuda_executor_t *exec, uint32_t vm_id, const char *reason)
 {
+    CUresult rc;
+
     if (!exec || !exec->cuda_initialized) {
         return;
     }
@@ -738,8 +2049,11 @@ static void cuda_executor_recover_primary_context(cuda_executor_t *exec, uint32_
     (void)cuDevicePrimaryCtxReset(exec->device);
 
     exec->primary_ctx = NULL;
-    if (cuDevicePrimaryCtxRetain(&exec->primary_ctx, exec->device) != CUDA_SUCCESS) {
-        fprintf(stderr, "[cuda-executor] ERROR: failed to re-retain primary context after recovery\n");
+    rc = cuDevicePrimaryCtxRetain(&exec->primary_ctx, exec->device);
+    if (rc != CUDA_SUCCESS) {
+        fprintf(stderr,
+                "[cuda-executor] ERROR: failed to re-retain primary context after recovery: rc=%d\n",
+                (int)rc);
         return;
     }
 
@@ -750,7 +2064,12 @@ static void cuda_executor_recover_primary_context(cuda_executor_t *exec, uint32_
     }
 
     (void)cudaSetDevice(0);
-    (void)cuCtxSetCurrent(exec->primary_ctx);
+    rc = cuCtxSetCurrent(exec->primary_ctx);
+    if (rc != CUDA_SUCCESS) {
+        fprintf(stderr,
+                "[cuda-executor] ERROR: recovered primary context could not be made current: rc=%d\n",
+                (int)rc);
+    }
 }
 
 /* ================================================================
@@ -1146,18 +2465,36 @@ int cuda_executor_call(cuda_executor_t *exec,
                 (unsigned long long)bytesize, call->vm_id);
 
         /* Use primary context for allocation (per-VM cuCtxCreate can fail and cause "unable to allocate CUDA0 buffer") */
-        cuCtxSetCurrent(exec->primary_ctx);
-
-        CUdeviceptr dptr = 0;
-        rc = cuMemAlloc(&dptr, (size_t)bytesize);
-        if (rc == CUDA_ERROR_ILLEGAL_ADDRESS) {
+        rc = cuCtxSetCurrent(exec->primary_ctx);
+        if (rc == CUDA_ERROR_INVALID_CONTEXT) {
             fprintf(stderr,
-                    "[cuda-executor] cuMemAlloc hit CUDA_ERROR_ILLEGAL_ADDRESS before allocation completed; "
+                    "[cuda-executor] cuMemAlloc preflight saw CUDA_ERROR_INVALID_CONTEXT; "
                     "recovering context and retrying once (vm=%u size=%llu)\n",
                     call->vm_id, (unsigned long long)bytesize);
             cuda_executor_recover_primary_context(exec, vm->vm_id,
-                                                  "cuMemAlloc hit CUDA_ERROR_ILLEGAL_ADDRESS");
-            cuCtxSetCurrent(exec->primary_ctx);
+                                                  "cuMemAlloc preflight cuCtxSetCurrent returned CUDA_ERROR_INVALID_CONTEXT");
+            rc = cuCtxSetCurrent(exec->primary_ctx);
+            retried_after_recover = 1;
+        }
+        if (rc != CUDA_SUCCESS) {
+            break;
+        }
+
+        CUdeviceptr dptr = 0;
+        rc = cuMemAlloc(&dptr, (size_t)bytesize);
+        if (rc == CUDA_ERROR_ILLEGAL_ADDRESS || rc == CUDA_ERROR_INVALID_CONTEXT) {
+            fprintf(stderr,
+                    "[cuda-executor] cuMemAlloc hit rc=%d before allocation completed; "
+                    "recovering context and retrying once (vm=%u size=%llu)\n",
+                    (int)rc, call->vm_id, (unsigned long long)bytesize);
+            cuda_executor_recover_primary_context(exec, vm->vm_id,
+                                                  rc == CUDA_ERROR_ILLEGAL_ADDRESS
+                                                      ? "cuMemAlloc hit CUDA_ERROR_ILLEGAL_ADDRESS"
+                                                      : "cuMemAlloc hit CUDA_ERROR_INVALID_CONTEXT");
+            rc = cuCtxSetCurrent(exec->primary_ctx);
+            if (rc != CUDA_SUCCESS) {
+                break;
+            }
             dptr = 0;
             rc = cuMemAlloc(&dptr, (size_t)bytesize);
             retried_after_recover = 1;
@@ -1252,6 +2589,7 @@ int cuda_executor_call(cuda_executor_t *exec,
                 fprintf(stderr, "[cuda-executor] cuMemcpyHtoD: dst=0x%llx size=%zu bytes (vm=%u)\n",
                         (unsigned long long)host_dst, copy_len, call->vm_id);
             }
+            cuda_executor_log_prefix_bytes("cuMemcpyHtoD input", data, copy_len, call->vm_id);
             rc = cuMemcpyHtoD(host_dst, data, copy_len);
             if (rc == CUDA_SUCCESS) {
                 if (executor_verbose_copy_logging())
@@ -1305,6 +2643,36 @@ int cuda_executor_call(cuda_executor_t *exec,
             }
 
             memcpy(staging, data, copy_len);
+
+            /* Suppress CUDA fatbin uploads to device memory.
+             *
+             * GGML's JIT path uploads compiled kernel binaries (fatbins,
+             * magic 0xBA55ED50) via cuMemcpyHtoDAsync to a scratch device
+             * buffer whose address aliases the k_set_rows src1 tensor.
+             * Writing the fatbin corrupts src1 and triggers
+             * CUDA_ERROR_ILLEGAL_ADDRESS on the next k_set_rows launch.
+             * On a real GPU the driver zero-initialises the fresh cuMemAlloc
+             * that follows, so src1 is always zero; we preserve that
+             * invariant here by simply not writing the fatbin to device RAM.
+             */
+            if (copy_len >= 4 && *(const uint32_t *)staging == 0xBA55ED50U) {
+                fprintf(stderr,
+                        "[cuda-executor] cuMemcpyHtoDAsync: fatbin suppressed vm=%u "
+                        "dst=0x%llx size=%zu (preserves tensor zero-state)\n",
+                        call->vm_id, (unsigned long long)host_dst, copy_len);
+                free(staging);
+                rc = CUDA_SUCCESS;
+                break;
+            }
+
+            fprintf(stderr,
+                    "[cuda-executor] cuMemcpyHtoDAsync vm=%u guest_dst=0x%llx host_dst=0x%llx size=%zu stream_guest=0x%llx\n",
+                    call->vm_id,
+                    (unsigned long long)dst,
+                    (unsigned long long)host_dst,
+                    copy_len,
+                    (unsigned long long)stream_handle);
+            cuda_executor_log_prefix_bytes("cuMemcpyHtoDAsync input", data, copy_len, call->vm_id);
             int used_sync_fallback = 0;
             rc = cuMemcpyHtoDAsync(host_dst, staging, copy_len, stream);
             if (rc != CUDA_SUCCESS) {
@@ -1352,23 +2720,32 @@ int cuda_executor_call(cuda_executor_t *exec,
         uint64_t src = CUDA_UNPACK_U64(call->args, 0);
         uint64_t byte_count = CUDA_UNPACK_U64(call->args, 2);
 
-        CUdeviceptr host_src = vm_find_mem(vm, src);
+        CUdeviceptr mapped_host_src = vm_find_mem(vm, src);
+        CUdeviceptr host_src = mapped_host_src;
         if (!host_src) host_src = (CUdeviceptr)src;
 
         cuCtxSetCurrent(exec->primary_ctx);
 
         size_t copy_len = (size_t)byte_count;
         if (result_data && result_cap >= copy_len) {
-            if (executor_verbose_copy_logging()) {
-                fprintf(stderr, "[cuda-executor] cuMemcpyDtoH: src=0x%llx size=%zu bytes (vm=%u)\n",
-                        (unsigned long long)host_src, copy_len, call->vm_id);
-            }
+            fprintf(stderr,
+                    "[cuda-executor] cuMemcpyDtoH start vm=%u guest_src=0x%llx host_src=0x%llx mapped=%s size=%zu\n",
+                    call->vm_id,
+                    (unsigned long long)src,
+                    (unsigned long long)host_src,
+                    mapped_host_src ? "yes" : "no",
+                    copy_len);
             rc = cuMemcpyDtoH(result_data, host_src, copy_len);
             if (rc == CUDA_SUCCESS) {
                 result->data_len = (uint32_t)copy_len;
                 if (result_len) *result_len = (uint32_t)copy_len;
-                if (executor_verbose_copy_logging())
-                    fprintf(stderr, "[cuda-executor] cuMemcpyDtoH SUCCESS: data copied from physical GPU (vm=%u)\n", call->vm_id);
+                fprintf(stderr,
+                        "[cuda-executor] cuMemcpyDtoH SUCCESS vm=%u guest_src=0x%llx host_src=0x%llx size=%zu\n",
+                        call->vm_id,
+                        (unsigned long long)src,
+                        (unsigned long long)host_src,
+                        copy_len);
+                cuda_executor_log_prefix_bytes("cuMemcpyDtoH result", result_data, copy_len, call->vm_id);
             } else {
                 fprintf(stderr, "[cuda-executor] cuMemcpyDtoH FAILED: rc=%d src=0x%llx size=%zu (vm=%u)\n",
                         rc, (unsigned long long)host_src, copy_len, call->vm_id);
@@ -1469,6 +2846,10 @@ int cuda_executor_call(cuda_executor_t *exec,
         /* --- Non-chunked (legacy) or single-chunk path --- */
         if (!is_chunked || is_single) {
             CUmodule mod = NULL;
+            rc = ensure_vm_context(exec, vm);
+            if (rc != CUDA_SUCCESS) {
+                break;
+            }
             rc = load_host_module(vm->vm_id, call->call_id, data, data_len, &mod);
             if (rc == CUDA_SUCCESS) {
                 uint64_t guest_handle = (uint64_t)(uintptr_t)mod;
@@ -1526,6 +2907,14 @@ int cuda_executor_call(cuda_executor_t *exec,
         if (is_last) {
             /* All chunks received — call cuModuleLoadData with full image */
             CUmodule mod = NULL;
+            rc = ensure_vm_context(exec, vm);
+            if (rc != CUDA_SUCCESS) {
+                free(vm->mod_chunk_buf);
+                vm->mod_chunk_buf   = NULL;
+                vm->mod_chunk_alloc = 0;
+                vm->mod_chunk_used  = 0;
+                break;
+            }
             rc = load_host_module(vm->vm_id, call->call_id, vm->mod_chunk_buf,
                                   (uint32_t)vm->mod_chunk_used, &mod);
             free(vm->mod_chunk_buf);
@@ -1578,7 +2967,13 @@ int cuda_executor_call(cuda_executor_t *exec,
         rc = cuModuleGetFunction(&func, mod, func_name);
         if (rc == CUDA_SUCCESS) {
             uint64_t guest_func = (uint64_t)(uintptr_t)func;
-            vm_add_func(vm, guest_func, func);
+            vm_add_func(vm, guest_func, func, mod_handle, func_name);
+            fprintf(stderr,
+                    "[cuda-executor] cuModuleGetFunction success: vm=%u mod=0x%llx func=0x%llx name=%s\n",
+                    call->vm_id,
+                    (unsigned long long)mod_handle,
+                    (unsigned long long)guest_func,
+                    func_name);
             result->num_results = 1;
             result->results[0] = guest_func;
         }
@@ -1625,11 +3020,16 @@ int cuda_executor_call(cuda_executor_t *exec,
         const CUDALaunchParams *lp = (const CUDALaunchParams *)data;
 
         /* Resolve function handle */
-        CUfunction func = vm_find_func(vm, lp->function_handle);
+        func_entry_t *func_entry = vm_find_func_entry(vm, lp->function_handle);
+        CUfunction func = func_entry ? func_entry->host_function : NULL;
         if (!func) {
             /* Try direct cast (if host gave handle directly) */
             func = (CUfunction)(uintptr_t)lp->function_handle;
         }
+        const char *func_name =
+            (func_entry && func_entry->name[0] != '\0') ? func_entry->name : "<unknown>";
+        uint64_t module_guest_handle =
+            func_entry ? func_entry->module_guest_handle : 0;
 
         /* Resolve stream handle */
         CUstream stream = vm_resolve_stream_handle(vm, lp->stream_handle);
@@ -1638,42 +3038,150 @@ int cuda_executor_call(cuda_executor_t *exec,
         const uint8_t *payload_ptr = (const uint8_t *)data;
         payload_ptr += sizeof(CUDALaunchParams);
 
-        /* Read param_sizes */
-        const uint32_t *param_sizes = (const uint32_t *)payload_ptr;
-        payload_ptr += lp->num_params * sizeof(uint32_t);
-
-        /* Read param_data */
+        const uint32_t *param_sizes = NULL;
         const uint8_t *param_data = payload_ptr;
-
-        /* Build kernelParams array */
         void *kernelParams[256];
-        /* Point each param directly to its data in the payload buffer */
-        uint32_t offset = 0;
-        for (uint32_t i = 0; i < lp->num_params && i < 256; i++) {
-            /* We need mutable copies since CUDA may read them */
-            kernelParams[i] = (void *)(param_data + offset);
-            offset += param_sizes[i];
+        memset(kernelParams, 0, sizeof(kernelParams));
+
+        if (lp->param_buf_mode == CUDA_LAUNCH_PARAM_MODE_LEGACY) {
+            param_sizes = (const uint32_t *)payload_ptr;
+            payload_ptr += lp->num_params * sizeof(uint32_t);
+            param_data = payload_ptr;
+
+            /* Build kernelParams array */
+            uint32_t offset = 0;
+            for (uint32_t i = 0; i < lp->num_params && i < 256; i++) {
+                kernelParams[i] = (void *)(param_data + offset);
+                offset += param_sizes[i];
+            }
         }
 
-        fprintf(stderr, "[cuda-executor] cuLaunchKernel: grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u vm=%u\n",
+        fprintf(stderr,
+                "[cuda-executor] cuLaunchKernel: func=0x%llx name=%s mod=0x%llx stream=0x%llx "
+                "grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u mode=%u vm=%u\n",
+                (unsigned long long)lp->function_handle,
+                func_name,
+                (unsigned long long)module_guest_handle,
+                (unsigned long long)lp->stream_handle,
                 lp->grid_dim_x, lp->grid_dim_y, lp->grid_dim_z,
                 lp->block_dim_x, lp->block_dim_y, lp->block_dim_z,
-                lp->shared_mem_bytes, lp->num_params, call->vm_id);
+                lp->shared_mem_bytes, lp->num_params, lp->param_buf_mode, call->vm_id);
+        if (lp->param_buf_mode == CUDA_LAUNCH_PARAM_MODE_RAW_BUFFER) {
+            cuda_executor_log_k_set_rows_params(func_name,
+                                                param_data,
+                                                lp->total_param_bytes,
+                                                call->vm_id);
+            /* For k_set_rows, read first 8 src1 int64_t values from device */
+            if (func_name &&
+                strncmp(func_name, "_Z10k_set_rows", strlen("_Z10k_set_rows")) == 0 &&
+                lp->total_param_bytes >= 16u) {
+                const uint64_t *pp = (const uint64_t *)param_data;
+                CUdeviceptr src1_dev = (CUdeviceptr)pp[1]; /* src1 is param 1 */
+                if (src1_dev != 0) {
+                    int64_t src1_peek[8] = {0};
+                    size_t peek_bytes = sizeof(src1_peek);
+                    CUresult peek_rc = cuMemcpyDtoH(src1_peek, src1_dev, peek_bytes);
+                    if (peek_rc == CUDA_SUCCESS) {
+                        fprintf(stderr,
+                                "[cuda-executor] %s src1 peek vm=%u "
+                                "[%lld %lld %lld %lld %lld %lld %lld %lld]\n",
+                                func_name, call->vm_id,
+                                (long long)src1_peek[0], (long long)src1_peek[1],
+                                (long long)src1_peek[2], (long long)src1_peek[3],
+                                (long long)src1_peek[4], (long long)src1_peek[5],
+                                (long long)src1_peek[6], (long long)src1_peek[7]);
+                    } else {
+                        fprintf(stderr,
+                                "[cuda-executor] %s src1 peek FAILED vm=%u rc=%d\n",
+                                func_name, call->vm_id, (int)peek_rc);
+                    }
+                }
+            }
+        }
 
-        rc = cuLaunchKernel(func,
-                           lp->grid_dim_x, lp->grid_dim_y, lp->grid_dim_z,
-                           lp->block_dim_x, lp->block_dim_y, lp->block_dim_z,
-                           lp->shared_mem_bytes,
-                           stream,
-                           kernelParams,
-                           NULL);  /* extra */
+        if (lp->param_buf_mode == CUDA_LAUNCH_PARAM_MODE_RAW_BUFFER) {
+            size_t param_buffer_size = lp->total_param_bytes;
+            void *extra[] = {
+                CU_LAUNCH_PARAM_BUFFER_POINTER, (void *)param_data,
+                CU_LAUNCH_PARAM_BUFFER_SIZE, &param_buffer_size,
+                CU_LAUNCH_PARAM_END
+            };
 
-        /* Synchronize after launch to detect errors immediately */
+            rc = cuLaunchKernel(func,
+                               lp->grid_dim_x, lp->grid_dim_y, lp->grid_dim_z,
+                               lp->block_dim_x, lp->block_dim_y, lp->block_dim_z,
+                               lp->shared_mem_bytes,
+                               stream,
+                               NULL,
+                               extra);
+        } else {
+            rc = cuLaunchKernel(func,
+                               lp->grid_dim_x, lp->grid_dim_y, lp->grid_dim_z,
+                               lp->block_dim_x, lp->block_dim_y, lp->block_dim_z,
+                               lp->shared_mem_bytes,
+                               stream,
+                               kernelParams,
+                               NULL);
+        }
+
+        /* Synchronize after launch to detect runtime faults immediately. */
         if (rc == CUDA_SUCCESS) {
             rc = cuCtxSynchronize();
-            fprintf(stderr, "[cuda-executor] cuLaunchKernel SUCCESS: kernel executed on physical GPU (vm=%u)\n", call->vm_id);
+            if (rc == CUDA_SUCCESS) {
+                fprintf(stderr,
+                        "[cuda-executor] cuLaunchKernel SUCCESS: kernel executed on physical GPU "
+                        "(func=0x%llx name=%s mod=0x%llx vm=%u)\n",
+                        (unsigned long long)lp->function_handle,
+                        func_name,
+                        (unsigned long long)module_guest_handle,
+                        call->vm_id);
+            } else {
+                fprintf(stderr,
+                        "[cuda-executor] cuLaunchKernel sync FAILED: rc=%d func=0x%llx "
+                        "name=%s mod=0x%llx grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u vm=%u\n",
+                        rc,
+                        (unsigned long long)lp->function_handle,
+                        func_name,
+                        (unsigned long long)module_guest_handle,
+                        lp->grid_dim_x, lp->grid_dim_y, lp->grid_dim_z,
+                        lp->block_dim_x, lp->block_dim_y, lp->block_dim_z,
+                        lp->shared_mem_bytes, lp->num_params, call->vm_id);
+                fprintf(stderr,
+                        "[cuda-executor] cuLaunchKernel failure detail: mode=%u total_param_bytes=%u vm=%u\n",
+                        lp->param_buf_mode,
+                        lp->total_param_bytes,
+                        call->vm_id);
+                cuda_executor_log_prefix_bytes("cuLaunchKernel param buffer",
+                                              param_data,
+                                              lp->total_param_bytes,
+                                              call->vm_id);
+                if (rc == CUDA_ERROR_ILLEGAL_ADDRESS || rc == CUDA_ERROR_INVALID_CONTEXT) {
+                    cuda_executor_recover_primary_context(exec, vm->vm_id,
+                                                          rc == CUDA_ERROR_ILLEGAL_ADDRESS
+                                                              ? "cuLaunchKernel sync hit CUDA_ERROR_ILLEGAL_ADDRESS"
+                                                              : "cuLaunchKernel sync hit CUDA_ERROR_INVALID_CONTEXT");
+                }
+            }
         } else {
-            fprintf(stderr, "[cuda-executor] cuLaunchKernel FAILED: rc=%d (vm=%u)\n", rc, call->vm_id);
+            fprintf(stderr,
+                    "[cuda-executor] cuLaunchKernel launch FAILED: rc=%d func=0x%llx "
+                    "name=%s mod=0x%llx grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u vm=%u\n",
+                    rc,
+                    (unsigned long long)lp->function_handle,
+                    func_name,
+                    (unsigned long long)module_guest_handle,
+                    lp->grid_dim_x, lp->grid_dim_y, lp->grid_dim_z,
+                    lp->block_dim_x, lp->block_dim_y, lp->block_dim_z,
+                    lp->shared_mem_bytes, lp->num_params, call->vm_id);
+            fprintf(stderr,
+                    "[cuda-executor] cuLaunchKernel launch failure detail: mode=%u total_param_bytes=%u vm=%u\n",
+                    lp->param_buf_mode,
+                    lp->total_param_bytes,
+                    call->vm_id);
+            cuda_executor_log_prefix_bytes("cuLaunchKernel param buffer",
+                                          param_data,
+                                          lp->total_param_bytes,
+                                          call->vm_id);
         }
         break;
     }
@@ -2443,6 +3951,20 @@ int cuda_executor_call(cuda_executor_t *exec,
             break;
         }
         memcpy(owned_image, data, data_len);
+        if (data_len == 214857U || data_len == 640561U) {
+            char dump_path[128];
+            snprintf(dump_path, sizeof(dump_path),
+                     "/tmp/libload_vm%u_len%u.bin", vm->vm_id, data_len);
+            FILE *df = fopen(dump_path, "wb");
+            if (df) {
+                fwrite(owned_image, 1, data_len, df);
+                fclose(df);
+                fprintf(stderr,
+                        "[cuda-executor] dumped %s (%u bytes) before cuLibraryLoadData\n",
+                        dump_path, (unsigned)data_len);
+                fflush(stderr);
+            }
+        }
         rc = cuLibraryLoadData(&lib,
                                owned_image,
                                NULL, NULL, 0,
@@ -2453,7 +3975,15 @@ int cuda_executor_call(cuda_executor_t *exec,
                     "[cuda-executor] cuLibraryLoadData success vm=%u data_len=%u lib=%p guest_handle=0x%llx\n",
                     vm->vm_id, (unsigned)data_len, (void *)lib,
                     (unsigned long long)guest_handle);
-            vm_add_library(vm, guest_handle, lib, owned_image, data_len);
+            if (!vm_add_library(vm, guest_handle, lib, owned_image, data_len)) {
+                /* Do not hand a guest handle back if we cannot map it; that
+                 * would fail later at cuLibraryGetModule with INVALID_HANDLE. */
+                (void)cuLibraryUnload(lib);
+                free(owned_image);
+                owned_image = NULL;
+                rc = CUDA_ERROR_OUT_OF_MEMORY;
+                break;
+            }
             result->num_results = 1;
             result->results[0] = guest_handle;
             owned_image = NULL;
@@ -2549,6 +4079,74 @@ int cuda_executor_call(cuda_executor_t *exec,
             if (rc == CUDA_SUCCESS) {
                 rc = cuFuncSetCacheConfig(func, (CUfunc_cache)config);
             }
+        }
+        break;
+    }
+
+    case CUDA_CALL_FUNC_GET_PARAM_INFO: {
+        uint64_t func_handle = CUDA_UNPACK_U64(call->args, 0);
+        uint64_t param_index = CUDA_UNPACK_U64(call->args, 2);
+        func_entry_t *func_entry = vm_find_func_entry(vm, func_handle);
+        CUfunction func = func_entry ? func_entry->host_function : NULL;
+        const char *func_name =
+            (func_entry && func_entry->name[0] != '\0') ? func_entry->name : "<unknown>";
+        pfn_cuFuncGetParamInfo_t cuFuncGetParamInfo_fn = resolve_cuFuncGetParamInfo();
+
+        if (func && cuFuncGetParamInfo_fn) {
+            rc = ensure_vm_context(exec, vm);
+            if (rc == CUDA_SUCCESS) {
+                size_t param_offset = 0;
+                size_t param_size = 0;
+                rc = cuFuncGetParamInfo_fn(func, (size_t)param_index, &param_offset, &param_size);
+                if (rc == CUDA_SUCCESS) {
+                    result->num_results = 2;
+                    result->results[0] = (uint64_t)param_offset;
+                    result->results[1] = (uint64_t)param_size;
+                } else if (cuda_executor_try_synth_param_info(func_name,
+                                                              (size_t)param_index,
+                                                              &param_offset,
+                                                              &param_size)) {
+                    fprintf(stderr,
+                            "[cuda-executor] cuFuncGetParamInfo synthesized: vm=%u func=0x%llx "
+                            "name=%s param=%llu off=%zu size=%zu rc=%d\n",
+                            call->vm_id,
+                            (unsigned long long)func_handle,
+                            func_name,
+                            (unsigned long long)param_index,
+                            param_offset,
+                            param_size,
+                            rc);
+                    rc = CUDA_SUCCESS;
+                    result->num_results = 2;
+                    result->results[0] = (uint64_t)param_offset;
+                    result->results[1] = (uint64_t)param_size;
+                }
+            }
+        } else if (func) {
+            size_t param_offset = 0;
+            size_t param_size = 0;
+            if (cuda_executor_try_synth_param_info(func_name,
+                                                   (size_t)param_index,
+                                                   &param_offset,
+                                                   &param_size)) {
+                fprintf(stderr,
+                        "[cuda-executor] cuFuncGetParamInfo synthesized without driver API: "
+                        "vm=%u func=0x%llx name=%s param=%llu off=%zu size=%zu\n",
+                        call->vm_id,
+                        (unsigned long long)func_handle,
+                        func_name,
+                        (unsigned long long)param_index,
+                        param_offset,
+                        param_size);
+                rc = CUDA_SUCCESS;
+                result->num_results = 2;
+                result->results[0] = (uint64_t)param_offset;
+                result->results[1] = (uint64_t)param_size;
+            } else {
+                rc = CUDA_ERROR_NOT_SUPPORTED;
+            }
+        } else {
+            rc = CUDA_ERROR_INVALID_VALUE;
         }
         break;
     }

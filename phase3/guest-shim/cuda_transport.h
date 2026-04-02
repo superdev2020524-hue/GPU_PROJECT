@@ -64,6 +64,15 @@ int cuda_transport_call(cuda_transport_t *tp,
                         void *recv_data, uint32_t recv_cap,
                         uint32_t *recv_len);
 
+int cuda_transport_call_internal(cuda_transport_t *tp,
+                                 uint32_t call_id,
+                                 const uint32_t *args, uint32_t num_args,
+                                 const void *send_data, uint32_t send_len,
+                                 CUDACallResult *result,
+                                 void *recv_data, uint32_t recv_cap,
+                                 uint32_t *recv_len)
+    __attribute__((visibility("hidden")));
+
 /*
  * Get the VM ID assigned to this transport (read from MMIO).
  */

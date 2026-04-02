@@ -86,6 +86,14 @@ static cublas_remote_handle_t *as_remote_handle(cublasHandle_t h) {
 static cuda_transport_t *g_cublas_transport = NULL;
 static pthread_mutex_t g_cublas_transport_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static int cublas_diag_logging(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        cached = (getenv("VGPU_DEBUG") || getenv("CUBLAS_DEBUG")) ? 1 : 0;
+    }
+    return cached;
+}
+
 /* Guest-side sync after mediated BLAS: executor already cuCtxSynchronizes on the host;
  * this runs the shimmed cuCtxSynchronize RPC so guest/driver state stays ordered. */
 typedef unsigned int CUresult;
@@ -100,6 +108,9 @@ static void *g_cuda_driver_dl;
 
 static void cublas_log_batched(const char *fmt, ...)
 {
+    if (!cublas_diag_logging()) {
+        return;
+    }
     char buf[512];
     va_list ap;
     va_start(ap, fmt);
@@ -411,7 +422,7 @@ static void init_real_cublas(void) {
         }
     }
     /* Log init result for handoff debugging (gated; single write per cublasCreate) */
-    if (getenv("VGPU_DEBUG") || getenv("CUBLAS_DEBUG")) {
+    if (cublas_diag_logging()) {
         char diag[384];
         int n = snprintf(diag, sizeof(diag),
             "[libvgpu-cublas] init_real_cublas: chosen=%s ok=%d dlerror=%s\n",
@@ -474,6 +485,9 @@ static void ensure_cuda_primary_context(void) {
 
 static void log_cuda_context_snapshot(const char *stage)
 {
+    if (!cublas_diag_logging()) {
+        return;
+    }
     void *cuda = ensure_vgpu_cuda_loaded();
     char log_msg[512];
     void *ctx = NULL;
@@ -532,7 +546,7 @@ static void log_cuda_context_snapshot(const char *stage)
 /* CUBLAS create handle */
 cublasStatus_t cublasCreate_v2(cublasHandle_t *handle) {
     /* Debug: which call is reached after the 6 allocs (for runner exit 2) */
-    {
+    if (cublas_diag_logging()) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666); /* O_WRONLY|O_CREAT|O_APPEND */
         if (nfd >= 0) {
             const char *msg = "cublas_create\n";
@@ -548,11 +562,11 @@ cublasStatus_t cublasCreate_v2(cublasHandle_t *handle) {
     int log_len = snprintf(log_msg, sizeof(log_msg),
                           "[libvgpu-cublas] cublasCreate_v2() CALLED (pid=%d)\n",
                           (int)getpid());
-    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+    if (cublas_diag_logging() && log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
     /* Diagnostic: if this file appears after generate, inference path is CUBLAS-first (B1) */
-    {
+    if (cublas_diag_logging()) {
         int mfd = (int)syscall(__NR_open, "/tmp/vgpu_cublas_called", 0x41 | 0x100 | 0x200, 0666); /* O_WRONLY|O_CREAT|O_TRUNC */
         if (mfd >= 0) {
             char buf[64];
@@ -564,7 +578,7 @@ cublasStatus_t cublasCreate_v2(cublasHandle_t *handle) {
     if (!handle) return CUBLAS_STATUS_INVALID_VALUE;
 
     int rpc_rc = cublas_rpc_simple(CUDA_CALL_CUBLAS_CREATE, NULL, 0, &result);
-    {
+    if (cublas_diag_logging()) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) {
             char msg[64];
@@ -674,7 +688,7 @@ cublasStatus_t cublasCreate(cublasHandle_t *handle) {
 
 /* CUBLAS destroy handle */
 cublasStatus_t cublasDestroy_v2(cublasHandle_t handle) {
-    {
+    if (cublas_diag_logging()) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "cublas_destroy\n"; syscall(__NR_write, nfd, msg, 16); syscall(__NR_close, nfd); }
     }
@@ -709,7 +723,7 @@ cublasStatus_t cublasDestroy(cublasHandle_t handle) {
 
 /* CUBLAS set stream */
 cublasStatus_t cublasSetStream_v2(cublasHandle_t handle, void *stream) {
-    {
+    if (cublas_diag_logging()) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "set_stream\n"; syscall(__NR_write, nfd, msg, 12); syscall(__NR_close, nfd); }
     }
@@ -731,7 +745,7 @@ cublasStatus_t cublasSetStream_v2(cublasHandle_t handle, void *stream) {
         if (status == CUBLAS_STATUS_SUCCESS) {
             as_remote_handle(handle)->stream_handle = (uint64_t)(uintptr_t)stream;
         }
-        {
+        if (cublas_diag_logging()) {
             int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
             if (nfd >= 0) { const char *msg = "set_stream_done\n"; syscall(__NR_write, nfd, msg, 17); syscall(__NR_close, nfd); }
         }
@@ -820,7 +834,7 @@ cublasStatus_t cublasSgemm_v2(cublasHandle_t handle, int transa, int transb,
                               const float *B, int ldb,
                               const float *beta,
                               float *C, int ldc) {
-    {
+    if (cublas_diag_logging()) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "sgemm\n"; syscall(__NR_write, nfd, msg, 7); syscall(__NR_close, nfd); }
     }
@@ -883,7 +897,7 @@ cublasStatus_t cublasStrsmBatched(cublasHandle_t handle, int side, int uplo,
     int log_len = snprintf(log_msg, sizeof(log_msg),
                           "[libvgpu-cublas] cublasStrsmBatched() CALLED (m=%d, n=%d, batch=%d, pid=%d)\n",
                           m, n, batchCount, (int)getpid());
-    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+    if (cublas_diag_logging() && log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
     typedef cublasStatus_t (*fn_t)(cublasHandle_t, int, int, int, int, int, int,
@@ -903,7 +917,7 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
                             const void *beta,
                             void *C, int Ctype, int ldc,
                             int computeType, int algo) {
-    {
+    if (cublas_diag_logging()) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "gemm_ex\n"; syscall(__NR_write, nfd, msg, 9); syscall(__NR_close, nfd); }
     }
@@ -912,7 +926,7 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
     int log_len = snprintf(log_msg, sizeof(log_msg),
                           "[libvgpu-cublas] cublasGemmEx() CALLED (m=%d, n=%d, k=%d, pid=%d)\n",
                           m, n, k, (int)getpid());
-    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+    if (cublas_diag_logging() && log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
     if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
@@ -945,7 +959,7 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
         if (cublas_ensure_connected() != 0) {
             return CUBLAS_STATUS_NOT_INITIALIZED;
         }
-        {
+        if (cublas_diag_logging()) {
             int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
             if (nfd >= 0) { const char *msg = "gemm_ex_before_send\n"; syscall(__NR_write, nfd, msg, 20); syscall(__NR_close, nfd); }
         }
@@ -953,7 +967,7 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
                                        NULL, 0,
                                        &payload, (uint32_t)sizeof(payload),
                                        &result, NULL, 0, NULL);
-        {
+        if (cublas_diag_logging()) {
             int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
             if (nfd >= 0) {
                 char msg[80];
@@ -967,11 +981,11 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
             return CUBLAS_STATUS_EXECUTION_FAILED;
         }
         cublas_guest_ctx_sync_after_rpc();
-        {
+        if (cublas_diag_logging()) {
             int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
             if (nfd >= 0) { const char *msg = "gemm_ex_return\n"; syscall(__NR_write, nfd, msg, 15); syscall(__NR_close, nfd); }
         }
-        {
+        if (cublas_diag_logging()) {
             char ret_msg[288];
             int rn = snprintf(ret_msg, sizeof(ret_msg),
                               "[libvgpu-cublas] cublasGemmEx() RETURN ok tc_rc=%d cublas_status=%u (m=%d n=%d k=%d pid=%d)\n",
@@ -1005,7 +1019,7 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
                                          long long int strideC,
                                          int batchCount,
                                          int computeType, int algo) {
-    {
+    if (cublas_diag_logging()) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "gemm_strided_batched\n"; syscall(__NR_write, nfd, msg, 22); syscall(__NR_close, nfd); }
     }
@@ -1013,7 +1027,7 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
     int log_len = snprintf(log_msg, sizeof(log_msg),
                           "[libvgpu-cublas] cublasGemmStridedBatchedEx() CALLED (m=%d, n=%d, k=%d, batch=%d, pid=%d)\n",
                           m, n, k, batchCount, (int)getpid());
-    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+    if (cublas_diag_logging() && log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
     if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
@@ -1082,7 +1096,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
                                    void *const Carray[], int Ctype, int ldc,
                                    int batchCount,
                                    int computeType, int algo) {
-    {
+    if (cublas_diag_logging()) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "gemm_batched\n"; syscall(__NR_write, nfd, msg, 13); syscall(__NR_close, nfd); }
     }
@@ -1158,9 +1172,9 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
 /* Constructor */
 __attribute__((constructor))
 static void libvgpu_cublas_on_load(void) {
-    const char *msg = "[libvgpu-cublas] Library loaded - CUBLAS shim initialized\n";
-    syscall(__NR_write, 2, msg, 60);
-    {
+    if (cublas_diag_logging()) {
+        const char *msg = "[libvgpu-cublas] Library loaded - CUBLAS shim initialized\n";
+        syscall(__NR_write, 2, msg, 60);
         int fd = (int)syscall(__NR_open, "/tmp/vgpu_cublas_loaded",
                               O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd >= 0) {

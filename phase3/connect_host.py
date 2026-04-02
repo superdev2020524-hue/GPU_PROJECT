@@ -53,34 +53,42 @@ def connect_and_run_sshpass(command: str):
     if not sshpass:
         return None
 
-    # Build remote script: run user command, then print marker with exit code.
-    # Use bash -lc with a single quoted string body to survive ';' and most shell metachars.
+    # Pipe a small script into `bash -s` on the remote. Do not use `ssh -n` (stdin must
+    # carry the script). Using `ssh … bash -c '…'` was observed to drop '/' so absolute
+    # paths became empty on XCP-ng dom0 (e.g. `stat /x` → `stat` with no operand).
     # Do not start with `set +e;` — on some bash builds the remote can mis-parse and run
-    # bare `set`, dumping the environment. Default bash -c has errexit off; `__rc` captures status.
+    # bare `set`, dumping the environment. Default bash has errexit off; `__rc` captures status.
     # Note: user one-liners often use `grep` (exit 1 when no match); chain with `|| true` if needed.
-    inner = f"{command}; __rc=$?; printf '\\n{DONE_MARKER}:%s\\n' \"$__rc\""
-    remote = ["bash", "-c", inner]
+    script = f"{command}; __rc=$?; printf '\\n{DONE_MARKER}:%s\\n' \"$__rc\"\n"
 
     env = {**os.environ, "SSHPASS": MEDIATOR_PASSWORD}
     argv = [
         sshpass,
         "-e",
         "ssh",
-        "-n",
         *_ssh_base_args(),
         f"{MEDIATOR_USER}@{MEDIATOR_HOST}",
-        *remote,
+        "bash",
+        "-s",
     ]
     try:
         proc = subprocess.run(
             argv,
+            input=script,
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_SEC,
             env=env,
         )
     except subprocess.TimeoutExpired as e:
-        out = (e.stdout or "") + (e.stderr or "")
+        def _out_txt(x):
+            if x is None:
+                return ""
+            if isinstance(x, bytes):
+                return x.decode("utf-8", errors="replace")
+            return x
+
+        out = _out_txt(e.stdout) + _out_txt(e.stderr)
         return out, -124
 
     combined = (proc.stdout or "") + (proc.stderr or "")
@@ -94,70 +102,63 @@ def connect_and_run_sshpass(command: str):
 
 
 def connect_and_run_pexpect(command):
-    """Legacy pexpect path (StrictHostKeyChecking + host-key yes + marker)."""
+    """Fallback when sshpass is missing: same semantics as connect_and_run_sshpass (bash -s + stdin)."""
+    script = f"{command}; __rc=$?; printf '\\n{DONE_MARKER}:%s\\n' \"$__rc\"\n"
     ssh_cmd = (
-        "ssh -n "
+        "ssh "
         + " ".join(shlex.quote(x) for x in _ssh_base_args())
-        + f" {shlex.quote(MEDIATOR_USER + '@' + MEDIATOR_HOST)}"
+        + f" {shlex.quote(MEDIATOR_USER + '@' + MEDIATOR_HOST)} bash -s"
     )
-    wrapped = f"( {command} ); __rc=$?; printf '\\n{DONE_MARKER}:%s\\n' \"$__rc\""
 
     child = pexpect.spawn(ssh_cmd, timeout=CONNECT_TIMEOUT_SEC, encoding="utf-8")
 
     try:
-        patterns = [
-            "Are you sure you want to continue connecting",
-            "password:",
-            "Password:",
-            r"\$",
-            "#",
-            pexpect.EOF,
-            pexpect.TIMEOUT,
-        ]
-        index = child.expect(patterns, timeout=PROMPT_TIMEOUT_SEC)
-        if index == 0:
-            child.sendline("yes")
-            index = child.expect(
-                ["password:", "Password:", r"\$", "#", pexpect.EOF, pexpect.TIMEOUT],
-                timeout=PROMPT_TIMEOUT_SEC,
-            )
-        if index in [1, 2]:
-            child.sendline(MEDIATOR_PASSWORD)
-            child.expect(
-                [r"\[.*[#\$]", r"\$", "#", pexpect.EOF, pexpect.TIMEOUT],
-                timeout=PROMPT_TIMEOUT_SEC,
-            )
-        elif index in [3, 4]:
-            pass  # already at shell
-        elif index in [5, 6]:
-            return child.before or "", -1
 
-        if child.isalive():
-            child.sendline(wrapped)
-            deadline = time.time() + COMMAND_TIMEOUT_SEC
-            while time.time() < deadline:
+        def send_script():
+            child.send(script)
+
+        try:
+            index = child.expect(
+                [
+                    "Are you sure you want to continue connecting",
+                    "(?i)password:",
+                ],
+                timeout=PROMPT_TIMEOUT_SEC,
+            )
+        except pexpect.TIMEOUT:
+            # Key auth: no host-key or password prompt; bash -s waits on stdin.
+            send_script()
+        else:
+            if index == 0:
+                child.sendline("yes")
                 try:
-                    idx = child.expect(
-                        [
-                            rf"{DONE_MARKER}:(-?\d+)",
-                            "password:",
-                            "Password:",
-                            pexpect.EOF,
-                            pexpect.TIMEOUT,
-                        ],
-                        timeout=10,
-                    )
-                    if idx == 0:
-                        exit_code = int(child.match.group(1))
-                        output = child.before
-                        child.sendline("exit")
-                        child.close()
-                        return output, exit_code
-                    if idx in [1, 2]:
-                        child.sendline(MEDIATOR_PASSWORD)
+                    child.expect(["(?i)password:"], timeout=PROMPT_TIMEOUT_SEC)
                 except pexpect.TIMEOUT:
-                    continue
-        return child.before or "", -1
+                    send_script()
+                else:
+                    child.sendline(MEDIATOR_PASSWORD)
+                    send_script()
+            else:
+                child.sendline(MEDIATOR_PASSWORD)
+                send_script()
+
+        deadline = time.time() + COMMAND_TIMEOUT_SEC
+        while time.time() < deadline:
+            try:
+                idx = child.expect(
+                    [
+                        rf"{DONE_MARKER}:(-?\d+)",
+                        pexpect.EOF,
+                    ],
+                    timeout=min(30, max(1, int(deadline - time.time()))),
+                )
+                if idx == 0:
+                    exit_code = int(child.match.group(1))
+                    return (child.before or ""), exit_code
+                break
+            except pexpect.TIMEOUT:
+                continue
+        return (child.before or ""), -1
     finally:
         try:
             if child.isalive():

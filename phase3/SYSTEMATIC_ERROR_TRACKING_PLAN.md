@@ -24,6 +24,27 @@
 
 ---
 
+## 2b. Active error discipline (mandatory)
+
+Maintain a strict queue:
+
+1. Keep exactly **one active error** at a time.
+2. When a **new** error is observed during tracing, add it to the **candidate list** with evidence, but do **not** replace the active error yet.
+3. Continue tracing until the active error is **resolved**, **disproved**, or **proven superseded** by evidence.
+4. Only then may the next candidate be promoted to the new active error.
+5. If a candidate-side correction resolves the active error indirectly, record that closure explicitly and note the proof.
+
+This prevents the investigation from drifting across multiple symptoms without closing the current blocker.
+
+For each session note or assistant reply, include:
+
+- **Active error**
+- **Candidate list**
+- **Closure condition** for the active error
+- **Evidence** showing whether the active error remains open
+
+---
+
 ## 3. Single source of truth (per session)
 
 For every triage **session** (same day / same experiment):
@@ -83,8 +104,20 @@ During the run, **every ~5 min:** host `grep 'module-load\|HtoD progress\|FAILED
 | **E3** | (Historical) Runner **exit status 2** after host-side success | Guest / GGML / later CUDA | Past journals; re-verify after E1 fixed |
 | **E4** | After **`cublasGemmBatchedEx`**, **`cuCtxSynchronize`** → **`rc=700`** **`CUDA_ERROR_ILLEGAL_ADDRESS`** (often after **`cuMemAlloc`/`HtoD`** in the same session); **`cuMemFree`** then fails with same sticky error | Host **`CUDA_CALL_CUBLAS_GEMM_BATCHED_EX`** + guest **`libvgpu_cublas.c`** RPC; async kernel / bad dims / pointer map | **`mediator.log`**: **`after cublasGemmBatchedEx: cuCtxSynchronize rc=700`**; see **`host_test_gemm_batched_native.c`** (native H100 can reproduce sync→700) |
 | **E5** | **`mmq_x_best=0`** → **`mmq.cuh:3884: fatal error`** → **`ggml_abort`** / **`SIGABRT`** during **`ggml_backend_cuda_graph_reserve`** / **`mul_mat_q_case`** (Q4 MMQ path) | **`libggml-cuda-v12.so`** built **without** a usable **MMQ** template for **Hopper (sm_90)** or **arch mismatch** vs runtime GPU | **`journalctl`**: **`mmq_x_best`**, **`mmq.cuh`**, **`ggml_backend_cuda_graph_reserve`**; fix: **`BUILD_LIBGGML_CUDA_HOPPER.md`** / **`CMAKE_CUDA_ARCHITECTURES=90`** |
+| **E6** | Bounded generate fails early with VM **`STATUS_ERROR: call_id=0x0030`** (`CUDA_CALL_MEM_ALLOC`) and **HTTP 500** / runner exit before fresh **module-load** proof | Pre-module allocation / status propagation / host-VM correlation gap | Fresh bounded repro plus VM journal; promote only when the request fails before any fresh **E1** evidence |
+| **E7** | Stub selects **SHMEM** for **`CUDA_CALL_MEMCPY_HTOD_ASYNC`** (`0x003c`) even when SHMEM prefix is zero and BAR1 is non-zero, then sends an all-zero HtoD payload | Host stub bulk-source selection / SHMEM freshness / BAR1-vs-SHMEM arbitration | Host `daemon.log`: **`WARN authoritative shmem prefix is zero while BAR1 remains nonzero`** + **`HTOD payload before send ... path=shmem ... bytes=[00 ... 00]`** + **`FINAL_TX ... first8=0000000000000000`** |
+| **E8** | **`CUDA_CALL_FUNC_GET_PARAM_INFO`** (`0x00bc`) returns **`status=801`** repeatedly during the deeper post-HtoD path | Host capability/support mismatch or unsupported function query on the running CUDA stack | Mediator log: **`call_id=0xbc result.status=801`**; guest verify log: matching **`STATUS_ERROR`** entries, but sequence continues into successful `cuLaunchKernel` |
+| **E9** | During a clean deeper load, **`CUDA_CALL_LAUNCH_KERNEL`** (`0x0050`) reaches repeated launch success and then fails on sync with **`status=700`** / **`CUDA_ERROR_ILLEGAL_ADDRESS`**, after which the runner later aborts | Host kernel execution / sync fault during post-module load; likely a later-stage GPU fault rather than early transport or module-load failure | Host `mediator.log`: **`cuLaunchKernel sync FAILED: rc=700`** and **`call_id=0x50 result.status=700`**; VM current-call / journal show failure at **`cuLaunchKernel`** followed by runner core-dump / HTTP 500 |
+| **E10** | Guest **shared-memory registration fails**, falls back to **`data_path=BAR1`**, and large **`CUDA_CALL_MEMCPY_HTOD_ASYNC`** (`0x003c`) chunks take minutes between guest-side **`pre_write_bulk`** and **`HTOD written`**, causing model-load timeout before the host sees later work | Guest transport setup / contiguous-GPA requirement / catastrophic BAR1 MMIO bulk-write throughput | VM journal: **`Exhausted shmem registration retries — using BAR1`**, **`Connected ... data_path=BAR1`**, and multi-minute gaps per 8 MiB HtoD chunk; host `mediator.log` shows the same HtoD chunks complete quickly once received, then sits idle |
+| **E11** | Live VM boot comes up **without** the **`vgpu-cuda`** PCI device because the host launch path no longer injects Xenstore **`platform:device-model-args=-device vgpu-cuda,...`** into the live `qemu-dm` argv | Host boot / QEMU launch persistence / toolstack regression | Historical host proof: `/var/log/daemon.log.1` for **`qemu-dm-48`** logs **`Adding device-model-args from xenstore`** and the final `Exec:` line includes **`-device vgpu-cuda,...`**; fresh Apr 1 boots (`qemu-dm-5`, `qemu-dm-6`) omit both that injection log and the live `-device vgpu-cuda` arg even though Xenstore still contains the key. Guest: `lspci` lacks **`00:05.0 10de:2331`** until manual QMP hotplug |
+| **E12** | Mediator does **not** auto-discover or attach to the live VM socket path after the recovered boot/hotplug, so the host only serves the fallback **`/tmp/vgpu-mediator.sock`** until a manual bridge is added | Host mediator VM-socket discovery / attach path | Host `mediator.log`: **`No QEMU chroot found, using fallback: /tmp/vgpu-mediator.sock`** while the live VM is running and serving CUDA traffic only after a manual bridge from `root-N/tmp/vgpu-mediator.sock` |
+| **E13** | Post-repair runner startup can still show **`failure during GPU discovery before timeout`** or repeated runner launches before model load completes | Guest runner startup / discovery stability | VM journal: repeated **`starting runner --ollama-engine`** lines followed by **`failure during GPU discovery ... failed to finish discovery before timeout`** in some sessions, even though the repaired baseline can also reach valid GPU inference |
+| **E14** | Repeated guest-side **`STATUS_ERROR`** on **`call_id=0x00bc`** continue even when host execution succeeds and end-to-end requests still return valid **`HTTP=200`** responses | Transport / status reporting consistency | VM journal: many **`STATUS_ERROR: call_id=0x00bc ... err=0x00000005`** entries; Host mediator: matching kernel launches and even successful `soft_max_f32` execution continue, and valid JSON `HTTP=200` responses are still produced |
+| **E15** | After the `rc=400` param-layout blocker is removed, the first fresh terminating fault moves later to **`CUDA_CALL_LAUNCH_KERNEL`** (`0x0050`) sync failure **`rc=717`** on **`k_set_rows`**, ending the request with **`HTTP=500`** | Later-stage CUDA kernel execution / parameter packing or kernel-state fault during `set_rows` | Fresh Apr 1 clean retest on rebuilt host+guest: mediator logs repeated prior GGML launches succeeding, then **`cuLaunchKernel sync FAILED: rc=717 ... name=_Z10k_set_rows...`** with **`call_id=0x50 result.status=717`**; the VM request returns **`HTTP Error 500: Internal Server Error`** afterward |
 
-**Primary Phase 1 blocker:** depends on **current** `mediator.log`. If **`401312`/`INVALID_IMAGE`** appears → **E1** first (with **E2** as contributor per `FATBIN_CUBLAS_CC_ANALYSIS_MAR21.md`). If **Checkpoint C** is clean and **`rc=700`** appears after **`cublasGemmBatchedEx`** → **E4** is primary until resolved or disproved.
+**Primary Phase 1 blocker:** depends on the **earliest fresh failing or correctness-breaking step** in the current session. If the current live VM boot omits the **`vgpu-cuda`** PCI device and therefore cannot even present **`00:05.0 10de:2331`** in the guest, **E11** is primary until resolved or disproved. If the guest PCI device is present only after manual hotplug but the mediator still cannot discover the live VM socket path and requires a manual bridge to pass traffic, **E12** is primary for baseline stabilization. If a fresh bounded run fails at **`0x0030`** before module-load evidence, **E6** is primary. If `0x0030` is proven to complete and the first fresh anomaly is zero/incorrect HtoD payload selection on **`0x003c`**, **E7** is primary. If the guest first fails to establish shmem, logs **`Exhausted shmem registration retries — using BAR1`**, and then large **`0x003c`** HtoD chunks spend minutes in guest-side BAR1 writes before the host sees them, **E10** is primary until resolved or disproved. If the post-`E7` path reaches successful HtoD and repeated successful launches but then the first explicit terminating host fault is **`call_id=0x50 result.status=700`** / **`cuLaunchKernel sync FAILED`**, **E9** is primary until resolved or disproved. If the post-`E7` path can return valid **`HTTP=200`** responses but later fresh runs still fail during runner startup with repeated **GPU discovery timeout** logs before stable model load, **E13** becomes the next candidate for promotion after the earlier baseline blockers are closed. If a fresh rebuilt host+guest run removes the earlier **`rc=400`** launch blocker and the first terminating host fault moves later to **`call_id=0x50 result.status=717`** / **`cuLaunchKernel sync FAILED`** on **`k_set_rows`**, **E15** becomes primary until resolved or disproved. If **`call_id=0x00bc`** continues to log guest-side `STATUS_ERROR` while host-side work and end-to-end responses stay correct, **E14** remains a candidate inconsistency rather than the active blocker unless it becomes the earliest correctness-breaking step. If the post-`E7` path reaches successful HtoD and repeated successful launches but still ends in **`llama runner terminated` / `exit status 2`** with no earlier explicit terminating fault, **E3** is primary again. If **`401312`/`INVALID_IMAGE`** appears first, **E1** is primary (with **E2** as contributor per `FATBIN_CUBLAS_CC_ANALYSIS_MAR21.md`). If **Checkpoint C** is clean and **`rc=700`** appears after **`cublasGemmBatchedEx`** → **E4** is primary until resolved or disproved.
+
+**Promotion rule:** the error registry is **not** a license to switch focus freely. Registry entries other than the current active blocker remain **candidates** until the active blocker is closed or explicitly superseded by proof.
 
 ---
 
@@ -147,8 +180,9 @@ During the run, **every ~5 min:** host `grep 'module-load\|HtoD progress\|FAILED
 When reporting progress, always include:
 
 1. **Checkpoints passed:** A / B / C / D (which).  
-2. **Error registry:** E1/E2/E3 — **confirmed / not observed / unknown**.  
-3. **Evidence:** one **host** line + one **VM** line (or “unreachable”).  
-4. **Next single step:** one checkbox from §6.
+2. **Active error:** one ID only, plus why it remains active.  
+3. **Candidate list:** other observed IDs, each with **confirmed / not observed / unknown**.  
+4. **Evidence:** one **host** line + one **VM** line (or “unreachable”).  
+5. **Next single step:** one checkbox from §6 that advances or closes the active error.
 
 This is the **systematic** tracking standard for Phase 3 / Phase 1 from here on.

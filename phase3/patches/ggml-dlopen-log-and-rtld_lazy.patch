@@ -1,0 +1,27 @@
+--- a/ml/backend/ggml/ggml/src/ggml-backend-reg.cpp
++++ b/ml/backend/ggml/ggml/src/ggml-backend-reg.cpp
+@@ -4,7 +4,8 @@
+ #include <algorithm>
+ #include <cstring>
+ #include <filesystem>
++#include <cstdio>
+ #include <memory>
+ #include <string>
+ #include <type_traits>
+ #include <vector>
+@@ -171,5 +171,16 @@
+ 
+ static void * dl_load_library(const fs::path & path) {
+     dl_handle * handle = dlopen(path.string().c_str(), RTLD_NOW | RTLD_LOCAL);
++    if (!handle) {
++        const char * err = dlerror();
++        fprintf(stderr, "[ggml] dlopen(RTLD_NOW) %s: %s\n", path_str(path).c_str(), err ? err : "(null)");
++        handle = dlopen(path.string().c_str(), RTLD_LAZY | RTLD_LOCAL);
++        if (!handle) {
++            err = dlerror();
++            fprintf(stderr, "[ggml] dlopen(RTLD_LAZY) %s: %s\n", path_str(path).c_str(), err ? err : "(null)");
++        }
++    }
+ 
+     return handle;
+ }

@@ -1,4 +1,7 @@
-
+/*
+ * Deploy to dom0: copy this file to rpmbuild/SOURCES/vgpu-stub.c (qemu.spec
+ * Source3 name), not vgpu-stub-enhanced.c, then rpmbuild and reinstall qemu.
+ */
 #include "qemu/osdep.h"
 #include "hw/pci/pci.h"
 #include "hw/hw.h"
@@ -7,9 +10,11 @@
 #include "qom/object.h"
 #include "qemu/module.h"
 #include "qemu/main-loop.h"     /* qemu_set_fd_handler */
+#include "exec/address-spaces.h"
 #include "sysemu/kvm.h"
 #include "hw/qdev-properties.h"
 #include "qapi/error.h"
+#include "qemu/error-report.h"
 
 #include <string.h>
 #include <sys/types.h>
@@ -92,6 +97,8 @@ typedef struct VGPUStubState {
     /* --- BAR1 data region (16 MB, legacy fallback) ------------ */
     uint8_t *bar1_data;           /* malloced 16 MB region; NULL when shmem active */
     uint32_t bar1_status_mirror;  /* last 4B of BAR1 for status; always valid for guest read */
+    uint64_t bar1_g2h_mmio_stores;   /* vgpu_bar1_write ops touching G2H window */
+    uint64_t bar1_mmio_mark_at_done; /* bar1_g2h_mmio_stores at last doorbell exit */
 
     /* --- VHOST-style guest-pinned shared memory ---------------- */
     /* The guest shim allocates a large anonymous mmap, locks it,  */
@@ -116,7 +123,9 @@ typedef struct VGPUStubState {
 
     /* --- Socket to mediator ----------------------------------- */
     int      mediator_fd;         /* -1 when not connected         */
-    uint32_t pending_seq;         /* seq_num of request we sent; only apply response when it matches */
+    uint32_t pending_seq;         /* guest-visible seq for logging only */
+    uint32_t pending_request_id;  /* host-generated request id currently in flight */
+    uint32_t next_request_id;     /* monotonically increasing host-generated id */
 
     /* --- Receive buffer for socket (partial reads) ------------ */
     uint8_t *sock_rx_buf;         /* dynamically allocated         */
@@ -133,6 +142,141 @@ static int vgpu_stub_debug_logging(void)
     return cached;
 }
 
+/* Early bootstrap calls are vulnerable to one-step request-id skew when the
+ * guest retries quickly while an older response is still queued on socket. */
+static int vgpu_stub_is_early_bootstrap_call(uint32_t call_id)
+{
+    switch (call_id) {
+    case CUDA_CALL_INIT:
+    case CUDA_CALL_GET_GPU_INFO:
+    case CUDA_CALL_DEVICE_GET_COUNT:
+    case CUDA_CALL_DEVICE_GET:
+    case CUDA_CALL_DEVICE_PRIMARY_CTX_RETAIN:
+    case CUDA_CALL_CTX_SET_CURRENT:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* Requires dom0: chmod 1777 on the qemu chroot tmp (e.g. /var/xen/qemu/root-<domid>/tmp). */
+static void vgpu_stub_append_pick_log(const char *text)
+{
+    int fd = open("/tmp/vgpu_stub_pick.log",
+                  O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        size_t n = strlen(text);
+        (void)write(fd, text, n);
+        (void)close(fd);
+    }
+}
+
+static void vgpu_stub_log_prefix_bytes(const char *label,
+                                       const void *buf,
+                                       uint32_t len,
+                                       uint32_t vm_id,
+                                       uint32_t call_id,
+                                       uint32_t seq_num,
+                                       const char *path)
+{
+    const uint8_t *bytes = (const uint8_t *)buf;
+    uint32_t prefix_len = (len < 64u) ? len : 64u;
+    char line[512];
+    int off = snprintf(line, sizeof(line),
+                       "[vgpu] vm_id=%u: %s call_id=0x%04x seq=%u len=%u path=%s prefix_len=%u bytes=[",
+                       vm_id, label, call_id, seq_num, len,
+                       path ? path : "unknown", prefix_len);
+
+    for (uint32_t i = 0; i < prefix_len; i++) {
+        if (off > 0 && off < (int)sizeof(line)) {
+            off += snprintf(line + off, sizeof(line) - (size_t)off,
+                            (i + 1u < prefix_len) ? "%02x " : "%02x",
+                            bytes[i]);
+        }
+    }
+    if (off > 0 && off < (int)sizeof(line)) {
+        off += snprintf(line + off, sizeof(line) - (size_t)off, "]\n");
+    }
+
+    if (off > 0) {
+        fprintf(stderr, "%s", line);
+        fflush(stderr);
+
+        int fd = open("/tmp/vgpu_stub_htod.log",
+                      O_WRONLY | O_CREAT | O_APPEND,
+                      0644);
+        if (fd >= 0) {
+            (void)write(fd, line, (size_t)((off < (int)sizeof(line)) ? off : (int)sizeof(line)));
+            (void)close(fd);
+        }
+    }
+}
+
+static void vgpu_stub_log_libload_shmem_probe(VGPUStubState *s,
+                                              uint32_t data_len,
+                                              const uint8_t *g2h_bytes)
+{
+    uint8_t mapped_first8[8] = {0};
+    uint8_t h2g_first8[8] = {0};
+    MemTxResult h2g_tx = MEMTX_OK;
+
+    if (!s || s->cuda_op != CUDA_CALL_LIBRARY_LOAD_DATA ||
+        data_len < 8u || !g2h_bytes ||
+        !s->shmem_active || !s->shmem_g2h || s->shmem_size < 16u) {
+        return;
+    }
+
+    memcpy(mapped_first8, s->shmem_g2h, sizeof(mapped_first8));
+    h2g_tx = address_space_rw(&address_space_memory,
+                              s->shmem_gpa + (s->shmem_size / 2),
+                              MEMTXATTRS_UNSPECIFIED,
+                              h2g_first8, sizeof(h2g_first8), false);
+
+    error_report("[vgpu] LIBLOAD_SHMEM_PROBE vm=%u seq=%u len=%u gpa=0x%llx half=%u "
+                 "mapped_first8=%02x%02x%02x%02x%02x%02x%02x%02x "
+                 "g2h_first8=%02x%02x%02x%02x%02x%02x%02x%02x "
+                 "h2g_tx=%d h2g_first8=%02x%02x%02x%02x%02x%02x%02x%02x",
+                 s->vm_id, s->cuda_seq, data_len,
+                 (unsigned long long)s->shmem_gpa, s->shmem_size / 2,
+                 mapped_first8[0], mapped_first8[1], mapped_first8[2], mapped_first8[3],
+                 mapped_first8[4], mapped_first8[5], mapped_first8[6], mapped_first8[7],
+                 g2h_bytes[0], g2h_bytes[1], g2h_bytes[2], g2h_bytes[3],
+                 g2h_bytes[4], g2h_bytes[5], g2h_bytes[6], g2h_bytes[7],
+                 (int)h2g_tx,
+                 h2g_first8[0], h2g_first8[1], h2g_first8[2], h2g_first8[3],
+                 h2g_first8[4], h2g_first8[5], h2g_first8[6], h2g_first8[7]);
+}
+
+static void vgpu_stub_log_bar1_write(VGPUStubState *s,
+                                     hwaddr addr,
+                                     unsigned size)
+{
+    if (!s || !s->bar1_data || size == 0) {
+        return;
+    }
+
+    if (addr >= VGPU_BAR1_G2H_SIZE) {
+        return;
+    }
+
+    if (size > 64u) {
+        return;
+    }
+
+    /* Keep this bounded: log the first cacheline and the tail cacheline. */
+    if (addr > 64u && (addr + size) < (VGPU_BAR1_G2H_SIZE - 64u)) {
+        return;
+    }
+
+    vgpu_stub_log_prefix_bytes("BAR1 write observed",
+                               s->bar1_data + addr,
+                               size,
+                               s->vm_id,
+                               s->cuda_op,
+                               s->cuda_seq,
+                               "bar1-mmio");
+}
+
 /* Socket RX buffer default capacity */
 #define SOCK_RX_DEFAULT_CAP  (VGPU_SOCKET_HDR_SIZE + VGPU_CUDA_SOCKET_MAX_PAYLOAD + 4096)
 
@@ -142,6 +286,46 @@ static int vgpu_stub_debug_logging(void)
 static void vgpu_process_doorbell(VGPUStubState *s);
 static void vgpu_process_cuda_doorbell(VGPUStubState *s);
 static void vgpu_try_connect_mediator(VGPUStubState *s);
+
+static void vgpu_bar1_mmio_checkpoint(VGPUStubState *s)
+{
+    s->bar1_mmio_mark_at_done = s->bar1_g2h_mmio_stores;
+}
+
+/*
+ * Re-establish the G2H cpu_physical_memory_map for each bulk doorbell.
+ * A long-lived host pointer can lag guest stores (Xen/qemu-dm RAM view);
+ * unmap+map forces reads in PICK / memcpy to see data written via the guest VA.
+ */
+static void vgpu_shmem_remap_g2h_for_bulk_doorbell(VGPUStubState *s)
+{
+    hwaddr g2h_len;
+    void *g2h_new;
+
+    if (!s->shmem_active || s->shmem_size < VGPU_SHMEM_MIN_SIZE) {
+        return;
+    }
+
+    g2h_len = s->shmem_size / 2;
+    g2h_new = cpu_physical_memory_map(s->shmem_gpa, &g2h_len, false);
+    if (!g2h_new || g2h_len < s->shmem_size / 2) {
+        if (g2h_new) {
+            cpu_physical_memory_unmap(g2h_new, g2h_len, false, g2h_len);
+        }
+        fprintf(stderr,
+                "[vgpu] vm_id=%u: shmem G2H remap failed gpa=0x%llx — using stale map\n",
+                s->vm_id, (unsigned long long)s->shmem_gpa);
+        return;
+    }
+    if (s->shmem_g2h) {
+        cpu_physical_memory_unmap(s->shmem_g2h,
+                                  s->shmem_size / 2,
+                                  false,
+                                  s->shmem_size / 2);
+    }
+    s->shmem_g2h = g2h_new;
+}
+
 static void vgpu_socket_read_handler(void *opaque);
 
 #define VGPU_SEND_WAIT_MS 30000
@@ -774,6 +958,19 @@ static void vgpu_process_doorbell(VGPUStubState *s)
      * on the socket (handled in vgpu_socket_read_handler). */
 }
 
+/* True if any of the first min(len, scan_max) bytes is non-zero. */
+static int vgpu_payload_has_nonzero_prefix(const uint8_t *p, uint32_t len,
+                                           uint32_t scan_max)
+{
+    uint32_t n = len < scan_max ? len : scan_max;
+    for (uint32_t i = 0; i < n; i++) {
+        if (p[i] != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ================================================================
  * CUDA doorbell handler
  *
@@ -793,6 +990,32 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
     uint32_t data_len = s->cuda_data_len;
     uint8_t *data_ptr = NULL;
     uint8_t *data_bounce = NULL;
+    uint64_t mmio_delta;
+
+    mmio_delta = s->bar1_g2h_mmio_stores - s->bar1_mmio_mark_at_done;
+    if (s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY &&
+        data_len > VGPU_CUDA_SMALL_DATA_MAX) {
+        error_report("[vgpu] vm_id=%u seq=%u doorbell 0x0042 BAR1_MMIO delta=%llu "
+                     "total=%llu (guest stores before this doorbell vs last exit)",
+                     s->vm_id, s->cuda_seq,
+                     (unsigned long long)mmio_delta,
+                     (unsigned long long)s->bar1_g2h_mmio_stores);
+    }
+
+    if (s->shmem_active && data_len > VGPU_CUDA_SMALL_DATA_MAX) {
+        switch (s->cuda_op) {
+        case CUDA_CALL_MODULE_LOAD_DATA:
+        case CUDA_CALL_MODULE_LOAD_DATA_EX:
+        case CUDA_CALL_MODULE_LOAD_FAT_BINARY:
+        case CUDA_CALL_LIBRARY_LOAD_DATA:
+        case CUDA_CALL_MEMCPY_HTOD:
+        case CUDA_CALL_MEMCPY_HTOD_ASYNC:
+            vgpu_shmem_remap_g2h_for_bulk_doorbell(s);
+            break;
+        default:
+            break;
+        }
+    }
 
     if (vgpu_stub_debug_logging()) {
         fprintf(stderr, "[vgpu] vm_id=%u: PROCESSING CUDA DOORBELL: call_id=0x%04x seq=%u args=%u data_len=%u\n",
@@ -849,6 +1072,7 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
         fflush(stderr);
         VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
         s->error_code = VGPU_ERR_MEDIATOR_UNAVAIL;
+        vgpu_bar1_mmio_checkpoint(s);
         return;
     }
 
@@ -867,63 +1091,269 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
            num_args * sizeof(uint32_t));
 
     /* Determine data source */
+    int bounce_cuda_payload = 0;
+
+    int copy_from_fresh_shmem = 0;
+    /* Survives inner block — used for HTOD log + FINAL_TX (bar1 vs shmem vs inline). */
+    const char *payload_src_tag = "none";
+
     if (data_len > 0) {
+        const char *data_path = "none";
         if (data_len <= VGPU_CUDA_SMALL_DATA_MAX) {
             /* Small data from BAR0 inline region */
             data_ptr = s->cuda_req_data;
+            data_path = "bar0-inline";
+        } else if (s->shmem_active && s->shmem_g2h &&
+                   data_len <= (uint32_t)(s->shmem_size / 2) &&
+                   data_len <= VGPU_BAR1_G2H_SIZE &&
+                   (s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+                    s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC ||
+                    s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA ||
+                    s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA_EX ||
+                    s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                    s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA)) {
+            /* When SHMEM is active, treat it as the authoritative bulk source.
+             * BAR1 can retain stale bytes from previous transfers, especially for
+             * HtoD where the guest no longer mirrors payloads into BAR1. */
+            if (s->bar1_data) {
+                const uint8_t *sh = (const uint8_t *)s->shmem_g2h;
+                const uint8_t *b1 =
+                    (const uint8_t *)s->bar1_data + VGPU_BAR1_G2H_OFFSET;
+                int sh_nz = vgpu_payload_has_nonzero_prefix(sh, data_len, 512u);
+                int b1_nz = vgpu_payload_has_nonzero_prefix(b1, data_len, 512u);
+                if (s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                    s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA) {
+                    error_report("[vgpu] vm_id=%u seq=%u PICK bulk op=0x%04x len=%u sh_nz=%d b1_nz=%d "
+                                 "sh0=%02x b10=%02x gpa=0x%llx",
+                                 s->vm_id, s->cuda_seq, data_len, sh_nz, b1_nz,
+                                 s->cuda_op, data_len, sh_nz, b1_nz,
+                                 data_len ? sh[0] : 0, data_len ? b1[0] : 0,
+                                 (unsigned long long)s->shmem_gpa);
+                    {
+                        char pl[256];
+                        int plen = snprintf(pl, sizeof(pl),
+                                            "[vgpu] vm_id=%u seq=%u PICK bulk op=0x%04x len=%u sh_nz=%d b1_nz=%d "
+                                            "sh0=%02x b10=%02x gpa=0x%llx\n",
+                                            s->vm_id, s->cuda_seq, s->cuda_op, data_len, sh_nz, b1_nz,
+                                            data_len ? sh[0] : 0, data_len ? b1[0] : 0,
+                                            (unsigned long long)s->shmem_gpa);
+                        if (plen > 0 && plen < (int)sizeof(pl)) {
+                            vgpu_stub_append_pick_log(pl);
+                        }
+                    }
+                }
+                if (sh_nz) {
+                    data_path = "shmem";
+                    copy_from_fresh_shmem = 1;
+                } else {
+                    if (b1_nz &&
+                        (s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA ||
+                         s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+                         s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC)) {
+                        error_report("[vgpu] vm_id=%u seq=%u fallback to BAR1 "
+                                     "because shmem prefix is zero but BAR1 is nonzero "
+                                     "for op=0x%04x len=%u",
+                                     s->vm_id, s->cuda_seq, s->cuda_op, data_len);
+                        data_ptr = s->bar1_data + VGPU_BAR1_G2H_OFFSET;
+                        data_path =
+                            (s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA) ?
+                            "bar1-libload-fallback" : "bar1-htod-fallback";
+                        copy_from_fresh_shmem = 0;
+                    } else {
+                        if (b1_nz &&
+                            (s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                             s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA ||
+                             s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+                             s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC)) {
+                            error_report("[vgpu] vm_id=%u seq=%u WARN authoritative shmem prefix is zero "
+                                         "while BAR1 remains nonzero for op=0x%04x len=%u; using shmem",
+                                         s->vm_id, s->cuda_seq, s->cuda_op, data_len);
+                        }
+                        data_path = "shmem";
+                        copy_from_fresh_shmem = 1;
+                    }
+                }
+            } else {
+                if (s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                    s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA) {
+                    error_report("[vgpu] vm_id=%u seq=%u PICK bulk op=0x%04x len=%u bar1_data=NULL -> shmem",
+                                 s->vm_id, s->cuda_seq, s->cuda_op, data_len);
+                    {
+                        char pl[256];
+                        int plen = snprintf(pl, sizeof(pl),
+                                            "[vgpu] vm_id=%u seq=%u PICK bulk op=0x%04x len=%u bar1_data=NULL -> shmem\n",
+                                            s->vm_id, s->cuda_seq, s->cuda_op, data_len);
+                        if (plen > 0 && plen < (int)sizeof(pl)) {
+                            vgpu_stub_append_pick_log(pl);
+                        }
+                    }
+                }
+                data_path = "shmem";
+                copy_from_fresh_shmem = 1;
+            }
+        } else if (s->bar1_data &&
+                   data_len <= VGPU_BAR1_G2H_SIZE &&
+                   (s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+                    s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC ||
+                    s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA ||
+                    s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA_EX ||
+                    s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                    s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA)) {
+            if (s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA) {
+                const uint8_t *b1o =
+                    (const uint8_t *)s->bar1_data + VGPU_BAR1_G2H_OFFSET;
+                int b1_nz_only = vgpu_payload_has_nonzero_prefix(
+                    b1o, data_len, 512u);
+                error_report("[vgpu] vm_id=%u seq=%u PICK bar1-only bulk op=0x%04x len=%u "
+                             "b1_nz=%d b10=%02x",
+                             s->vm_id, s->cuda_seq, s->cuda_op, data_len, b1_nz_only,
+                             data_len ? b1o[0] : 0);
+                {
+                    char pl[256];
+                    int plen = snprintf(pl, sizeof(pl),
+                                        "[vgpu] vm_id=%u seq=%u PICK bar1-only bulk op=0x%04x len=%u "
+                                        "b1_nz=%d b10=%02x\n",
+                                        s->vm_id, s->cuda_seq, s->cuda_op, data_len, b1_nz_only,
+                                        data_len ? b1o[0] : 0);
+                    if (plen > 0 && plen < (int)sizeof(pl)) {
+                        vgpu_stub_append_pick_log(pl);
+                    }
+                }
+            }
+            /* No shmem or chunk layout: use BAR1 MMIO backing (guest write_bar1). */
+            data_ptr = s->bar1_data + VGPU_BAR1_G2H_OFFSET;
+            data_path = "bar1";
         } else if (s->shmem_active && s->shmem_g2h) {
-            /* VHOST-style shared memory: host ptr directly into guest RAM */
-            data_ptr = s->shmem_g2h;
+            /* Chunks larger than BAR1 G2H (shmem-only path) or non-HtoD/module. */
+            data_path = "shmem";
             if (data_len > (uint32_t)(s->shmem_size / 2))
                 data_len = (uint32_t)(s->shmem_size / 2);
+            copy_from_fresh_shmem = 1;
+        } else if ((s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA ||
+                    s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA_EX ||
+                    s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                    s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA) &&
+                   s->bar1_data) {
+            /* No shmem: module bulk from BAR1 MMIO backing (guest write_bar1_data_words). */
+            data_ptr = s->bar1_data + VGPU_BAR1_G2H_OFFSET;
+            data_path = "bar1";
+            if (data_len > VGPU_BAR1_G2H_SIZE)
+                data_len = VGPU_BAR1_G2H_SIZE;
         } else if (s->bar1_data) {
             /* Legacy BAR1 fallback */
             data_ptr = s->bar1_data + VGPU_BAR1_G2H_OFFSET;
+            data_path = "bar1";
             if (data_len > VGPU_BAR1_G2H_SIZE)
                 data_len = VGPU_BAR1_G2H_SIZE;
         } else {
             /* No large data path available */
             VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
             s->error_code = VGPU_ERR_REQUEST_TOO_LARGE;
+            vgpu_bar1_mmio_checkpoint(s);
             return;
         }
+
+        bounce_cuda_payload =
+            (s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA ||
+             s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA_EX ||
+             s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+             s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA ||
+             s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+             s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC);
+        payload_src_tag = data_path;
+    }
+
+    if (copy_from_fresh_shmem && data_len > 0) {
+        uint32_t g2h_cap = (uint32_t)(s->shmem_size / 2);
+        MemTxResult memtx = MEMTX_OK;
+
+        if (data_len > g2h_cap) {
+            data_len = g2h_cap;
+        }
+
+        data_bounce = g_malloc(data_len);
+        if (!data_bounce) {
+            VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
+            s->error_code = VGPU_ERR_REQUEST_TOO_LARGE;
+            vgpu_bar1_mmio_checkpoint(s);
+            return;
+        }
+
+        /* Read bulk payload directly from guest GPA at send time. The mapped
+         * host pointer can lag guest writes even after remap, while an
+         * address-space read reflects the current guest RAM contents. */
+        memtx = address_space_rw(&address_space_memory, s->shmem_gpa,
+                                 MEMTXATTRS_UNSPECIFIED,
+                                 data_bounce, (int)data_len, false);
+        if (memtx != MEMTX_OK) {
+            g_free(data_bounce);
+            data_bounce = NULL;
+            VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
+            s->error_code = VGPU_ERR_INVALID_REQUEST;
+            vgpu_bar1_mmio_checkpoint(s);
+            return;
+        }
+        vgpu_stub_log_libload_shmem_probe(s, data_len, data_bounce);
+        data_ptr = data_bounce;
+    } else if (bounce_cuda_payload && data_len > 0 && data_ptr) {
+        /*
+         * Copy large CUDA payloads out of the live BAR/MMIO backing store
+         * before sendmsg(). This avoids re-reading mutable guest-backed
+         * memory across partial sends on the persistent mediator socket.
+         */
+        data_bounce = g_malloc(data_len);
+        if (!data_bounce) {
+            VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
+            s->error_code = VGPU_ERR_REQUEST_TOO_LARGE;
+            vgpu_bar1_mmio_checkpoint(s);
+            return;
+        }
+        memcpy(data_bounce, data_ptr, data_len);
+        data_ptr = data_bounce;
     }
 
     if (vgpu_stub_debug_logging() &&
         (s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA ||
          s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA_EX ||
-         s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY) &&
+         s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+         s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA) &&
         data_len > 0 && data_ptr) {
         const uint8_t *src = (const uint8_t *)data_ptr;
         fprintf(stderr,
                 "[vgpu] vm_id=%u: MODULE payload before send call_id=0x%04x seq=%u data_len=%u path=%s req_first8=%02x%02x%02x%02x%02x%02x%02x%02x data_first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
                 s->vm_id, s->cuda_op, s->cuda_seq, data_len,
-                (data_len <= VGPU_CUDA_SMALL_DATA_MAX) ? "bar0-inline" :
-                (s->shmem_active && s->shmem_g2h) ? "shmem" :
-                (s->bar1_data ? "bar1" : "none"),
+                payload_src_tag,
                 s->cuda_req_data[0], s->cuda_req_data[1], s->cuda_req_data[2], s->cuda_req_data[3],
                 s->cuda_req_data[4], s->cuda_req_data[5], s->cuda_req_data[6], s->cuda_req_data[7],
                 src[0], src[1], src[2], src[3], src[4], src[5], src[6], src[7]);
         fflush(stderr);
     }
 
-    if ((s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA ||
-         s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA_EX ||
-         s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY) &&
+    if ((s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+         s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC) &&
         data_len > 0 && data_ptr) {
-        /*
-         * Copy module payloads out of the live BAR/MMIO backing store before
-         * sendmsg(). This avoids re-reading mutable device memory across
-         * partial sends on the persistent mediator socket.
-         */
-        data_bounce = g_malloc(data_len);
-        if (!data_bounce) {
-            VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
-            s->error_code = VGPU_ERR_REQUEST_TOO_LARGE;
-            return;
-        }
-        memcpy(data_bounce, data_ptr, data_len);
-        data_ptr = data_bounce;
+        vgpu_stub_log_prefix_bytes("HTOD payload before send",
+                                   data_ptr, data_len,
+                                   s->vm_id, s->cuda_op, s->cuda_seq,
+                                   payload_src_tag);
+    }
+
+    /* Always log first bytes actually sent (post-bounce). Mediator zeros mean
+     * either source was empty or iov/build bug — compare with guest BAR1/shmem. */
+    if (data_len >= 8u && data_ptr &&
+        (s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+         s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC ||
+         s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA ||
+         s->cuda_op == CUDA_CALL_MODULE_LOAD_DATA_EX ||
+         s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+         s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA)) {
+        const uint8_t *fp = (const uint8_t *)data_ptr;
+        fprintf(stderr,
+                "[vgpu] FINAL_TX vm=%u op=0x%04x seq=%u len=%u src=%s first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                s->vm_id, s->cuda_op, s->cuda_seq, data_len, payload_src_tag,
+                fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7]);
+        fflush(stderr);
     }
 
     /* Build socket header wrapping the CUDA call */
@@ -931,7 +1361,10 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
     sock_hdr.magic       = VGPU_SOCKET_MAGIC;
     sock_hdr.msg_type    = VGPU_MSG_CUDA_CALL;
     sock_hdr.vm_id       = s->vm_id;
-    sock_hdr.request_id  = s->cuda_seq;
+    if (++s->next_request_id == 0) {
+        s->next_request_id = 1;
+    }
+    sock_hdr.request_id  = s->next_request_id;
     sock_hdr.pool_id     = (s->pool_id && s->pool_id[0]) ? s->pool_id[0] : 'A';
     sock_hdr.priority    = (uint8_t)vgpu_priority_to_int(s->priority);
     sock_hdr.payload_len = (uint32_t)(sizeof(CUDACallHeader) + data_len);
@@ -964,7 +1397,8 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
     }
 
     size_t expected = (size_t)(VGPU_SOCKET_HDR_SIZE + sizeof(CUDACallHeader) + data_len);
-    s->pending_seq = s->cuda_seq;  /* set before send to avoid response race window */
+    s->pending_seq = s->cuda_seq;  /* keep guest seq for diagnostics */
+    s->pending_request_id = sock_hdr.request_id;  /* set before send to avoid response race window */
 
     if (vgpu_send_all_iov(s->mediator_fd, iov, iov_cnt, expected,
                           &total_sent) < 0) {
@@ -972,12 +1406,14 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
                 s->vm_id, total_sent, expected, strerror(errno), s->cuda_op);
         fflush(stderr);
         s->pending_seq = UINT32_MAX;
+        s->pending_request_id = 0;
         g_free(data_bounce);
         qemu_set_fd_handler(s->mediator_fd, NULL, NULL, NULL);
         close(s->mediator_fd);
         s->mediator_fd = -1;
         s->status_reg  = VGPU_STATUS_ERROR;
         s->error_code  = VGPU_ERR_MEDIATOR_UNAVAIL;
+        vgpu_bar1_mmio_checkpoint(s);
         return;
     }
 
@@ -989,6 +1425,7 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
         fflush(stderr);
     }
 
+    vgpu_bar1_mmio_checkpoint(s);
     /* STATUS stays BUSY until mediator responds */
 }
 
@@ -1211,15 +1648,41 @@ static void vgpu_socket_read_handler(void *opaque)
         if (plen >= sizeof(CUDACallResult)) {
             CUDACallResult *cr = (CUDACallResult *)payload;
 
-            /* Only apply this response if it matches the request we sent (seq_num).
-             * Otherwise a late INIT response could overwrite a cudaMalloc result
-             * and the guest would see status=0 + num_results=0 (misread as OOM). */
-            if (cr->seq_num != s->pending_seq) {
-                /* Stale or out-of-order response; consume but do not update registers */
-                fprintf(stderr, "[vgpu] vm_id=%u: CUDA result IGNORED (recv seq=%u pending_seq=%u) — guest will keep waiting\n",
-                        s->vm_id, cr->seq_num, s->pending_seq);
-                fflush(stderr);
-            } else {
+            /* Match on the transport request_id, not the guest-visible seq_num.
+             * Multiple guest processes can reuse seq=1,2,3... on the same VM
+             * device, so seq-only matching can discard valid replies or accept
+             * stale ones from an earlier process. The mediator already round-trips
+             * sock_hdr.request_id unchanged. */
+            int accept_result = (hdr->request_id == s->pending_request_id);
+            if (!accept_result) {
+                int late_bootstrap_accept =
+                    (s->status_reg == VGPU_STATUS_BUSY) &&
+                    vgpu_stub_is_early_bootstrap_call(s->cuda_op) &&
+                    (cr->seq_num == s->pending_seq) &&
+                    (s->pending_request_id != 0) &&
+                    ((hdr->request_id + 1u) == s->pending_request_id);
+
+                if (late_bootstrap_accept) {
+                    /* VM can retrigger early bootstrap calls while one older
+                     * response is still queued. Accept one-step-behind response
+                     * to avoid BUSY deadlocks in startup call chain. */
+                    accept_result = 1;
+                    fprintf(stderr,
+                            "[vgpu] vm_id=%u: CUDA result LATE-ACCEPT (recv req=%u seq=%u pending_req=%u pending_seq=%u call_id=0x%04x)\n",
+                            s->vm_id, hdr->request_id, cr->seq_num,
+                            s->pending_request_id, s->pending_seq, s->cuda_op);
+                    fflush(stderr);
+                } else {
+                    /* Stale or out-of-order response; consume but do not update registers */
+                    fprintf(stderr,
+                            "[vgpu] vm_id=%u: CUDA result IGNORED (recv req=%u seq=%u pending_req=%u pending_seq=%u) — guest will keep waiting\n",
+                            s->vm_id, hdr->request_id, cr->seq_num,
+                            s->pending_request_id, s->pending_seq);
+                    fflush(stderr);
+                }
+            }
+
+            if (accept_result) {
                 /* Copy result registers */
                 s->cuda_result_status   = cr->status;
                 s->cuda_result_num      = cr->num_results;
@@ -1279,6 +1742,7 @@ static void vgpu_socket_read_handler(void *opaque)
                 else
                     fprintf(stderr, "[vgpu] vm_id=%u: CUDA result applied seq=%u status=%u (DONE)\n",
                             s->vm_id, cr->seq_num, cr->status);
+                s->pending_request_id = 0;
                 fflush(stderr);
             }
         } else {
@@ -1356,6 +1820,10 @@ static void vgpu_bar1_write(void *opaque, hwaddr addr,
 
     if (s->bar1_data && addr + size <= VGPU_BAR1_SIZE) {
         memcpy(&s->bar1_data[addr], &val, size);
+        if (addr < VGPU_BAR1_G2H_SIZE) {
+            s->bar1_g2h_mmio_stores++;
+            vgpu_stub_log_bar1_write(s, addr, size);
+        }
     }
 }
 
@@ -1394,12 +1862,16 @@ static void vgpu_realize(PCIDevice *pci_dev, Error **errp)
     /* Initialise control registers */
     s->status_reg   = VGPU_STATUS_IDLE;
     s->bar1_status_mirror = VGPU_STATUS_IDLE;
+    s->bar1_g2h_mmio_stores   = 0;
+    s->bar1_mmio_mark_at_done = 0;
     s->error_code   = VGPU_ERR_NONE;
     s->request_len  = 0;
     s->response_len = 0;
     s->irq_ctrl     = 0;
     s->irq_status   = 0;
     s->request_id   = 0;
+    s->pending_request_id = 0;
+    s->next_request_id = 0;
     s->timestamp_lo = 0;
     s->timestamp_hi = 0;
     s->scratch      = 0;

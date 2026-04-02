@@ -99,7 +99,7 @@
  * Half is G2H, half is H2G.  The guest may negotiate a smaller size
  * if its ulimits prevent locking 256 MB. */
 #define VGPU_SHMEM_DEFAULT_SIZE  (256u * 1024u * 1024u)  /* 256 MB */
-#define VGPU_SHMEM_MIN_SIZE      (  8u * 1024u * 1024u)  /*   8 MB fallback */
+#define VGPU_SHMEM_MIN_SIZE      ( 32u * 1024u)          /*  32 KB minimum accepted window */
 
 /* ================================================================
  * BAR1 — Large Data Region (16 MB)

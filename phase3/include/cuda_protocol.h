@@ -134,6 +134,7 @@
 #define CUDA_CALL_FUNC_SET_CACHE_CONFIG     0x00B1
 #define CUDA_CALL_GET_ERROR_STRING          0x00B2
 #define CUDA_CALL_GET_ERROR_NAME            0x00B3
+#define CUDA_CALL_FUNC_GET_PARAM_INFO       0x00BC
 
 /* --- GPU info query (custom, host-side NVML query) -------------- */
 #define CUDA_CALL_GET_GPU_INFO              0x00F0
@@ -367,11 +368,21 @@ typedef struct __attribute__((packed)) CUDALaunchParams {
     uint64_t stream_handle;         /* Host-side CUstream handle       */
     uint32_t num_params;            /* Number of kernel parameters     */
     uint32_t total_param_bytes;     /* Total size of param data        */
-    /* followed by: uint32_t param_sizes[num_params]                   */
-    /* followed by: uint8_t  param_data[total_param_bytes]             */
+    uint32_t param_buf_mode;        /* CUDA_LAUNCH_PARAM_MODE_*        */
+    uint32_t reserved0;
+    /* LEGACY mode:
+     *   followed by: uint32_t param_sizes[num_params]
+     *   followed by: uint8_t  param_data[total_param_bytes]
+     *
+     * RAW_BUFFER mode:
+     *   followed by: uint8_t  param_data[total_param_bytes]
+     */
 } CUDALaunchParams;
 
 #define CUDA_LAUNCH_PARAMS_SIZE  sizeof(CUDALaunchParams)
+
+#define CUDA_LAUNCH_PARAM_MODE_LEGACY      0u
+#define CUDA_LAUNCH_PARAM_MODE_RAW_BUFFER  1u
 
 /* ================================================================
  * Module load payload

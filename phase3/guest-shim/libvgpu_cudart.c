@@ -51,6 +51,15 @@ static int cudart_debug_logging(void) {
     return cached;
 }
 
+/* Extra per-call runtime tracing, default off to avoid perturbing working runs. */
+static int cudart_diag_logging(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        cached = (getenv("VGPU_CUDART_DIAG") != NULL || getenv("VGPU_DEBUG") != NULL) ? 1 : 0;
+    }
+    return cached;
+}
+
 /* Quick error capture: append line to /tmp/ollama_errors_full.log (syscalls only). */
 static void cudart_log_error_to_file(const char *msg) {
 #ifndef __NR_openat
@@ -63,6 +72,45 @@ static void cudart_log_error_to_file(const char *msg) {
         if (len > 0) syscall(__NR_write, fd, msg, len);
         syscall(__NR_write, fd, "\n", 1);
         syscall(__NR_close, fd);
+    }
+}
+
+/* Narrow trace for memcpy/sync sequencing around GGML set_tensor(). */
+static void cudart_trace_to_file(const char *msg) {
+#ifndef __NR_openat
+#define __NR_openat 257
+#endif
+    int fd = (int)syscall(__NR_openat, -100, "/tmp/vgpu_cudart_trace.log",
+                          O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        size_t len = 0;
+        while (msg[len]) len++;
+        if (len > 0) syscall(__NR_write, fd, msg, len);
+        syscall(__NR_write, fd, "\n", 1);
+        syscall(__NR_close, fd);
+    }
+}
+
+static void cudart_trace_memcpy_async(const char *phase, void *dst, const void *src,
+                                      size_t count, int kind, void *stream, int rc) {
+    if (!cudart_diag_logging()) return;
+    char msg[256];
+    int n = snprintf(msg, sizeof(msg),
+                     "[libvgpu-cudart] %s kind=%d count=%zu stream=%p dst=%p src=%p rc=%d pid=%d",
+                     phase, kind, count, stream, dst, src, rc, (int)getpid());
+    if (n > 0 && n < (int)sizeof(msg)) {
+        cudart_trace_to_file(msg);
+    }
+}
+
+static void cudart_trace_stream_sync(const char *phase, void *stream, int rc) {
+    if (!cudart_diag_logging()) return;
+    char msg[192];
+    int n = snprintf(msg, sizeof(msg),
+                     "[libvgpu-cudart] %s stream=%p rc=%d pid=%d",
+                     phase, stream, rc, (int)getpid());
+    if (n > 0 && n < (int)sizeof(msg)) {
+        cudart_trace_to_file(msg);
     }
 }
 
@@ -1180,6 +1228,7 @@ cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, int kind, 
     typedef int (*cuMemcpyDtoDAsync_func)(void *, void *, size_t, void *);
 
     int cuda_result = 0;
+    cudart_trace_memcpy_async("cudaMemcpyAsync_enter", dst, src, count, kind, stream, 0);
 
     if (kind == cudaMemcpyHostToDevice || kind == cudaMemcpyDefault) {
         cuMemcpyHtoDAsync_func fn = (cuMemcpyHtoDAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyHtoDAsync_v2");
@@ -1187,6 +1236,8 @@ cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, int kind, 
             fn = (cuMemcpyHtoDAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyHtoDAsync");
         }
         if (!fn) {
+            cudart_trace_memcpy_async("cudaMemcpyAsync_fallback_sync_no_symbol",
+                                      dst, src, count, kind, stream, 0);
             return cudaMemcpy(dst, src, count, kind);
         }
         cuda_result = fn(dst, src, count, stream);
@@ -1196,6 +1247,8 @@ cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, int kind, 
             fn = (cuMemcpyDtoHAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyDtoHAsync");
         }
         if (!fn) {
+            cudart_trace_memcpy_async("cudaMemcpyAsync_fallback_sync_no_symbol",
+                                      dst, src, count, kind, stream, 0);
             return cudaMemcpy(dst, src, count, kind);
         }
         cuda_result = fn(dst, (void *)src, count, stream);
@@ -1205,12 +1258,17 @@ cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, int kind, 
             fn = (cuMemcpyDtoDAsync_func)dlsym(RTLD_DEFAULT, "cuMemcpyDtoDAsync");
         }
         if (!fn) {
+            cudart_trace_memcpy_async("cudaMemcpyAsync_fallback_sync_no_symbol",
+                                      dst, src, count, kind, stream, 0);
             return cudaMemcpy(dst, src, count, kind);
         }
         cuda_result = fn(dst, (void *)src, count, stream);
     } else {
+        cudart_trace_memcpy_async("cudaMemcpyAsync_invalid_kind", dst, src, count, kind, stream, -1);
         return cudaErrorInvalidValue;
     }
+
+    cudart_trace_memcpy_async("cudaMemcpyAsync_return", dst, src, count, kind, stream, cuda_result);
 
     if (cuda_result != 0) {
         char err_msg[256];
@@ -1286,11 +1344,15 @@ cudaError_t cudaStreamSynchronize(void *stream) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "cudart_stream_sync\n"; syscall(__NR_write, nfd, msg, 19); syscall(__NR_close, nfd); }
     }
+    cudart_trace_stream_sync("cudaStreamSynchronize_enter", stream, 0);
     typedef int (*cuStreamSynchronize_t)(void *);
     cuStreamSynchronize_t cuSync = (cuStreamSynchronize_t)dlsym(RTLD_DEFAULT, "cuStreamSynchronize");
     if (cuSync) {
         int rc = cuSync(stream);
+        cudart_trace_stream_sync("cudaStreamSynchronize_driver_return", stream, rc);
         (void)rc; /* ignore so we don't trigger GGML error path */
+    } else {
+        cudart_trace_stream_sync("cudaStreamSynchronize_no_symbol", stream, 0);
     }
     return cudaSuccess;
 }

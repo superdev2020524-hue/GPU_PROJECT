@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <sys/select.h>
 #include <dirent.h>
+#include <sys/file.h>
 
 /* Phase 2 shared protocol & CUDA interface */
 #include "vgpu_protocol.h"
@@ -55,6 +56,7 @@
 #define SOCKET_BACKLOG       10
 #define MAX_SERVER_SOCKETS   16
 #define ADMIN_BUF_SIZE       (64 * 1024)   /* 64 KiB for admin responses */
+#define MEDIATOR_LOCK_PATH   "/var/run/mediator_phase3.lock"
 
 /* ====================================================================
  * Global state
@@ -70,6 +72,7 @@ static int    g_admin_fd = -1;
 
 /* Shutdown flag */
 static volatile int g_shutdown = 0;
+static int g_instance_lock_fd = -1;
 
 /* Phase 3 subsystems */
 static wfq_scheduler_t g_scheduler;
@@ -126,6 +129,29 @@ static void handle_admin_connection(int client_fd);
 static void dispatch_next_job(void);
 static void execute_job(wfq_entry_t *entry);
 
+static void mediator_log_prefix_bytes(const char *label,
+                                      const void *buf,
+                                      uint32_t len,
+                                      uint32_t vm_id,
+                                      uint32_t call_id,
+                                      uint32_t seq_num)
+{
+    const uint8_t *bytes = (const uint8_t *)buf;
+    uint32_t prefix_len = (len < 64u) ? len : 64u;
+
+    fprintf(stderr,
+            "[mediator] %s vm=%u call_id=0x%04x seq=%u len=%u prefix_len=%u bytes=[",
+            label, vm_id, call_id, seq_num, len, prefix_len);
+    for (uint32_t i = 0; i < prefix_len; i++) {
+        fprintf(stderr, "%02x", bytes[i]);
+        if (i + 1u < prefix_len) {
+            fputc(' ', stderr);
+        }
+    }
+    fprintf(stderr, "]\n");
+    fflush(stderr);
+}
+
 /* ====================================================================
  * Signal handler
  * ==================================================================== */
@@ -133,6 +159,77 @@ static void signal_handler(int sig)
 {
     printf("\n[SHUTDOWN] Received signal %d, shutting down gracefully...\n", sig);
     g_shutdown = 1;
+}
+
+static int acquire_instance_lock(void)
+{
+    char pid_buf[64];
+    ssize_t nread;
+
+    g_instance_lock_fd = open(MEDIATOR_LOCK_PATH, O_RDWR | O_CREAT, 0644);
+    if (g_instance_lock_fd < 0) {
+        fprintf(stderr, "[LOCK] ERROR: open(%s) failed: %s\n",
+                MEDIATOR_LOCK_PATH, strerror(errno));
+        return -1;
+    }
+
+    if (flock(g_instance_lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EWOULDBLOCK) {
+            memset(pid_buf, 0, sizeof(pid_buf));
+            if (lseek(g_instance_lock_fd, 0, SEEK_SET) >= 0) {
+                nread = read(g_instance_lock_fd, pid_buf, sizeof(pid_buf) - 1);
+                if (nread < 0) {
+                    pid_buf[0] = '\0';
+                }
+            } else {
+                pid_buf[0] = '\0';
+            }
+            if (pid_buf[0]) {
+                fprintf(stderr,
+                        "[LOCK] Another mediator_phase3 instance is already active (pid=%s)\n",
+                        pid_buf);
+            } else {
+                fprintf(stderr,
+                        "[LOCK] Another mediator_phase3 instance is already active\n");
+            }
+            fprintf(stderr, "[LOCK] Refusing to start a duplicate process\n");
+        } else {
+            fprintf(stderr, "[LOCK] ERROR: flock(%s) failed: %s\n",
+                    MEDIATOR_LOCK_PATH, strerror(errno));
+        }
+        close(g_instance_lock_fd);
+        g_instance_lock_fd = -1;
+        return -1;
+    }
+
+    if (ftruncate(g_instance_lock_fd, 0) != 0) {
+        fprintf(stderr, "[LOCK] WARN: ftruncate(%s) failed: %s\n",
+                MEDIATOR_LOCK_PATH, strerror(errno));
+    }
+    if (lseek(g_instance_lock_fd, 0, SEEK_SET) >= 0) {
+        int len = snprintf(pid_buf, sizeof(pid_buf), "%ld", (long)getpid());
+        if (len > 0) {
+            ssize_t nwritten = write(g_instance_lock_fd, pid_buf, (size_t)len);
+            if (nwritten < 0) {
+                fprintf(stderr, "[LOCK] WARN: write(%s) failed: %s\n",
+                        MEDIATOR_LOCK_PATH, strerror(errno));
+            }
+        }
+    }
+
+    return 0;
+}
+
+static void release_instance_lock(void)
+{
+    if (g_instance_lock_fd < 0) {
+        return;
+    }
+
+    (void)flock(g_instance_lock_fd, LOCK_UN);
+    (void)close(g_instance_lock_fd);
+    g_instance_lock_fd = -1;
+    (void)unlink(MEDIATOR_LOCK_PATH);
 }
 
 /* ====================================================================
@@ -945,6 +1042,20 @@ static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
         bulk_len = payload_len - sizeof(CUDACallHeader);
     }
 
+    if ((cuda_hdr->call_id == CUDA_CALL_MEMCPY_HTOD ||
+         cuda_hdr->call_id == CUDA_CALL_MEMCPY_HTOD_ASYNC ||
+         cuda_hdr->call_id == CUDA_CALL_MODULE_LOAD_DATA ||
+         cuda_hdr->call_id == CUDA_CALL_MODULE_LOAD_DATA_EX ||
+         cuda_hdr->call_id == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+         cuda_hdr->call_id == CUDA_CALL_LIBRARY_LOAD_DATA) &&
+        bulk_data && bulk_len > 0) {
+        mediator_log_prefix_bytes("CUDA call input prefix",
+                                  bulk_data, bulk_len,
+                                  sock_hdr->vm_id,
+                                  cuda_hdr->call_id,
+                                  cuda_hdr->seq_num);
+    }
+
     /* Execute the CUDA call */
     CUDACallResult result;
     uint8_t *result_data = NULL;
@@ -1715,6 +1826,10 @@ int main(int argc, char *argv[])
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    if (acquire_instance_lock() != 0) {
+        return 1;
+    }
+
     /* ---- Initialize Phase 3 subsystems ---- */
 
     /* 1. WFQ scheduler */
@@ -1733,6 +1848,7 @@ int main(int argc, char *argv[])
     wd_init(&g_watchdog);
     if (wd_start(&g_watchdog) != 0) {
         fprintf(stderr, "[ERROR] Failed to start watchdog thread\n");
+        release_instance_lock();
         return 1;
     }
     printf("[INIT] Watchdog started (timeout=%ds, threshold=%d)\n",
@@ -1763,6 +1879,7 @@ int main(int argc, char *argv[])
     /* 7. CUDA (legacy vector-add) */
     if (cuda_init() != 0) {
         fprintf(stderr, "[ERROR] Failed to initialize CUDA\n");
+        release_instance_lock();
         return 1;
     }
     printf("[INIT] CUDA ready\n");
@@ -1787,6 +1904,7 @@ int main(int argc, char *argv[])
             fprintf(stderr, "[ERROR] Failed to setup socket at %s\n",
                     override_path);
             cuda_cleanup();
+            release_instance_lock();
             return 1;
         }
         g_num_servers = 1;
@@ -1837,6 +1955,7 @@ int main(int argc, char *argv[])
     if (g_num_servers == 0) {
         fprintf(stderr, "[ERROR] No server sockets created\n");
         cuda_cleanup();
+        release_instance_lock();
         return 1;
     }
 
@@ -1858,6 +1977,7 @@ int main(int argc, char *argv[])
     }
     cuda_cleanup();
     if (g_db) vgpu_db_close(g_db);
+    release_instance_lock();
 
     printf("[MEDIATOR] Exited cleanly\n");
     return 0;

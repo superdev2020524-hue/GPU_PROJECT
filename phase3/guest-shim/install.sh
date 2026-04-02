@@ -565,18 +565,48 @@ configure_ollama_service() {
     private_dev=$(systemctl show ollama --property=PrivateDevices 2>/dev/null \
                  | sed 's/PrivateDevices=//')
 
-    # Determine if we should use wrapper script or direct ExecStart
-    local use_wrapper=1
-    local wrapper_path="${SCRIPT_DIR}/ollama_wrapper.sh"
-    
-    if [ -f "$wrapper_path" ]; then
+    # Wrapper: install under /usr/local/lib/vgpu so the ollama service user can
+    # read it (ProtectHome hides /home/... from the service).
+    local wrapper_src="${SCRIPT_DIR}/ollama_wrapper.sh"
+    local wrapper_install="/usr/local/lib/vgpu/ollama_wrapper.sh"
+
+    if [ -f "$wrapper_src" ]; then
+        mkdir -p /usr/local/lib/vgpu
+        cp -f "$wrapper_src" "$wrapper_install"
+        chmod 755 "$wrapper_install"
         cat > /etc/systemd/system/ollama.service.d/vgpu.conf <<EOF
 [Service]
 # ── Use wrapper script for comprehensive shim injection ─────────────────────
 # The wrapper script ensures LD_PRELOAD is set and propagated to all
 # subprocesses, including those spawned by Go's runtime.
+# Installed copy: ${wrapper_install} (not \$SCRIPT_DIR — ollama user cannot read /home).
 ExecStart=
-ExecStart=$wrapper_path
+ExecStart=/bin/bash ${wrapper_install}
+
+# Same resource/sandbox overrides as the non-wrapper drop-in (mlock shmem, PCI BAR).
+LimitMEMLOCK=infinity
+ProtectKernelTunables=no
+PrivateDevices=no
+ReadWritePaths=/sys/bus/pci/devices/
+
+# Shims: set here too so systemd exports to runner children (not only the bash wrapper).
+Environment="LD_PRELOAD=/usr/lib64/libvgpu-cudart.so:/usr/lib64/libvgpu-cuda.so:/usr/lib64/libvgpu-nvml.so"
+# Ollama / ggml CUDA path (wrapper also exports LD_PRELOAD; these match phase3/ollama.service.d_vgpu.conf)
+Environment="OLLAMA_LLM_LIBRARY=cuda_v12"
+Environment="OLLAMA_NUM_GPU=999"
+Environment="OLLAMA_LIBRARY_PATH=/opt/vgpu/lib:/usr/local/lib/ollama/cuda_v12:/usr/local/lib/ollama"
+Environment="LD_LIBRARY_PATH=/opt/vgpu/lib:/usr/local/lib/ollama/cuda_v12:/usr/local/lib/ollama:/usr/lib64"
+Environment="OLLAMA_LOAD_TIMEOUT=4h"
+Environment="OLLAMA_FLASH_ATTENTION=0"
+Environment="CUDA_TRANSPORT_TIMEOUT_SEC=14400"
+Environment="VGPU_SHMEM_MIN_SPAN_KB=64"
+Environment="GGML_CUDA_DISABLE_GRAPHS=1"
+Environment="GGML_CUDA_DISABLE_GRAPH_RESERVE=1"
+Environment="GGML_CUDA_DISABLE_BATCHED_CUBLAS=1"
+Environment="NVIDIA_VISIBLE_DEVICES=all"
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_IPC_LOCK
+AmbientCapabilities=CAP_SYS_ADMIN CAP_IPC_LOCK
+NoNewPrivileges=no
 EOF
     else
         # Fallback to direct environment variables if wrapper not available
@@ -622,8 +652,7 @@ Environment="OLLAMA_LLM_LIBRARY=cuda_v12"
 # the first model load request uses GPU layers without waiting for a client
 # to supply num_gpu > 0.
 Environment="OLLAMA_NUM_GPU=999"
-EOF
-    fi
+Environment="VGPU_SHMEM_MIN_SPAN_KB=64"
 
 # ── Resource limits ────────────────────────────────────────────────────────
 # Allow mlock() of the 256 MB shared-memory region used by the VGPU transport.
@@ -659,6 +688,7 @@ PrivateDevices=no
 ReadWritePaths=/sys/bus/pci/devices/
 
 EOF
+    fi
 
     if [[ "$protect_kt" == "yes" ]]; then
         log "  ✓ Overrode ProtectKernelTunables=yes → no (needed for /sys PCI access)"

@@ -2,6 +2,61 @@
 
 *Document created: Mar 15, 2026*
 
+*Update: Mar 30, 2026 — the section below records the current state after restoring `SHMEM`. Older `INVALID_IMAGE`-only paragraphs later in this file are historical and do not fully describe the latest state.*
+
+## Mar 30, 2026 — current state and best next step
+
+### What just changed
+
+- `SHMEM` was restored for `vm_id=9` by lowering the shared minimum from `8 MB` to `4 MB` in the shared protocol header (`include/vgpu_protocol.h`), then rebuilding and reinstalling the host QEMU `VGPU-STUB`.
+- The actual recovery process was:
+  1. update `VGPU_SHMEM_MIN_SIZE` to `4 MB`
+  2. copy `src/vgpu-stub-enhanced.c`, `include/vgpu_protocol.h`, and `include/cuda_protocol.h` to dom0
+  3. run `make qemu-prepare && make qemu-build` on dom0
+  4. install the rebuilt QEMU RPM on dom0
+  5. restart `mediator_phase3`
+  6. reboot `Test-4`
+- The first failed attempt during this recovery was not a code failure in `SHMEM`; it was an operational failure while reinstalling QEMU / restarting the VM. Re-running the dom0 steps cleanly recovered the stack.
+
+### Evidence that `SHMEM` is back
+
+- Host `daemon.log` now shows explicit `shmem registered` lines for `vm_id=9` on the rebuilt stub.
+- The new build accepted a `4 MB` shared window:
+  - `vm_id=9: shmem registered ... size=4 MB`
+- After that recovery, a bounded `tinyllama` generate from inside the VM returned `HTTP=200` instead of stalling in the old long `BAR1` timeout pattern.
+- The last bounded run completed in about `29.46s`, and the response JSON reported a load duration of about `3.27s`.
+- `BAR1` status reads still appear in host logs. That is the status-mirror path and does **not** by itself mean bulk data is still using `BAR1`.
+
+### What this means
+
+- The transport bottleneck is no longer the main blocker for Step 1.
+- GPU-mode execution is alive enough to complete a bounded request.
+- The current blocker has moved forward from **transport/path selection** to **output correctness**.
+- The latest successful bounded run returned `HTTP=200`, but the textual response was still garbage bytes rather than a correct answer.
+
+### Best next step
+
+**Do not spend the next cycle tuning `SHMEM` again.** The best next step is to isolate the **first corruption point in the successful GPU path**.
+
+Concretely:
+
+1. Run a **paired CPU vs GPU** `tinyllama` request with the same short deterministic prompt.
+2. Keep the current restored `SHMEM` setup unchanged while capturing:
+   - VM `journalctl -u ollama`
+   - host `/var/log/daemon.log`
+   - host `/tmp/mediator.log`
+3. Add **focused output-path tracing** around the first small result return:
+   - guest `cuMemcpyDtoH` / `cudaMemcpyDtoH`
+   - host small `DtoH` payload logging in `cuda_executor.c`
+4. Compare the first returned bytes on the GPU path against the CPU baseline.
+5. If bytes are already wrong at `DtoH`, stay in transport / host replay.
+6. If `DtoH` bytes are correct but Ollama text is wrong, move up into GGML / runner decode handling.
+
+### Short recommendation
+
+The best next step is: **freeze the restored transport, then debug correctness at the first returned output bytes.**  
+The mistake to avoid is: **touching `SHMEM` / QEMU again before proving the corruption point.**
+
 ---
 
 ## 1. Current situation (test-4)

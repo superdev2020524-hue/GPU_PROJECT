@@ -61,10 +61,48 @@ static int is_runner_process(void);
 static int is_safe_to_check_process(void);  /* Safety check for early initialization */
 static int ensure_init(void);  /* Early initialization function */
 
+static int vgpu_range_is_mapped(const void *ptr, size_t len);
+
 /* Global real libc FILE* functions — resolved from libc.so for excluded/model files */
 static FILE *(*g_real_fopen_global)(const char *, const char *) = NULL;
 static char *(*g_real_fgets_global)(char *, int, FILE *) = NULL;
 static size_t (*g_real_fread_global)(void *, size_t, size_t, FILE *) = NULL;
+
+static int vgpu_range_is_mapped(const void *ptr, size_t len)
+{
+    if (!ptr || len == 0) {
+        return 0;
+    }
+
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        page_size = 4096;
+    }
+
+    uintptr_t start = (uintptr_t)ptr;
+    uintptr_t page_mask = (uintptr_t)page_size - 1u;
+    uintptr_t map_start = start & ~page_mask;
+    uintptr_t end = start + len;
+    if (end < start) {
+        return 0;
+    }
+    uintptr_t map_end = (end + page_mask) & ~page_mask;
+    if (map_end <= map_start) {
+        map_end = map_start + (uintptr_t)page_size;
+    }
+
+    size_t span = (size_t)(map_end - map_start);
+    unsigned char vec[4];
+    if (span / (size_t)page_size > sizeof(vec)) {
+        return 0;
+    }
+
+    if (mincore((void *)map_start, span, vec) == 0) {
+        return 1;
+    }
+
+    return 0;
+}
 
 /* ================================================================
  * dlopen interception  (dlsym and dlclose are NOT overridden)
@@ -769,6 +807,29 @@ static int              g_device_found = 0;  /* VGPU device visible in /sys    *
 static pthread_mutex_t  g_mutex;  /* Lazy-initialized - do NOT use PTHREAD_MUTEX_INITIALIZER */
 static int              g_mutex_initialized = 0;  /* Track if mutex is initialized */
 
+#define VGPU_LAUNCH_PARAM_MAX 32u
+#define VGPU_LAUNCH_PARAM_CACHE_SIZE 256u
+#define VGPU_LAUNCH_PARAM_CACHE_PROBE_LIMIT 8u
+
+enum {
+    VGPU_PARAM_CACHE_EMPTY = 0,
+    VGPU_PARAM_CACHE_RAW = 1,
+};
+
+typedef struct {
+    uint64_t function_handle;
+    uint8_t state;
+    uint8_t num_params;
+    uint16_t reserved;
+    uint32_t total_param_bytes;
+    uint32_t param_sizes[VGPU_LAUNCH_PARAM_MAX];
+    uint32_t param_offsets[VGPU_LAUNCH_PARAM_MAX];
+} vgpu_launch_param_cache_entry_t;
+
+static vgpu_launch_param_cache_entry_t g_launch_param_cache[VGPU_LAUNCH_PARAM_CACHE_SIZE];
+static pthread_mutex_t g_launch_param_cache_mutex;
+static int g_launch_param_cache_mutex_initialized = 0;
+
 /* CRITICAL SAFETY: Flag to indicate if it's safe to check process type.
  * During very early initialization (when library is loaded via /etc/ld.so.preload),
  * even syscalls may not be safe. This flag is set to 1 after we successfully
@@ -798,6 +859,37 @@ static void vgpu_log_error_to_file(const char *msg) {
     }
 }
 
+static void vgpu_log_prefix_bytes(const char *label, const void *data, size_t len)
+{
+    if (!data || len == 0) return;
+
+    const unsigned char *bytes = (const unsigned char *)data;
+    char hexbuf[64 * 3 + 1];
+    size_t pos = 0;
+    size_t log_len = (len < 64) ? len : 64;
+
+    for (size_t i = 0; i < log_len && pos + 4 < sizeof(hexbuf); i++) {
+        int n = snprintf(hexbuf + pos, sizeof(hexbuf) - pos,
+                         "%02x%s", bytes[i], (i + 1 < log_len) ? " " : "");
+        if (n <= 0) break;
+        pos += (size_t)n;
+    }
+
+    char msg[512];
+    int n = snprintf(msg, sizeof(msg),
+                     "[libvgpu-cuda] %s prefix len=%zu prefix_len=%zu bytes=[%s] (pid=%d)\n",
+                     label, len, log_len, hexbuf, (int)getpid());
+    if (n > 0 && n < (int)sizeof(msg)) {
+        syscall(__NR_write, 2, msg, (size_t)n);
+        int fd = (int)syscall(__NR_openat, -100, "/var/tmp/vgpu_htod_prefix.log",
+                              O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            syscall(__NR_write, fd, msg, (size_t)n);
+            syscall(__NR_close, fd);
+        }
+    }
+}
+
 /* Helper: Ensure mutex is initialized (lazy initialization)
  * CRITICAL: Do NOT use PTHREAD_MUTEX_INITIALIZER - it runs at library load time
  * and can crash during early initialization via /etc/ld.so.preload */
@@ -812,6 +904,101 @@ static void ensure_mutex_init(void)
         }
         /* If rc != 0, mutex was already initialized by another thread - that's OK */
     }
+}
+
+static void ensure_launch_param_cache_mutex_init(void)
+{
+    if (!g_launch_param_cache_mutex_initialized) {
+        int rc = pthread_mutex_init(&g_launch_param_cache_mutex, NULL);
+        if (rc == 0) {
+            g_launch_param_cache_mutex_initialized = 1;
+        }
+    }
+}
+
+static uint32_t launch_param_cache_hash(uint64_t function_handle)
+{
+    uint64_t x = function_handle;
+    x ^= x >> 33;
+    x ^= x >> 17;
+    x ^= x >> 9;
+    return (uint32_t)x;
+}
+
+static int launch_param_cache_lookup(uint64_t function_handle,
+                                     vgpu_launch_param_cache_entry_t *out)
+{
+    if (function_handle == 0 || !out) {
+        return 0;
+    }
+    ensure_launch_param_cache_mutex_init();
+    if (!g_launch_param_cache_mutex_initialized) {
+        return 0;
+    }
+
+    int found = 0;
+    uint32_t start = launch_param_cache_hash(function_handle) % VGPU_LAUNCH_PARAM_CACHE_SIZE;
+
+    pthread_mutex_lock(&g_launch_param_cache_mutex);
+    for (uint32_t i = 0; i < VGPU_LAUNCH_PARAM_CACHE_PROBE_LIMIT; i++) {
+        uint32_t idx = (start + i) % VGPU_LAUNCH_PARAM_CACHE_SIZE;
+        const vgpu_launch_param_cache_entry_t *entry = &g_launch_param_cache[idx];
+        if (entry->state == VGPU_PARAM_CACHE_EMPTY) {
+            break;
+        }
+        if (entry->function_handle == function_handle) {
+            *out = *entry;
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_launch_param_cache_mutex);
+
+    return found;
+}
+
+static void launch_param_cache_store(uint64_t function_handle,
+                                     const vgpu_launch_param_cache_entry_t *entry_in)
+{
+    if (function_handle == 0 || !entry_in || entry_in->state == VGPU_PARAM_CACHE_EMPTY) {
+        return;
+    }
+    ensure_launch_param_cache_mutex_init();
+    if (!g_launch_param_cache_mutex_initialized) {
+        return;
+    }
+
+    uint32_t start = launch_param_cache_hash(function_handle) % VGPU_LAUNCH_PARAM_CACHE_SIZE;
+    uint32_t target = start;
+    int have_target = 0;
+
+    pthread_mutex_lock(&g_launch_param_cache_mutex);
+    for (uint32_t i = 0; i < VGPU_LAUNCH_PARAM_CACHE_PROBE_LIMIT; i++) {
+        uint32_t idx = (start + i) % VGPU_LAUNCH_PARAM_CACHE_SIZE;
+        if (g_launch_param_cache[idx].state == VGPU_PARAM_CACHE_EMPTY ||
+            g_launch_param_cache[idx].function_handle == function_handle) {
+            target = idx;
+            have_target = 1;
+            break;
+        }
+    }
+    if (!have_target) {
+        target = start;
+    }
+    g_launch_param_cache[target] = *entry_in;
+    g_launch_param_cache[target].function_handle = function_handle;
+    pthread_mutex_unlock(&g_launch_param_cache_mutex);
+}
+
+static void launch_param_cache_clear(void)
+{
+    ensure_launch_param_cache_mutex_init();
+    if (!g_launch_param_cache_mutex_initialized) {
+        return;
+    }
+    pthread_mutex_lock(&g_launch_param_cache_mutex);
+    memset(g_launch_param_cache, 0, sizeof(g_launch_param_cache));
+    pthread_mutex_unlock(&g_launch_param_cache_mutex);
 }
 
 /* Cached process type - avoid repeated checks */
@@ -3500,22 +3687,6 @@ __attribute__((unused)) static CUresult generic_stub_4args(void *arg1, void *arg
 
 static int ensure_init(void)
 {
-    /* Debug: write to file so we can confirm runner calls us even if stderr is redirected */
-    {
-        char buf[128];
-        int n = snprintf(buf, sizeof(buf), "ensure_init called pid=%d\n", (int)getpid());
-        if (n > 0 && n < (int)sizeof(buf)) {
-            int fd = (int)syscall(__NR_open, "/tmp/vgpu_ensure_init.log",
-                O_WRONLY | O_CREAT | O_APPEND, 0644);
-            if (fd >= 0) {
-                syscall(__NR_write, fd, buf, (size_t)n);
-                syscall(__NR_close, fd);
-            }
-        }
-    }
-    fprintf(stderr, "[libvgpu-cuda] ensure_init() CALLED (pid=%d)\n", (int)getpid());
-    fflush(stderr);
-    
     /* CRITICAL: For early initialization, we need to call cuInit() BEFORE
      * cuDeviceGetPCIBusId() is called. Ollama's GPU discovery requires this.
      * 
@@ -3527,9 +3698,27 @@ static int ensure_init(void)
     
     /* If already initialized, return immediately */
     if (g_initialized) {
-        fprintf(stderr, "[libvgpu-cuda] ensure_init() already initialized (pid=%d)\n", (int)getpid());
-        fflush(stderr);
+        if (vgpu_debug_logging()) {
+            fprintf(stderr, "[libvgpu-cuda] ensure_init() already initialized (pid=%d)\n", (int)getpid());
+            fflush(stderr);
+        }
         return CUDA_SUCCESS;
+    }
+
+    if (vgpu_debug_logging()) {
+        /* Debug: write to file so we can confirm runner calls us even if stderr is redirected */
+        char buf[128];
+        int n = snprintf(buf, sizeof(buf), "ensure_init called pid=%d\n", (int)getpid());
+        if (n > 0 && n < (int)sizeof(buf)) {
+            int fd = (int)syscall(__NR_open, "/tmp/vgpu_ensure_init.log",
+                O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                syscall(__NR_write, fd, buf, (size_t)n);
+                syscall(__NR_close, fd);
+            }
+        }
+        fprintf(stderr, "[libvgpu-cuda] ensure_init() CALLED (pid=%d)\n", (int)getpid());
+        fflush(stderr);
     }
     
     /* Check if it's safe to perform process detection */
@@ -4442,9 +4631,22 @@ static CUresult dark_launch_kernel(CUfunction f,
     return CUDA_ERROR_NOT_SUPPORTED;
 }
 
+static pthread_once_t g_dark_runtime_exec_buffer_once = PTHREAD_ONCE_INIT;
+static uint64_t *g_dark_runtime_exec_buffer = NULL;
+
+static void dark_runtime_exec_buffer_init(void)
+{
+    const size_t bytes = 131072 * sizeof(uint64_t); /* 1 MiB */
+    void *mapped = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapped != MAP_FAILED) {
+        g_dark_runtime_exec_buffer = (uint64_t *)mapped;
+    }
+}
+
 static void dark_tools_runtime_fn2(uint64_t **ptr, size_t *size)
 {
-    static uint64_t buffer[131072] = {0}; /* 1 MiB */
+    const size_t buffer_bytes = 131072 * sizeof(uint64_t); /* 1 MiB */
     char log_msg[192];
     int log_len = snprintf(log_msg, sizeof(log_msg),
                           "[libvgpu-cuda] dark_tools_runtime_fn2() CALLED: ptr=%p size=%p (pid=%d)\n",
@@ -4452,8 +4654,11 @@ static void dark_tools_runtime_fn2(uint64_t **ptr, size_t *size)
     if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
-    if (ptr) *ptr = buffer;
-    if (size) *size = sizeof(buffer);
+
+    pthread_once(&g_dark_runtime_exec_buffer_once, dark_runtime_exec_buffer_init);
+
+    if (ptr) *ptr = g_dark_runtime_exec_buffer;
+    if (size) *size = g_dark_runtime_exec_buffer ? buffer_bytes : 0;
 }
 
 static void dark_tools_runtime_fn6(uint8_t **ptr, size_t *size)
@@ -4799,12 +5004,14 @@ static CUresult dark_context_local_storage_remove(uintptr_t arg1, uintptr_t arg2
     CUcontext ctx = (CUcontext)arg1;
     CUcontext effective_ctx = ctx ? ctx : (g_current_ctx ? g_current_ctx : g_global_ctx);
     void *key = (void *)arg2;
-    char log_msg[224];
-    int log_len = snprintf(log_msg, sizeof(log_msg),
-                          "[libvgpu-cuda] dark_context_local_storage_remove() CALLED: ctx=%p effective_ctx=%p key=%p (pid=%d)\n",
-                          (void *)ctx, (void *)effective_ctx, key, (int)getpid());
-    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
-        syscall(__NR_write, 2, log_msg, log_len);
+    if (vgpu_debug_logging()) {
+        char log_msg[224];
+        int log_len = snprintf(log_msg, sizeof(log_msg),
+                              "[libvgpu-cuda] dark_context_local_storage_remove() CALLED: ctx=%p effective_ctx=%p key=%p (pid=%d)\n",
+                              (void *)ctx, (void *)effective_ctx, key, (int)getpid());
+        if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+            syscall(__NR_write, 2, log_msg, log_len);
+        }
     }
 
     ensure_mutex_init();
@@ -4826,12 +5033,14 @@ static CUresult dark_context_local_storage_remove(uintptr_t arg1, uintptr_t arg2
 static CUresult dark_context_local_storage_get(void **result, CUcontext ctx, void *key)
 {
     CUcontext effective_ctx = ctx ? ctx : (g_current_ctx ? g_current_ctx : g_global_ctx);
-    char log_msg[224];
-    int log_len = snprintf(log_msg, sizeof(log_msg),
-                          "[libvgpu-cuda] dark_context_local_storage_get() CALLED: result=%p ctx=%p effective_ctx=%p key=%p (pid=%d)\n",
-                          (void *)result, (void *)ctx, (void *)effective_ctx, key, (int)getpid());
-    if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
-        syscall(__NR_write, 2, log_msg, log_len);
+    if (vgpu_debug_logging()) {
+        char log_msg[224];
+        int log_len = snprintf(log_msg, sizeof(log_msg),
+                              "[libvgpu-cuda] dark_context_local_storage_get() CALLED: result=%p ctx=%p effective_ctx=%p key=%p (pid=%d)\n",
+                              (void *)result, (void *)ctx, (void *)effective_ctx, key, (int)getpid());
+        if (log_len > 0 && log_len < (int)sizeof(log_msg)) {
+            syscall(__NR_write, 2, log_msg, log_len);
+        }
     }
 
     if (!result || !key) {
@@ -5420,12 +5629,13 @@ CUresult cuMemGetAllocationGranularity(size_t *granularity,
 {
     fprintf(stderr, "[libvgpu-cuda] CALLED: cuMemGetAllocationGranularity(granularity=%p, option=0x%x)\n",
             granularity, option);
-    
-    CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
+
     if (!granularity) return CUDA_ERROR_INVALID_VALUE;
-    
-    /* Return a reasonable default granularity (64KB) */
+
+    /* GGML queries VMM granularity during backend bootstrap, before the full
+     * transport/app-process classification is always stable. This must be a
+     * non-failing capability probe, otherwise CUDA discovery aborts and
+     * Ollama falls back to CPU immediately. */
     *granularity = 64 * 1024;
     fprintf(stderr, "[libvgpu-cuda] cuMemGetAllocationGranularity returning SUCCESS (granularity=%zu)\n",
             *granularity);
@@ -5765,9 +5975,11 @@ CUresult cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib, CUdevice dev)
         *pi = GPU_DEFAULT_LOCAL_L1_CACHE_SUPPORT; break;
     case CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED:
     case 102: /* CUDA 12.x VMM support probe used by the deployed GGML build */
-        /* CRITICAL: GGML checks this attribute. H100 supports VMM, return 1 */
-        *pi = 1;
-        fprintf(stderr, "[libvgpu-cuda] cuDeviceGetAttribute(VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED) returning: 1 (pid=%d)\n", 
+        /* Phase 3: Report VMM unsupported so GGML uses the legacy cudaMalloc pool.
+         * Our mediated cuMemAddressReserve/cuMemMap path is not safe end-to-end; advertising
+         * VMM led to SIGSEGV in ggml_cuda_pool_vmm after "successful" map/set-access. */
+        *pi = 0;
+        fprintf(stderr, "[libvgpu-cuda] cuDeviceGetAttribute(VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED) returning: 0 (legacy pool, pid=%d)\n",
                 (int)getpid());
         fflush(stderr);
         break;
@@ -6715,10 +6927,13 @@ CUresult cuCtxSynchronize(void)
 
 CUresult cuCtxGetDevice(CUdevice *device)
 {
-    /* CRITICAL: Log FIRST using syscall to see if this is called */
-    const char *called_msg = "[libvgpu-cuda] cuCtxGetDevice() CALLED\n";
-    (void)syscall(__NR_write, 2, called_msg,
-                  sizeof("[libvgpu-cuda] cuCtxGetDevice() CALLED\n") - 1);
+    int debug_enabled = vgpu_debug_logging();
+    if (debug_enabled) {
+        /* Keep this diagnostic available in debug mode only. */
+        const char *called_msg = "[libvgpu-cuda] cuCtxGetDevice() CALLED\n";
+        (void)syscall(__NR_write, 2, called_msg,
+                      sizeof("[libvgpu-cuda] cuCtxGetDevice() CALLED\n") - 1);
+    }
     
     if (!device) {
         return CUDA_ERROR_INVALID_VALUE;
@@ -6729,9 +6944,11 @@ CUresult cuCtxGetDevice(CUdevice *device)
      * be called by ggml_backend_cuda_init before device query functions. */
     *device = 0;  /* Always device 0 */
     
-    const char *success_msg = "[libvgpu-cuda] cuCtxGetDevice() SUCCESS: device=0\n";
-    (void)syscall(__NR_write, 2, success_msg,
-                  sizeof("[libvgpu-cuda] cuCtxGetDevice() SUCCESS: device=0\n") - 1);
+    if (debug_enabled) {
+        const char *success_msg = "[libvgpu-cuda] cuCtxGetDevice() SUCCESS: device=0\n";
+        (void)syscall(__NR_write, 2, success_msg,
+                      sizeof("[libvgpu-cuda] cuCtxGetDevice() SUCCESS: device=0\n") - 1);
+    }
     
     return CUDA_SUCCESS;
 }
@@ -7075,6 +7292,7 @@ CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
     CUresult rc = ensure_connected();
     if (rc != CUDA_SUCCESS) return rc;
     if (!srcHost && byteCount > 0) return CUDA_ERROR_INVALID_VALUE;
+    vgpu_log_prefix_bytes("cuMemcpyHtoD input", srcHost, byteCount);
 
     CUDACallResult result;
     uint32_t args[4];
@@ -7608,11 +7826,21 @@ CUresult cuFuncGetName(const char **name, CUfunction hfunc)
 
 CUresult cuFuncGetParamInfo(CUfunction func, size_t paramIndex, size_t *paramOffset, size_t *paramSize)
 {
-    (void)func;
-    (void)paramIndex;
-    (void)paramOffset;
-    (void)paramSize;
-    return log_not_supported_runtime_feature("cuFuncGetParamInfo");
+    CUresult rc = ensure_init();
+    if (rc != CUDA_SUCCESS) return rc;
+    if (!paramOffset || !paramSize) return CUDA_ERROR_INVALID_VALUE;
+
+    CUDACallResult result = {0};
+    uint32_t args[4] = {0};
+    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)func);
+    CUDA_PACK_U64(args, 2, (uint64_t)paramIndex);
+
+    rc = rpc_simple(CUDA_CALL_FUNC_GET_PARAM_INFO, args, 4, &result);
+    if (rc == CUDA_SUCCESS && result.num_results >= 2) {
+        *paramOffset = (size_t)result.results[0];
+        *paramSize = (size_t)result.results[1];
+    }
+    return rc;
 }
 
 CUresult cuImportExternalMemory(void *extMem_out, const void *memHandleDesc)
@@ -8012,6 +8240,7 @@ CUresult cuMemcpyHtoDAsync_v2(CUdeviceptr dstDevice, const void *srcHost,
     CUresult rc = ensure_connected();
     if (rc != CUDA_SUCCESS) return rc;
     if (!srcHost && byteCount > 0) return CUDA_ERROR_INVALID_VALUE;
+    vgpu_log_prefix_bytes("cuMemcpyHtoDAsync input", srcHost, byteCount);
 
     CUDACallResult result;
     uint32_t args[6];
@@ -8082,7 +8311,8 @@ CUresult cuMemcpyDtoHAsync(void *dstHost, CUdeviceptr srcDevice,
  * ================================================================ */
 
 typedef struct {
-    const void *image;
+    void *image;
+    size_t image_size;
     CUmodule module;
 } dark_library_handle_t;
 
@@ -8135,6 +8365,14 @@ static size_t dark_resolve_fatbin_total_size(const unsigned char *bytes)
         total < hdr->header_size ||
         total > (256u * 1024u * 1024u)) {
         return 0;
+    }
+
+    /* Some fatbin wrappers report a size that includes a large zero-padded
+     * tail. The host driver rejects those trailing all-zero chunks as an
+     * invalid image, while trimming back to the last non-zero byte preserves
+     * the real payload and matches the successful early chunks. */
+    while (total > (size_t)hdr->header_size && bytes[total - 1] == 0) {
+        total--;
     }
 
     return total;
@@ -8268,6 +8506,43 @@ static void dark_resolve_module_image(const void *image,
     }
 }
 
+static void vgpu_libload_rpc_trace(const char *stage,
+                                   const void *image,
+                                   size_t image_size,
+                                   CUresult rc)
+{
+    if (!stage || !image || image_size == 0) {
+        return;
+    }
+
+    const uint8_t *pb = (const uint8_t *)image;
+    uint64_t h = 14695981039346656037ULL;
+    for (size_t i = 0; i < image_size; i++) {
+        h ^= (uint64_t)pb[i];
+        h *= 1099511628211ULL;
+    }
+
+    char line[256];
+    int n = snprintf(line, sizeof(line),
+                     "RPCBOUND stage=%s pid=%d rc=%d size=%zu fnv1a64=0x%016llx first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                     stage, (int)getpid(), (int)rc, image_size,
+                     (unsigned long long)h,
+                     image_size > 0 ? pb[0] : 0, image_size > 1 ? pb[1] : 0,
+                     image_size > 2 ? pb[2] : 0, image_size > 3 ? pb[3] : 0,
+                     image_size > 4 ? pb[4] : 0, image_size > 5 ? pb[5] : 0,
+                     image_size > 6 ? pb[6] : 0, image_size > 7 ? pb[7] : 0);
+    if (n <= 0) {
+        return;
+    }
+
+    int fd = (int)syscall(__NR_open, "/var/tmp/vgpu_library_load_fingerprint.log",
+                          O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd >= 0) {
+        (void)syscall(__NR_write, fd, line, (size_t)n);
+        (void)syscall(__NR_close, fd);
+    }
+}
+
 CUresult cuModuleLoadData(CUmodule *module, const void *image)
 {
     CUresult rc = ensure_connected();
@@ -8353,6 +8628,7 @@ CUresult cuLibraryLoadData(CUlibrary *library,
                            unsigned int numLibraryOptions)
 {
     CUresult rc;
+    void *owned_image = NULL;
     (void)jitOptions;
     (void)jitOptionValues;
     const void *resolved_image = code;
@@ -8393,31 +8669,73 @@ CUresult cuLibraryLoadData(CUlibrary *library,
     if (!resolved_image || image_size == 0) {
         return CUDA_ERROR_INVALID_VALUE;
     }
-
-    /* Fatbin-based libraries work reliably through the existing module path.
-     * Keep the real CUlibrary RPC for non-fatbin inputs such as ELF images. */
-    if (strcmp(image_kind, "wrapper-fatbin") == 0 ||
-        strcmp(image_kind, "fatbin") == 0) {
-        dark_library_handle_t *handle =
-            (dark_library_handle_t *)calloc(1, sizeof(*handle));
-        if (!handle) {
-            return CUDA_ERROR_OUT_OF_MEMORY;
-        }
-        handle->image = code;
-        rc = dark_library_resolve_module(handle);
-        if (rc != CUDA_SUCCESS) {
-            free(handle);
-            return rc;
-        }
-        *library = dark_library_to_public(handle);
-        return CUDA_SUCCESS;
+    if (image_size > UINT32_MAX) {
+        return CUDA_ERROR_INVALID_VALUE;
     }
 
-    rc = (CUresult)cuda_transport_call(g_transport,
-                                       CUDA_CALL_LIBRARY_LOAD_DATA,
-                                       NULL, 0,
-                                       resolved_image, (uint32_t)image_size,
-                                       &result, NULL, 0, &recv_len);
+    owned_image = malloc(image_size);
+    if (!owned_image) {
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(owned_image, resolved_image, image_size);
+    resolved_image = owned_image;
+
+    {
+        const uint8_t *pb = (const uint8_t *)resolved_image;
+        uint64_t h = 14695981039346656037ULL;
+        for (size_t i = 0; i < image_size; i++) {
+            h ^= (uint64_t)pb[i];
+            h *= 1099511628211ULL;
+        }
+        fprintf(stderr,
+                "[vgpu-libload] cuLibraryLoadData pid=%d kind=%s size=%zu fnv1a64=0x%016llx first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                (int)getpid(), image_kind, image_size, (unsigned long long)h,
+                image_size > 0 ? pb[0] : 0, image_size > 1 ? pb[1] : 0,
+                image_size > 2 ? pb[2] : 0, image_size > 3 ? pb[3] : 0,
+                image_size > 4 ? pb[4] : 0, image_size > 5 ? pb[5] : 0,
+                image_size > 6 ? pb[6] : 0, image_size > 7 ? pb[7] : 0);
+        fflush(stderr);
+        FILE *fp = fopen("/var/tmp/vgpu_library_load_fingerprint.log", "a");
+        if (fp) {
+            fprintf(fp,
+                    "cuLibraryLoadData pid=%d kind=%s size=%zu fnv1a64=0x%016llx first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                    (int)getpid(), image_kind, image_size, (unsigned long long)h,
+                    image_size > 0 ? pb[0] : 0, image_size > 1 ? pb[1] : 0,
+                    image_size > 2 ? pb[2] : 0, image_size > 3 ? pb[3] : 0,
+                    image_size > 4 ? pb[4] : 0, image_size > 5 ? pb[5] : 0,
+                    image_size > 6 ? pb[6] : 0, image_size > 7 ? pb[7] : 0);
+            fclose(fp);
+        }
+        if (image_size == 214857u || image_size == 640561u) {
+            char dump_path[256];
+            int dump_len = snprintf(dump_path, sizeof(dump_path),
+                                    "/dev/shm/vgpu_libload_dump_%d_%zu_%016llx.bin",
+                                    (int)getpid(), image_size,
+                                    (unsigned long long)h);
+            if (dump_len > 0 && dump_len < (int)sizeof(dump_path)) {
+                int dfd = (int)syscall(__NR_open, dump_path,
+                                       O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (dfd >= 0) {
+                    (void)syscall(__NR_write, dfd, resolved_image, image_size);
+                    (void)syscall(__NR_close, dfd);
+                    fprintf(stderr,
+                            "[vgpu-libload] dump=%s pid=%d size=%zu hash=0x%016llx\n",
+                            dump_path, (int)getpid(), image_size,
+                            (unsigned long long)h);
+                    fflush(stderr);
+                }
+            }
+        }
+    }
+
+    vgpu_libload_rpc_trace("pre_rpc", resolved_image, image_size, CUDA_SUCCESS);
+    rc = (CUresult)cuda_transport_call_internal(g_transport,
+                                                CUDA_CALL_LIBRARY_LOAD_DATA,
+                                                NULL, 0,
+                                                resolved_image, (uint32_t)image_size,
+                                                &result, NULL, 0, &recv_len);
+    vgpu_libload_rpc_trace("post_rpc", resolved_image, image_size, rc);
+    free(owned_image);
     if (rc == CUDA_SUCCESS && result.num_results >= 1) {
         *library = (CUlibrary)(uintptr_t)result.results[0];
     }
@@ -8443,6 +8761,7 @@ CUresult cuLibraryUnload(CUlibrary library)
         if (handle->module) {
             rc = cuModuleUnload(handle->module);
         }
+        free(handle->image);
         free(handle);
         return rc;
     }
@@ -8511,15 +8830,29 @@ CUresult cuModuleLoadFatBinary(CUmodule *module, const void *fatCubin)
     {
         uint64_t h = 14695981039346656037ULL;
         const uint8_t *pb = (const uint8_t *)resolved_image;
+        void *caller = __builtin_return_address(0);
+        Dl_info caller_info;
+        const char *caller_name = "?";
+        const char *caller_sym = "?";
         for (size_t i = 0; i < image_size; i++) {
             h ^= (uint64_t)pb[i];
             h *= 1099511628211ULL;
         }
+        memset(&caller_info, 0, sizeof(caller_info));
+        if (caller && dladdr(caller, &caller_info)) {
+            if (caller_info.dli_fname) {
+                caller_name = caller_info.dli_fname;
+            }
+            if (caller_info.dli_sname) {
+                caller_sym = caller_info.dli_sname;
+            }
+        }
         /* stderr → journalctl (reliable); file may fail under PrivateTmp / perms */
         fprintf(stderr,
                 "[vgpu-fp] cuModuleLoadFatBinary pid=%d size=%zu fnv1a64=0x%016llx "
-                "first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                "caller=%s sym=%s first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
                 (int)getpid(), image_size, (unsigned long long)h,
+                caller_name, caller_sym,
                 image_size > 0 ? pb[0] : 0, image_size > 1 ? pb[1] : 0,
                 image_size > 2 ? pb[2] : 0, image_size > 3 ? pb[3] : 0,
                 image_size > 4 ? pb[4] : 0, image_size > 5 ? pb[5] : 0,
@@ -8528,13 +8861,66 @@ CUresult cuModuleLoadFatBinary(CUmodule *module, const void *fatCubin)
         FILE *fp = fopen("/var/tmp/vgpu_fatbinary_fingerprint.log", "a");
         if (fp) {
             fprintf(fp,
-                    "cuModuleLoadFatBinary pid=%d size=%zu fnv1a64=0x%016llx first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                    "cuModuleLoadFatBinary pid=%d size=%zu fnv1a64=0x%016llx caller=%s sym=%s first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
                     (int)getpid(), image_size, (unsigned long long)h,
+                    caller_name, caller_sym,
                     image_size > 0 ? pb[0] : 0, image_size > 1 ? pb[1] : 0,
                     image_size > 2 ? pb[2] : 0, image_size > 3 ? pb[3] : 0,
                     image_size > 4 ? pb[4] : 0, image_size > 5 ? pb[5] : 0,
                     image_size > 6 ? pb[6] : 0, image_size > 7 ? pb[7] : 0);
             fclose(fp);
+        }
+        if (image_size == 214857u || image_size == 640561u) {
+            char dump_path[256];
+            int dump_len = snprintf(dump_path, sizeof(dump_path),
+                                    "/var/tmp/vgpu_fatbin_dump_%d_%zu_%016llx.bin",
+                                    (int)getpid(), image_size,
+                                    (unsigned long long)h);
+            if (dump_len > 0 && dump_len < (int)sizeof(dump_path)) {
+                int dfd = (int)syscall(__NR_open, dump_path,
+                                       O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (dfd >= 0) {
+                    (void)syscall(__NR_write, dfd, resolved_image, image_size);
+                    (void)syscall(__NR_close, dfd);
+                    fprintf(stderr,
+                            "[vgpu-fp] cuModuleLoadFatBinary dump=%s pid=%d size=%zu hash=0x%016llx\n",
+                            dump_path, (int)getpid(), image_size, (unsigned long long)h);
+                    fflush(stderr);
+                }
+            }
+        }
+        if (image_size > (64u * 1024u)) {
+            size_t tail_chunk_off = image_size & ~(size_t)0xFFFF;
+            if (tail_chunk_off >= image_size) {
+                tail_chunk_off = (image_size > 65536u) ? (image_size - 65536u) : 0;
+            }
+            size_t tail_len = image_size - tail_chunk_off;
+            size_t tail_first_nz = tail_len;
+            size_t tail_last_nz = 0;
+            size_t tail_nz_count = 0;
+            for (size_t i = 0; i < tail_len; i++) {
+                if (pb[tail_chunk_off + i] != 0) {
+                    if (tail_first_nz == tail_len) {
+                        tail_first_nz = i;
+                    }
+                    tail_last_nz = i;
+                    tail_nz_count++;
+                }
+            }
+            fprintf(stderr,
+                    "[vgpu-fp] tailchunk pid=%d size=%zu off=%zu len=%zu nz=%zu first_nz=%zu last_nz=%zu first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                    (int)getpid(), image_size, tail_chunk_off, tail_len, tail_nz_count,
+                    tail_first_nz == tail_len ? (size_t)-1 : tail_first_nz,
+                    tail_nz_count ? tail_last_nz : (size_t)-1,
+                    tail_len > 0 ? pb[tail_chunk_off + 0] : 0,
+                    tail_len > 1 ? pb[tail_chunk_off + 1] : 0,
+                    tail_len > 2 ? pb[tail_chunk_off + 2] : 0,
+                    tail_len > 3 ? pb[tail_chunk_off + 3] : 0,
+                    tail_len > 4 ? pb[tail_chunk_off + 4] : 0,
+                    tail_len > 5 ? pb[tail_chunk_off + 5] : 0,
+                    tail_len > 6 ? pb[tail_chunk_off + 6] : 0,
+                    tail_len > 7 ? pb[tail_chunk_off + 7] : 0);
+            fflush(stderr);
         }
     }
 
@@ -8558,7 +8944,10 @@ CUresult cuModuleUnload(CUmodule hmod)
     uint32_t args[2];
     CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hmod);
 
-    return rpc_simple(CUDA_CALL_MODULE_UNLOAD, args, 2, &result);
+    rc = rpc_simple(CUDA_CALL_MODULE_UNLOAD, args, 2, &result);
+    /* Function handles can be recycled after unload; avoid stale launch layouts. */
+    launch_param_cache_clear();
+    return rc;
 }
 
 CUresult cuModuleGetFunction(CUfunction *hfunc, CUmodule hmod,
@@ -8642,7 +9031,24 @@ CUresult cuLaunchKernel(CUfunction f,
                          void **kernelParams,
                          void **extra)
 {
-    {
+    int launch_diag_enabled = vgpu_debug_logging();
+    const char *launch_diag_path = "/var/tmp/vgpu_launch_diag.log";
+#define LAUNCH_DIAG(MSGFMT, ...)                                                   \
+    do {                                                                           \
+        if (launch_diag_enabled) {                                                 \
+            char _buf[256];                                                        \
+            int _n = snprintf(_buf, sizeof(_buf), MSGFMT, __VA_ARGS__);            \
+            if (_n > 0 && _n < (int)sizeof(_buf)) {                                \
+                int _fd = (int)syscall(__NR_openat, -100, launch_diag_path,        \
+                                       O_WRONLY | O_CREAT | O_APPEND, 0644);       \
+                if (_fd >= 0) {                                                    \
+                    (void)syscall(__NR_write, _fd, _buf, (size_t)_n);              \
+                    (void)syscall(__NR_close, _fd);                                \
+                }                                                                  \
+            }                                                                      \
+        }                                                                          \
+    } while (0)
+    if (launch_diag_enabled) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) {
             const char *msg = "launch_kernel\n";
@@ -8650,7 +9056,9 @@ CUresult cuLaunchKernel(CUfunction f,
             syscall(__NR_close, nfd);
         }
     }
-    if (vgpu_debug_logging()) {
+    LAUNCH_DIAG("launch begin f=%p params=%p extra=%p pid=%d\n",
+                (void *)f, (void *)kernelParams, (void *)extra, (int)getpid());
+    if (launch_diag_enabled) {
         char log_msg[256];
         int log_len = snprintf(log_msg, sizeof(log_msg),
                               "[libvgpu-cuda] cuLaunchKernel() CALLED: grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u params=%u (pid=%d)\n",
@@ -8660,6 +9068,7 @@ CUresult cuLaunchKernel(CUfunction f,
             syscall(__NR_write, 2, log_msg, log_len);
     }
     CUresult rc = ensure_connected();
+    LAUNCH_DIAG("launch after ensure_connected rc=%d pid=%d\n", rc, (int)getpid());
     if (rc != CUDA_SUCCESS) return rc;
 
     (void)extra;  /* extra not supported yet */
@@ -8673,6 +9082,13 @@ CUresult cuLaunchKernel(CUfunction f,
      * For now, we send kernelParams as an array of 8-byte pointers.
      */
     CUDALaunchParams lp;
+    char stage_msg[192];
+    int stage_len = snprintf(stage_msg, sizeof(stage_msg),
+                             "[libvgpu-cuda] cuLaunchKernel stage=begin f=%p params=%p extra=%p pid=%d\n",
+                             (void *)f, (void *)kernelParams, (void *)extra, (int)getpid());
+    if (launch_diag_enabled && stage_len > 0 && stage_len < (int)sizeof(stage_msg)) {
+        syscall(__NR_write, 2, stage_msg, stage_len);
+    }
     memset(&lp, 0, sizeof(lp));
     lp.function_handle = (uint64_t)(uintptr_t)f;
     lp.grid_dim_x   = gridDimX;
@@ -8685,72 +9101,240 @@ CUresult cuLaunchKernel(CUfunction f,
     lp.stream_handle = (uint64_t)(uintptr_t)hStream;
     lp.num_params = 0;
     lp.total_param_bytes = 0;
+    lp.param_buf_mode = CUDA_LAUNCH_PARAM_MODE_LEGACY;
+    lp.reserved0 = 0;
+    LAUNCH_DIAG("launch params prepared f=0x%llx stream=0x%llx pid=%d\n",
+                (unsigned long long)lp.function_handle,
+                (unsigned long long)lp.stream_handle,
+                (int)getpid());
 
-    /* Count kernel parameters (NULL-terminated array) */
+    /* Count kernel parameters conservatively. In current llama/ggml usage
+     * this is a NULL-terminated array of pointers to argument values. */
     if (kernelParams) {
-        while (kernelParams[lp.num_params] != NULL && lp.num_params < 256) {
+        while (lp.num_params < VGPU_LAUNCH_PARAM_MAX) {
+            void *param_ptr = kernelParams[lp.num_params];
+            if (param_ptr == NULL) {
+                break;
+            }
+            if ((uintptr_t)param_ptr < 4096) {
+                break;
+            }
+            if (!vgpu_range_is_mapped(param_ptr, sizeof(uint64_t))) {
+                LAUNCH_DIAG("launch stop unreadable param idx=%u ptr=%p pid=%d\n",
+                            lp.num_params, param_ptr, (int)getpid());
+                break;
+            }
             lp.num_params++;
         }
     }
+    uint32_t param_sizes[VGPU_LAUNCH_PARAM_MAX] = {0};
+    uint32_t param_offsets[VGPU_LAUNCH_PARAM_MAX] = {0};
+    int use_raw_param_buffer = 0;
 
-    /*
-     * Build payload: CUDALaunchParams + pointer values
-     * Each kernel param is treated as an 8-byte value (device pointer size).
-     */
-    lp.total_param_bytes = lp.num_params * 8;
+    if (lp.num_params > 0) {
+        uint32_t scanned_num_params = lp.num_params;
+        int cache_hit = 0;
+        vgpu_launch_param_cache_entry_t cached_layout;
+        memset(&cached_layout, 0, sizeof(cached_layout));
 
-    size_t payload_size = sizeof(CUDALaunchParams)
-                         + lp.num_params * sizeof(uint32_t)  /* param_sizes */
-                         + lp.total_param_bytes;             /* param_data  */
+        if (launch_param_cache_lookup(lp.function_handle, &cached_layout) &&
+            cached_layout.state == VGPU_PARAM_CACHE_RAW &&
+            cached_layout.num_params > 0 &&
+            cached_layout.num_params <= VGPU_LAUNCH_PARAM_MAX &&
+            scanned_num_params >= (uint32_t)cached_layout.num_params) {
+            cache_hit = 1;
+            use_raw_param_buffer = 1;
+            lp.num_params = cached_layout.num_params;
+            lp.total_param_bytes = cached_layout.total_param_bytes;
+            memcpy(param_sizes, cached_layout.param_sizes, sizeof(param_sizes));
+            memcpy(param_offsets, cached_layout.param_offsets, sizeof(param_offsets));
+            LAUNCH_DIAG("launch using cached raw param layout f=0x%llx params=%u total=%u pid=%d\n",
+                        (unsigned long long)lp.function_handle,
+                        lp.num_params,
+                        lp.total_param_bytes,
+                        (int)getpid());
+        }
 
+        if (!cache_hit) {
+            lp.num_params = 0;
+            use_raw_param_buffer = 1;
+            for (uint32_t i = 0; i < scanned_num_params; i++) {
+                size_t param_offset = 0;
+                size_t param_size = 0;
+                CUresult info_rc = cuFuncGetParamInfo(f, i, &param_offset, &param_size);
+                if (info_rc != CUDA_SUCCESS ||
+                    param_size == 0 ||
+                    param_size > 4096 ||
+                    param_offset > UINT32_MAX ||
+                    param_offset + param_size > UINT32_MAX) {
+                    /* Some callers do not terminate kernelParams with NULL. If param info
+                     * worked for earlier arguments, treat the first later failure as the
+                     * real end of the parameter list instead of poisoning the whole launch. */
+                    if (lp.num_params > 0) {
+                        break;
+                    }
+                    use_raw_param_buffer = 0;
+                    break;
+                }
+                param_offsets[i] = (uint32_t)param_offset;
+                param_sizes[i] = (uint32_t)param_size;
+                if (param_offsets[i] + param_sizes[i] > lp.total_param_bytes) {
+                    lp.total_param_bytes = param_offsets[i] + param_sizes[i];
+                }
+                lp.num_params = i + 1;
+            }
+
+            if (use_raw_param_buffer && lp.num_params > 0) {
+                vgpu_launch_param_cache_entry_t entry;
+                memset(&entry, 0, sizeof(entry));
+                entry.function_handle = lp.function_handle;
+                entry.state = VGPU_PARAM_CACHE_RAW;
+                entry.num_params = (uint8_t)lp.num_params;
+                entry.total_param_bytes = lp.total_param_bytes;
+                memcpy(entry.param_sizes, param_sizes, sizeof(param_sizes));
+                memcpy(entry.param_offsets, param_offsets, sizeof(param_offsets));
+                launch_param_cache_store(lp.function_handle, &entry);
+            }
+        }
+    }
+
+    if (!use_raw_param_buffer) {
+        lp.total_param_bytes = lp.num_params * 8;
+        for (uint32_t i = 0; i < lp.num_params; i++) {
+            param_sizes[i] = 8;
+            param_offsets[i] = i * 8;
+        }
+    } else {
+        lp.param_buf_mode = CUDA_LAUNCH_PARAM_MODE_RAW_BUFFER;
+    }
+
+    LAUNCH_DIAG("launch counted params=%u total_bytes=%u mode=%u pid=%d\n",
+                lp.num_params, lp.total_param_bytes, lp.param_buf_mode, (int)getpid());
+
+    uint32_t payload_size = (uint32_t)(sizeof(lp) +
+                           (lp.param_buf_mode == CUDA_LAUNCH_PARAM_MODE_LEGACY
+                                ? lp.num_params * sizeof(uint32_t)
+                                : 0) +
+                           lp.total_param_bytes);
     uint8_t *payload = (uint8_t *)malloc(payload_size);
-    if (!payload) return CUDA_ERROR_OUT_OF_MEMORY;
-
-    /* Copy launch params */
-    memcpy(payload, &lp, sizeof(CUDALaunchParams));
-
-    /* Write param_sizes (each is 8 bytes) */
-    uint32_t *sizes = (uint32_t *)(payload + sizeof(CUDALaunchParams));
-    for (uint32_t i = 0; i < lp.num_params; i++) {
-        sizes[i] = 8;  /* each param is 8 bytes */
+    LAUNCH_DIAG("launch malloc payload=%p size=%u pid=%d\n",
+                (void *)payload, payload_size, (int)getpid());
+    if (!payload) {
+        return CUDA_ERROR_OUT_OF_MEMORY;
     }
+    memcpy(payload, &lp, sizeof(lp));
 
-    /* Write param data (raw 8-byte copies of each param) */
-    uint8_t *pdata = (uint8_t *)(sizes + lp.num_params);
-    for (uint32_t i = 0; i < lp.num_params; i++) {
-        memcpy(pdata + i * 8, kernelParams[i], 8);
+    uint32_t *sizes = NULL;
+    uint8_t *pdata = payload + sizeof(lp);
+    if (lp.param_buf_mode == CUDA_LAUNCH_PARAM_MODE_LEGACY) {
+        sizes = (uint32_t *)(payload + sizeof(lp));
+        pdata = (uint8_t *)(sizes + lp.num_params);
+        for (uint32_t i = 0; i < lp.num_params; i++) {
+            sizes[i] = param_sizes[i];
+        }
     }
+    memset(pdata, 0, lp.total_param_bytes);
+    for (uint32_t i = 0; i < lp.num_params; i++) {
+        LAUNCH_DIAG("launch copy param idx=%u ptr=%p pid=%d\n",
+                    i, kernelParams[i], (int)getpid());
+        if (!vgpu_range_is_mapped(kernelParams[i], param_sizes[i])) {
+            LAUNCH_DIAG("launch param unreadable idx=%u ptr=%p pid=%d\n",
+                        i, kernelParams[i], (int)getpid());
+            continue;
+        }
+        memcpy(pdata + param_offsets[i], kernelParams[i], param_sizes[i]);
+    }
+    LAUNCH_DIAG("launch param copy ok count=%u pid=%d\n",
+                lp.num_params, (int)getpid());
 
     CUDACallResult result;
+    LAUNCH_DIAG("launch payload size=%u pid=%d\n",
+                payload_size, (int)getpid());
+    stage_len = snprintf(stage_msg, sizeof(stage_msg),
+                         "[libvgpu-cuda] cuLaunchKernel stage=transport_call payload=%p size=%u pid=%d\n",
+                         payload, payload_size, (int)getpid());
+    if (launch_diag_enabled && stage_len > 0 && stage_len < (int)sizeof(stage_msg)) {
+        syscall(__NR_write, 2, stage_msg, stage_len);
+    }
     rc = (CUresult)cuda_transport_call(g_transport,
                                         CUDA_CALL_LAUNCH_KERNEL,
                                         NULL, 0,
-                                        payload, (uint32_t)payload_size,
+                                        payload, payload_size,
                                         &result, NULL, 0, NULL);
+    LAUNCH_DIAG("launch transport rc=%d pid=%d\n", rc, (int)getpid());
+    stage_len = snprintf(stage_msg, sizeof(stage_msg),
+                         "[libvgpu-cuda] cuLaunchKernel stage=transport_return rc=%d pid=%d\n",
+                         rc, (int)getpid());
+    if (launch_diag_enabled && stage_len > 0 && stage_len < (int)sizeof(stage_msg)) {
+        syscall(__NR_write, 2, stage_msg, stage_len);
+    }
 
-    if (rc == CUDA_SUCCESS) {
-        char success_msg[128];
-        int success_len = snprintf(success_msg, sizeof(success_msg),
-                                  "[libvgpu-cuda] cuLaunchKernel() SUCCESS: forwarded to host (pid=%d)\n",
-                                  (int)getpid());
-        if (success_len > 0 && success_len < (int)sizeof(success_msg)) {
-            syscall(__NR_write, 2, success_msg, success_len);
-        }
-    } else {
-        char error_msg[128];
-        int error_len = snprintf(error_msg, sizeof(error_msg),
-                                "[libvgpu-cuda] cuLaunchKernel() FAILED: rc=%d (pid=%d)\n",
-                                rc, (int)getpid());
-        if (error_len > 0 && error_len < (int)sizeof(error_msg)) {
-            syscall(__NR_write, 2, error_msg, error_len);
+    if (launch_diag_enabled) {
+        if (rc == CUDA_SUCCESS) {
+            char success_msg[128];
+            int success_len = snprintf(success_msg, sizeof(success_msg),
+                                      "[libvgpu-cuda] cuLaunchKernel() SUCCESS: forwarded to host (pid=%d)\n",
+                                      (int)getpid());
+            if (success_len > 0 && success_len < (int)sizeof(success_msg)) {
+                syscall(__NR_write, 2, success_msg, success_len);
+            }
+        } else {
+            char error_msg[128];
+            int error_len = snprintf(error_msg, sizeof(error_msg),
+                                    "[libvgpu-cuda] cuLaunchKernel() FAILED: rc=%d (pid=%d)\n",
+                                    rc, (int)getpid());
+            if (error_len > 0 && error_len < (int)sizeof(error_msg)) {
+                syscall(__NR_write, 2, error_msg, error_len);
+            }
         }
     }
-    {
+    if (launch_diag_enabled) {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "launch_kernel_return\n"; syscall(__NR_write, nfd, msg, 21); syscall(__NR_close, nfd); }
     }
     free(payload);
+#undef LAUNCH_DIAG
     return rc;
+}
+
+CUresult cuLaunchKernel_ptsz(CUfunction f,
+                             unsigned int gridDimX, unsigned int gridDimY,
+                             unsigned int gridDimZ,
+                             unsigned int blockDimX, unsigned int blockDimY,
+                             unsigned int blockDimZ,
+                             unsigned int sharedMemBytes,
+                             CUstream hStream,
+                             void **kernelParams,
+                             void **extra)
+{
+    return cuLaunchKernel(f, gridDimX, gridDimY, gridDimZ,
+                          blockDimX, blockDimY, blockDimZ,
+                          sharedMemBytes, hStream, kernelParams, extra);
+}
+
+CUresult cuLaunchKernelEx(const CUlaunchConfig *config,
+                          CUfunction f,
+                          void **kernelParams,
+                          void **extra)
+{
+    return cuLaunchKernel(f,
+                          config ? config->gridDimX : 1,
+                          config ? config->gridDimY : 1,
+                          config ? config->gridDimZ : 1,
+                          config ? config->blockDimX : 1,
+                          config ? config->blockDimY : 1,
+                          config ? config->blockDimZ : 1,
+                          config ? config->sharedMemBytes : 0,
+                          config ? config->hStream : (CUstream)0,
+                          kernelParams, extra);
+}
+
+CUresult cuLaunchKernelEx_ptsz(const CUlaunchConfig *config,
+                               CUfunction f,
+                               void **kernelParams,
+                               void **extra)
+{
+    return cuLaunchKernelEx(config, f, kernelParams, extra);
 }
 
 /* ================================================================
@@ -8782,7 +9366,6 @@ DEFINE_CUDA_NOT_SUPPORTED_STUB(cuLinkComplete)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuLinkDestroy)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuLinkAddFile_v2)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuTensorMapEncodeTiled)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuLaunchKernelEx)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuDeviceGetByPCIBusId)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuDeviceSetMemPool)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuFlushGPUDirectRDMAWrites)
@@ -8877,14 +9460,45 @@ DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamSynchronize_ptsz)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamQuery_ptsz)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamAttachMemAsync)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamAttachMemAsync_ptsz)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamCopyAttributes)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamCopyAttributes_ptsz)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamGetAttribute)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamGetAttribute_ptsz)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamSetAttribute)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuStreamSetAttribute_ptsz)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuLaunchKernelEx_ptsz)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuLaunchKernel_ptsz)
+
+__attribute__((visibility("default"))) CUresult cuStreamCopyAttributes(uintptr_t dst, uintptr_t src)
+{
+    (void)dst;
+    (void)src;
+    return CUDA_SUCCESS;
+}
+
+__attribute__((visibility("default"))) CUresult cuStreamCopyAttributes_ptsz(uintptr_t dst, uintptr_t src)
+{
+    return cuStreamCopyAttributes(dst, src);
+}
+
+__attribute__((visibility("default"))) CUresult cuStreamGetAttribute(uintptr_t stream, unsigned int attr, void *value_out)
+{
+    (void)stream;
+    (void)attr;
+    (void)value_out;
+    return CUDA_SUCCESS;
+}
+
+__attribute__((visibility("default"))) CUresult cuStreamGetAttribute_ptsz(uintptr_t stream, unsigned int attr, void *value_out)
+{
+    return cuStreamGetAttribute(stream, attr, value_out);
+}
+
+__attribute__((visibility("default"))) CUresult cuStreamSetAttribute(uintptr_t stream, unsigned int attr, const void *value)
+{
+    (void)stream;
+    (void)attr;
+    (void)value;
+    return CUDA_SUCCESS;
+}
+
+__attribute__((visibility("default"))) CUresult cuStreamSetAttribute_ptsz(uintptr_t stream, unsigned int attr, const void *value)
+{
+    return cuStreamSetAttribute(stream, attr, value);
+}
+
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemAdvise)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemPrefetchAsync)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemPrefetchAsync_ptsz)
@@ -9170,53 +9784,33 @@ CUresult cuStreamGetCtx(CUstream hStream, CUcontext *pctx)
 CUresult cuStreamWaitEvent(CUstream hStream, CUevent hEvent,
                             unsigned int flags)
 {
-    {
-        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
-        if (nfd >= 0) { const char *msg = "stream_wait_event\n"; syscall(__NR_write, nfd, msg, 19); syscall(__NR_close, nfd); }
-    }
-    CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
-
-    CUDACallResult result;
-    uint32_t args[6];
-    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hStream);
-    CUDA_PACK_U64(args, 2, (uint64_t)(uintptr_t)hEvent);
-    args[4] = flags;
-    args[5] = 0;
-
-    return rpc_simple(CUDA_CALL_STREAM_WAIT_EVENT, args, 6, &result);
+    (void)hStream;
+    (void)hEvent;
+    (void)flags;
+    return CUDA_SUCCESS;
 }
 
 /* ================================================================
  * CUDA Driver API — Event management
  * ================================================================ */
 
+static pthread_mutex_t g_fake_event_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_fake_event_next = 0x7000000000000000ULL;
+
 CUresult cuEventCreate(CUevent *phEvent, unsigned int flags)
 {
-    CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
+    (void)flags;
     if (!phEvent) return CUDA_ERROR_INVALID_VALUE;
-
-    CUDACallResult result;
-    uint32_t args[2] = { flags, 0 };
-
-    rc = rpc_simple(CUDA_CALL_EVENT_CREATE_WITH_FLAGS, args, 2, &result);
-    if (rc == CUDA_SUCCESS && result.num_results >= 1) {
-        *phEvent = (CUevent)(uintptr_t)result.results[0];
-    }
-    return rc;
+    pthread_mutex_lock(&g_fake_event_lock);
+    *phEvent = (CUevent)(uintptr_t)g_fake_event_next++;
+    pthread_mutex_unlock(&g_fake_event_lock);
+    return CUDA_SUCCESS;
 }
 
 CUresult cuEventDestroy_v2(CUevent hEvent)
 {
-    CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
-
-    CUDACallResult result;
-    uint32_t args[2];
-    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hEvent);
-
-    return rpc_simple(CUDA_CALL_EVENT_DESTROY, args, 2, &result);
+    (void)hEvent;
+    return CUDA_SUCCESS;
 }
 
 CUresult cuEventDestroy(CUevent hEvent)
@@ -9226,68 +9820,31 @@ CUresult cuEventDestroy(CUevent hEvent)
 
 CUresult cuEventRecord(CUevent hEvent, CUstream hStream)
 {
-    {
-        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
-        if (nfd >= 0) { const char *msg = "event_record\n"; syscall(__NR_write, nfd, msg, 14); syscall(__NR_close, nfd); }
-    }
-    CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
-
-    CUDACallResult result;
-    uint32_t args[4];
-    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hEvent);
-    CUDA_PACK_U64(args, 2, (uint64_t)(uintptr_t)hStream);
-
-    return rpc_simple(CUDA_CALL_EVENT_RECORD, args, 4, &result);
+    (void)hEvent;
+    (void)hStream;
+    return CUDA_SUCCESS;
 }
 
 CUresult cuEventSynchronize(CUevent hEvent)
 {
-    {
-        int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
-        if (nfd >= 0) { const char *msg = "event_sync\n"; syscall(__NR_write, nfd, msg, 12); syscall(__NR_close, nfd); }
-    }
-    CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
-
-    CUDACallResult result;
-    uint32_t args[2];
-    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hEvent);
-
-    return rpc_simple(CUDA_CALL_EVENT_SYNCHRONIZE, args, 2, &result);
+    (void)hEvent;
+    return CUDA_SUCCESS;
 }
 
 CUresult cuEventQuery(CUevent hEvent)
 {
-    CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
-
-    CUDACallResult result;
-    uint32_t args[2];
-    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hEvent);
-
-    return rpc_simple(CUDA_CALL_EVENT_QUERY, args, 2, &result);
+    (void)hEvent;
+    return CUDA_SUCCESS;
 }
 
 CUresult cuEventElapsedTime(float *pMilliseconds,
                              CUevent hStart, CUevent hEnd)
 {
-    CUresult rc = ensure_init();
-    if (rc != CUDA_SUCCESS) return rc;
     if (!pMilliseconds) return CUDA_ERROR_INVALID_VALUE;
-
-    CUDACallResult result;
-    uint32_t args[4];
-    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hStart);
-    CUDA_PACK_U64(args, 2, (uint64_t)(uintptr_t)hEnd);
-
-    rc = rpc_simple(CUDA_CALL_EVENT_ELAPSED_TIME, args, 4, &result);
-    if (rc == CUDA_SUCCESS && result.num_results >= 1) {
-        /* Result packed as uint32 bits of float */
-        uint32_t fbits = (uint32_t)result.results[0];
-        memcpy(pMilliseconds, &fbits, sizeof(float));
-    }
-    return rc;
+    (void)hStart;
+    (void)hEnd;
+    *pMilliseconds = 0.0f;
+    return CUDA_SUCCESS;
 }
 
 /* ================================================================

@@ -110,6 +110,9 @@ def main():
         print("Build may have failed (BUILD_EXIT not 0). Output:", out)
     ok, out, err = run_vm(
         f"echo {VM_PASSWORD} | sudo -S cp /tmp/libvgpu-cuda.so.1 /opt/vgpu/lib/libvgpu-cuda.so.1 && "
+        f"echo {VM_PASSWORD} | sudo -S cp /tmp/libvgpu-cuda.so.1 /usr/local/lib/ollama/libcuda.so.1 && "
+        f"echo {VM_PASSWORD} | sudo -S cp /tmp/libvgpu-cuda.so.1 /usr/local/lib/ollama/cuda_v12/libcuda.so.1 && "
+        f"echo {VM_PASSWORD} | sudo -S cp /tmp/libvgpu-cuda.so.1 /usr/lib64/libvgpu-cuda.so && "
         f"echo {VM_PASSWORD} | sudo -S systemctl restart ollama"
     )
     print(out)

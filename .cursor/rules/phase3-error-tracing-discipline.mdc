@@ -1,0 +1,21 @@
+---
+description: Keep one active Phase 3 error and queue new findings as candidates
+alwaysApply: true
+---
+
+# Phase 3 Error Tracing Discipline
+
+- Keep exactly one **active error** at a time.
+- Any newly observed error must be recorded as a **candidate**, not promoted immediately.
+- Do not abandon the active error just because a new candidate appears.
+- Promote a candidate to active only when the current active error is:
+  - resolved with evidence,
+  - disproved as the current blocker, or
+  - proven to have been superseded by another error in the same causal chain.
+- Every Phase 3 status update must include:
+  - current active error,
+  - candidate list,
+  - evidence for the current step,
+  - why the active error remains active or why it was closed.
+- If a candidate fix accidentally resolves the active error, explicitly record that closure and the proof.
+- Do not run broad ad hoc tracing that mixes multiple blockers without preserving this queue discipline.

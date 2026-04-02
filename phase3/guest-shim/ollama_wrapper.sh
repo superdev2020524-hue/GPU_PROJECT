@@ -11,9 +11,16 @@ export LD_LIBRARY_PATH="/opt/vgpu/lib:/usr/local/lib/ollama/cuda_v12:/usr/local/
 export NVIDIA_VISIBLE_DEVICES=all
 export OLLAMA_LLM_LIBRARY=cuda_v12
 export OLLAMA_NUM_GPU=999
+export VGPU_SHMEM_MIN_SPAN_KB=64
 
 # Log wrapper execution
 echo "[ollama-wrapper] Starting Ollama with shim injection (pid=$$, LD_PRELOAD=$LD_PRELOAD)" >&2
 
-# Use the patched Phase3 binary (not /usr/local/bin/ollama → ollama.real chain).
-exec /usr/local/bin/ollama.bin.new serve "$@"
+# Prefer a patched/rename binary if present; otherwise the installed ollama build.
+for _ollama in /usr/local/bin/ollama.bin.new /usr/local/bin/ollama.bin /usr/local/bin/ollama; do
+    if [ -x "$_ollama" ]; then
+        exec "$_ollama" serve "$@"
+    fi
+done
+echo "[ollama-wrapper] FATAL: no ollama binary found in /usr/local/bin" >&2
+exit 127
