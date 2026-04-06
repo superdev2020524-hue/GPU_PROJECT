@@ -4189,9 +4189,10 @@ CUresult cuInit(unsigned int flags)
         }
     }
 
-    /* Eager best-effort transport bring-up for libraries that expect cuInit()
-     * to complete low-level driver readiness before any other API call. */
-    {
+    /* Keep cuInit() discovery lightweight by default.
+     * Full transport/context bring-up is deferred until the first real compute call.
+     * Set VGPU_CUINIT_EAGER_CONNECT=1 only for narrow compatibility testing. */
+    if (getenv("VGPU_CUINIT_EAGER_CONNECT") != NULL) {
         CUresult eager_rc = ensure_connected();
         if (eager_rc != CUDA_SUCCESS) {
             fprintf(stderr,
@@ -4215,6 +4216,10 @@ CUresult cuInit(unsigned int flags)
                 fflush(stderr);
             }
         }
+    } else {
+        fprintf(stderr,
+                "[libvgpu-cuda] cuInit() skipping eager ensure_connected; transport deferred until compute\n");
+        fflush(stderr);
     }
     return CUDA_SUCCESS;
 }
@@ -6529,6 +6534,24 @@ CUresult cuDevicePrimaryCtxRetain(CUcontext *pctx, CUdevice dev)
         log_ctx_state_snapshot("cuDevicePrimaryCtxRetain ensure_init failed", NULL, NULL,
                                rc, (int)dev, 0);
         return rc;
+    }
+
+    /* During init/discovery, stay transport-free and hand back the deferred
+     * dummy primary context immediately. This lets vendor libcudart complete
+     * its bootstrap probes without forcing BAR0/socket bring-up inside
+     * cudaGetDeviceCount()/discovery-time context seeding. */
+    if (g_in_init_phase) {
+        static CUcontext init_dummy_ctx = (CUcontext)(uintptr_t)0xDEADBEEF;
+        *pctx = init_dummy_ctx;
+        g_current_ctx = init_dummy_ctx;
+        g_global_ctx = init_dummy_ctx;
+        fprintf(stderr,
+                "[libvgpu-cuda] cuDevicePrimaryCtxRetain init-phase dummy context: pctx=%p\n",
+                *pctx);
+        fflush(stderr);
+        log_ctx_state_snapshot("cuDevicePrimaryCtxRetain init-phase dummy", NULL, *pctx,
+                               CUDA_SUCCESS, (int)dev, 0);
+        return CUDA_SUCCESS;
     }
 
     /* Try to connect and get real context, but if transport isn't ready yet,

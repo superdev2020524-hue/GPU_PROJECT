@@ -120,6 +120,9 @@ typedef struct VGPUStubState {
     char    *pool_id;             /* "A" or "B"                    */
     char    *priority;            /* "low", "medium", "high"       */
     uint32_t vm_id;               /* unique VM identifier          */
+    bool     authoritative_shmem_libload; /* prefer SHMEM over BAR1 fallback */
+    bool     probe_fresh_shmem_libload;   /* prove G2H freshness via GPA read */
+    bool     prefer_bar1_htod;           /* prefer BAR1 over SHMEM for HtoD */
 
     /* --- Socket to mediator ----------------------------------- */
     int      mediator_fd;         /* -1 when not connected         */
@@ -140,6 +143,80 @@ static int vgpu_stub_debug_logging(void)
         cached = (getenv("VGPU_STUB_DEBUG") != NULL) ? 1 : 0;
     }
     return cached;
+}
+
+static int vgpu_payload_has_nonzero_prefix(const uint8_t *p, uint32_t len,
+                                           uint32_t scan_limit);
+
+static int vgpu_stub_authoritative_shmem_libload(VGPUStubState *s)
+{
+    if (s && s->authoritative_shmem_libload) {
+        return 1;
+    }
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            const char *e = getenv("VGPU_STUB_AUTHORITATIVE_SHMEM_LIBLOAD");
+            cached = (e && e[0] && strcmp(e, "0") != 0) ? 1 : 0;
+        }
+        return cached;
+    }
+}
+
+static int vgpu_stub_prefer_bar1_htod(VGPUStubState *s)
+{
+    if (s && s->prefer_bar1_htod) {
+        return 1;
+    }
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            const char *e = getenv("VGPU_STUB_PREFER_BAR1_HTOD");
+            cached = (e && e[0] && strcmp(e, "0") != 0) ? 1 : 0;
+        }
+        return cached;
+    }
+}
+
+static int vgpu_stub_probe_fresh_g2h_nonzero(VGPUStubState *s,
+                                             uint32_t data_len,
+                                             uint8_t *first_byte_out)
+{
+    uint8_t probe[512];
+    uint32_t probe_len = data_len;
+    MemTxResult tx = MEMTX_OK;
+    int probe_nz;
+
+    if (first_byte_out) {
+        *first_byte_out = 0;
+    }
+    if (!s || !s->shmem_active || !s->shmem_gpa ||
+        data_len == 0 || data_len > (uint32_t)(s->shmem_size / 2)) {
+        return 0;
+    }
+
+    if (probe_len > (uint32_t)sizeof(probe)) {
+        probe_len = (uint32_t)sizeof(probe);
+    }
+    memset(probe, 0, sizeof(probe));
+    tx = address_space_rw(&address_space_memory, s->shmem_gpa,
+                          MEMTXATTRS_UNSPECIFIED,
+                          probe, (int)probe_len, false);
+    if (tx != MEMTX_OK) {
+        error_report("[vgpu] vm_id=%u seq=%u fresh G2H probe failed op=0x%04x len=%u tx=%d gpa=0x%llx",
+                     s->vm_id, s->cuda_seq, s->cuda_op, data_len, (int)tx,
+                     (unsigned long long)s->shmem_gpa);
+        return 0;
+    }
+
+    probe_nz = vgpu_payload_has_nonzero_prefix(probe, probe_len, probe_len);
+    if (first_byte_out) {
+        *first_byte_out = probe[0];
+    }
+    error_report("[vgpu] vm_id=%u seq=%u fresh G2H probe op=0x%04x len=%u probe_len=%u probe_nz=%d probe0=%02x",
+                 s->vm_id, s->cuda_seq, s->cuda_op, data_len, probe_len,
+                 probe_nz, probe[0]);
+    return probe_nz;
 }
 
 /* Early bootstrap calls are vulnerable to one-step request-id skew when the
@@ -1122,10 +1199,12 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
                 int sh_nz = vgpu_payload_has_nonzero_prefix(sh, data_len, 512u);
                 int b1_nz = vgpu_payload_has_nonzero_prefix(b1, data_len, 512u);
                 if (s->cuda_op == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
-                    s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA) {
+                    s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA ||
+                    s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+                    s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC) {
                     error_report("[vgpu] vm_id=%u seq=%u PICK bulk op=0x%04x len=%u sh_nz=%d b1_nz=%d "
                                  "sh0=%02x b10=%02x gpa=0x%llx",
-                                 s->vm_id, s->cuda_seq, data_len, sh_nz, b1_nz,
+                                 s->vm_id, s->cuda_seq,
                                  s->cuda_op, data_len, sh_nz, b1_nz,
                                  data_len ? sh[0] : 0, data_len ? b1[0] : 0,
                                  (unsigned long long)s->shmem_gpa);
@@ -1142,11 +1221,67 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
                         }
                     }
                 }
-                if (sh_nz) {
+                if (b1_nz &&
+                    vgpu_stub_prefer_bar1_htod(s) &&
+                    (s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+                     s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC)) {
+                    error_report("[vgpu] vm_id=%u seq=%u prefer BAR1 for HTOD "
+                                 "despite nonzero SHMEM len=%u sh0=%02x b10=%02x",
+                                 s->vm_id, s->cuda_seq, data_len,
+                                 data_len ? sh[0] : 0, data_len ? b1[0] : 0);
+                    data_ptr = s->bar1_data + VGPU_BAR1_G2H_OFFSET;
+                    data_path = "bar1-htod-preferred";
+                    copy_from_fresh_shmem = 0;
+                } else if (sh_nz) {
                     data_path = "shmem";
                     copy_from_fresh_shmem = 1;
                 } else {
-                    if (b1_nz &&
+                    if (s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA &&
+                        s->probe_fresh_shmem_libload) {
+                        uint8_t probe0 = 0;
+                        int probe_nz =
+                            vgpu_stub_probe_fresh_g2h_nonzero(s, data_len, &probe0);
+                        if (probe_nz) {
+                            error_report("[vgpu] vm_id=%u seq=%u fresh G2H probe proved SHMEM nonzero "
+                                         "for libload len=%u probe0=%02x; using shmem",
+                                         s->vm_id, s->cuda_seq, data_len, probe0);
+                            data_path = "shmem";
+                            copy_from_fresh_shmem = 1;
+                        } else if (vgpu_stub_authoritative_shmem_libload(s)) {
+                            if (b1_nz) {
+                                error_report("[vgpu] vm_id=%u seq=%u FORCE authoritative shmem "
+                                             "for libload despite zero shmem prefix and nonzero BAR1 "
+                                             "len=%u",
+                                             s->vm_id, s->cuda_seq, data_len);
+                            }
+                            data_path = "shmem";
+                            copy_from_fresh_shmem = 1;
+                        } else if (b1_nz &&
+                                   (s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA ||
+                                    s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
+                                    s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC)) {
+                            error_report("[vgpu] vm_id=%u seq=%u fallback to BAR1 "
+                                         "because shmem prefix is zero, fresh G2H probe stayed zero, "
+                                         "and BAR1 is nonzero for op=0x%04x len=%u",
+                                         s->vm_id, s->cuda_seq, s->cuda_op, data_len);
+                            data_ptr = s->bar1_data + VGPU_BAR1_G2H_OFFSET;
+                            data_path = "bar1-libload-fallback";
+                            copy_from_fresh_shmem = 0;
+                        } else {
+                            data_path = "shmem";
+                            copy_from_fresh_shmem = 1;
+                        }
+                    } else if (s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA &&
+                        vgpu_stub_authoritative_shmem_libload(s)) {
+                        if (b1_nz) {
+                            error_report("[vgpu] vm_id=%u seq=%u FORCE authoritative shmem "
+                                         "for libload despite zero shmem prefix and nonzero BAR1 "
+                                         "len=%u",
+                                         s->vm_id, s->cuda_seq, data_len);
+                        }
+                        data_path = "shmem";
+                        copy_from_fresh_shmem = 1;
+                    } else if (b1_nz &&
                         (s->cuda_op == CUDA_CALL_LIBRARY_LOAD_DATA ||
                          s->cuda_op == CUDA_CALL_MEMCPY_HTOD ||
                          s->cuda_op == CUDA_CALL_MEMCPY_HTOD_ASYNC)) {
@@ -1538,30 +1673,31 @@ static void vgpu_socket_read_handler(void *opaque)
 
     s->sock_rx_len += (uint32_t)n;
 
-    /* Do we have at least a complete header? */
-    if (s->sock_rx_len < VGPU_SOCKET_HDR_SIZE) {
-        return;  /* need more data */
-    }
+    for (;;) {
+        /* Do we have at least a complete header? */
+        if (s->sock_rx_len < VGPU_SOCKET_HDR_SIZE) {
+            return;  /* need more data */
+        }
 
-    hdr = (VGPUSocketHeader *)s->sock_rx_buf;
+        hdr = (VGPUSocketHeader *)s->sock_rx_buf;
 
-    /* Sanity check */
-    if (hdr->magic != VGPU_SOCKET_MAGIC) {
-        fprintf(stderr, "[vgpu] bad magic 0x%08x, dropping\n", hdr->magic);
-        s->sock_rx_len = 0;
-        return;
-    }
+        /* Sanity check */
+        if (hdr->magic != VGPU_SOCKET_MAGIC) {
+            fprintf(stderr, "[vgpu] bad magic 0x%08x, dropping\n", hdr->magic);
+            s->sock_rx_len = 0;
+            return;
+        }
 
-    total_len = VGPU_SOCKET_HDR_SIZE + hdr->payload_len;
+        total_len = VGPU_SOCKET_HDR_SIZE + hdr->payload_len;
 
-    /* Do we have the full message? */
-    if (s->sock_rx_len < total_len) {
-        return;  /* need more data */
-    }
+        /* Do we have the full message? */
+        if (s->sock_rx_len < total_len) {
+            return;  /* need more data */
+        }
 
-    /* ---- Process complete message ---- */
+        /* ---- Process complete message ---- */
 
-    if (hdr->msg_type == VGPU_MSG_RESPONSE) {
+        if (hdr->msg_type == VGPU_MSG_RESPONSE) {
         uint32_t copy_len = hdr->payload_len;
         if (copy_len > VGPU_RESP_BUFFER_SIZE) {
             copy_len = VGPU_RESP_BUFFER_SIZE;
@@ -1619,8 +1755,8 @@ static void vgpu_socket_read_handler(void *opaque)
 
         /* If interrupt enabled, raise it (future enhancement) */
         /* For now we just rely on guest polling STATUS. */
-    }
-    else if (hdr->msg_type == VGPU_MSG_BUSY) {
+        }
+        else if (hdr->msg_type == VGPU_MSG_BUSY) {
         /* Phase 3: mediator signals rate-limit rejection as a distinct
          * message type (no payload).  Map to MMIO error code. */
         VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
@@ -1629,8 +1765,8 @@ static void vgpu_socket_read_handler(void *opaque)
         fprintf(stderr,
                 "[vgpu] vm%u req%u: BUSY (rate-limited)\n",
                 s->vm_id, s->request_id);
-    }
-    else if (hdr->msg_type == VGPU_MSG_QUARANTINED) {
+        }
+        else if (hdr->msg_type == VGPU_MSG_QUARANTINED) {
         /* Phase 3: mediator signals VM quarantine as a distinct
          * message type (no payload).  Map to MMIO error code. */
         VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
@@ -1639,8 +1775,8 @@ static void vgpu_socket_read_handler(void *opaque)
         fprintf(stderr,
                 "[vgpu] vm%u req%u: VM QUARANTINED\n",
                 s->vm_id, s->request_id);
-    }
-    else if (hdr->msg_type == VGPU_MSG_CUDA_RESULT) {
+        }
+        else if (hdr->msg_type == VGPU_MSG_CUDA_RESULT) {
         /* ---- CUDA API call result ---- */
         uint8_t *payload = s->sock_rx_buf + VGPU_SOCKET_HDR_SIZE;
         uint32_t plen = hdr->payload_len;
@@ -1655,22 +1791,27 @@ static void vgpu_socket_read_handler(void *opaque)
              * sock_hdr.request_id unchanged. */
             int accept_result = (hdr->request_id == s->pending_request_id);
             if (!accept_result) {
+                uint32_t req_lag =
+                    (s->pending_request_id >= hdr->request_id)
+                        ? (s->pending_request_id - hdr->request_id)
+                        : UINT32_MAX;
                 int late_bootstrap_accept =
                     (s->status_reg == VGPU_STATUS_BUSY) &&
                     vgpu_stub_is_early_bootstrap_call(s->cuda_op) &&
                     (cr->seq_num == s->pending_seq) &&
                     (s->pending_request_id != 0) &&
-                    ((hdr->request_id + 1u) == s->pending_request_id);
+                    (req_lag >= 1u) &&
+                    (req_lag <= 4u);
 
                 if (late_bootstrap_accept) {
-                    /* VM can retrigger early bootstrap calls while one older
-                     * response is still queued. Accept one-step-behind response
-                     * to avoid BUSY deadlocks in startup call chain. */
+                    /* VM can retrigger early bootstrap calls while older
+                     * responses are still queued. Accept a small bounded lag
+                     * window to avoid BUSY deadlocks in startup call chain. */
                     accept_result = 1;
                     fprintf(stderr,
-                            "[vgpu] vm_id=%u: CUDA result LATE-ACCEPT (recv req=%u seq=%u pending_req=%u pending_seq=%u call_id=0x%04x)\n",
+                            "[vgpu] vm_id=%u: CUDA result LATE-ACCEPT (recv req=%u seq=%u pending_req=%u pending_seq=%u lag=%u call_id=0x%04x)\n",
                             s->vm_id, hdr->request_id, cr->seq_num,
-                            s->pending_request_id, s->pending_seq, s->cuda_op);
+                            s->pending_request_id, s->pending_seq, req_lag, s->cuda_op);
                     fflush(stderr);
                 } else {
                     /* Stale or out-of-order response; consume but do not update registers */
@@ -1749,8 +1890,8 @@ static void vgpu_socket_read_handler(void *opaque)
             VGPU_STATUS_WRITE(s, VGPU_STATUS_ERROR);
             s->error_code = VGPU_ERR_INVALID_REQUEST;
         }
-    }
-    else if (hdr->msg_type == VGPU_MSG_PING) {
+        }
+        else if (hdr->msg_type == VGPU_MSG_PING) {
         /* Reply with PONG — keeps connection alive */
         VGPUSocketHeader pong;
         memset(&pong, 0, sizeof(pong));
@@ -1759,21 +1900,25 @@ static void vgpu_socket_read_handler(void *opaque)
         pong.vm_id    = s->vm_id;
         write(s->mediator_fd, &pong, VGPU_SOCKET_HDR_SIZE);
         /* Ignore write errors — the next real request will detect failure */
-    }
-    else if (hdr->msg_type == VGPU_MSG_PONG) {
+        }
+        else if (hdr->msg_type == VGPU_MSG_PONG) {
         /* Received PONG response to our PING — connection is alive */
-    }
-    /* else: ignore unknown message types */
+        }
+        /* else: ignore unknown message types */
 
-    /* Consume the processed message from rx buffer.
-     * If there are trailing bytes from a next message, shift them. */
-    if (s->sock_rx_len > total_len) {
-        memmove(s->sock_rx_buf,
-                s->sock_rx_buf + total_len,
-                s->sock_rx_len - total_len);
-        s->sock_rx_len -= total_len;
-    } else {
+        /* Consume the processed message from rx buffer.
+         * If trailing bytes already contain another complete message,
+         * keep draining now rather than waiting for a new read event. */
+        if (s->sock_rx_len > total_len) {
+            memmove(s->sock_rx_buf,
+                    s->sock_rx_buf + total_len,
+                    s->sock_rx_len - total_len);
+            s->sock_rx_len -= total_len;
+            continue;
+        }
+
         s->sock_rx_len = 0;
+        return;
     }
 }
 
@@ -1993,12 +2138,18 @@ static void vgpu_exit(PCIDevice *pci_dev)
  * Properties exposed on the QEMU command line
  *
  * Example:
- *   -device vgpu-cuda,pool_id=B,priority=high,vm_id=200
+ *   -device vgpu-cuda,pool_id=B,priority=high,vm_id=200,probe_fresh_shmem_libload=on,prefer_bar1_htod=on
  * ================================================================ */
 static Property vgpu_properties[] = {
     DEFINE_PROP_STRING("pool_id",  VGPUStubState, pool_id),
     DEFINE_PROP_STRING("priority", VGPUStubState, priority),
     DEFINE_PROP_UINT32("vm_id",    VGPUStubState, vm_id, 0),
+    DEFINE_PROP_BOOL("authoritative_shmem_libload",
+                     VGPUStubState, authoritative_shmem_libload, false),
+    DEFINE_PROP_BOOL("probe_fresh_shmem_libload",
+                     VGPUStubState, probe_fresh_shmem_libload, false),
+    DEFINE_PROP_BOOL("prefer_bar1_htod",
+                     VGPUStubState, prefer_bar1_htod, false),
     DEFINE_PROP_END_OF_LIST(),
 };
 

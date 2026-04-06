@@ -103,6 +103,39 @@ static void cudart_trace_memcpy_async(const char *phase, void *dst, const void *
     }
 }
 
+static void cudart_trace_large_htod(const char *api, const char *phase, void *dst,
+                                    const void *src, size_t count, int kind,
+                                    void *stream, int rc) {
+    enum { CUDART_HTOD_TRACE_MIN = 4096 };
+    if (!api || !phase) return;
+    if (!(kind == 1 || kind == 4) || count < CUDART_HTOD_TRACE_MIN) return;
+
+    const uint8_t *bytes = (const uint8_t *)src;
+    unsigned int b0 = (src && count > 0) ? bytes[0] : 0;
+    unsigned int b1 = (src && count > 1) ? bytes[1] : 0;
+    unsigned int b2 = (src && count > 2) ? bytes[2] : 0;
+    unsigned int b3 = (src && count > 3) ? bytes[3] : 0;
+    unsigned int b4 = (src && count > 4) ? bytes[4] : 0;
+    unsigned int b5 = (src && count > 5) ? bytes[5] : 0;
+    unsigned int b6 = (src && count > 6) ? bytes[6] : 0;
+    unsigned int b7 = (src && count > 7) ? bytes[7] : 0;
+
+    char msg[320];
+    int n = snprintf(msg, sizeof(msg),
+                     "[libvgpu-cudart] %s %s kind=%d count=%zu stream=%p dst=%p src=%p rc=%d first8=%02x%02x%02x%02x%02x%02x%02x%02x pid=%d",
+                     api, phase, kind, count, stream, dst, src, rc,
+                     b0, b1, b2, b3, b4, b5, b6, b7, (int)getpid());
+    if (n > 0 && n < (int)sizeof(msg)) {
+        int fd = (int)syscall(__NR_openat, -100, "/var/tmp/vgpu_cudart_htod_trace.log",
+                              O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            (void)syscall(__NR_write, fd, msg, (size_t)n);
+            (void)syscall(__NR_write, fd, "\n", 1);
+            (void)syscall(__NR_close, fd);
+        }
+    }
+}
+
 static void cudart_trace_stream_sync(const char *phase, void *stream, int rc) {
     if (!cudart_diag_logging()) return;
     char msg[192];
@@ -1150,6 +1183,7 @@ cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, int kind) {
     }
     if (!dst || !src) return cudaErrorInvalidValue;
     if (count == 0) return cudaSuccess;  /* Zero-byte copy is valid no-op per CUDA spec */
+    cudart_trace_large_htod("cudaMemcpy", "enter", dst, src, count, kind, NULL, 0);
     
     /* CRITICAL FIX: Use Driver API which calls transport */
     typedef int (*cuMemcpyHtoD_func)(void *, const void *, size_t);
@@ -1207,6 +1241,7 @@ cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, int kind) {
         if (success_len > 0 && success_len < (int)sizeof(success_msg))
             syscall(__NR_write, 2, success_msg, success_len);
     }
+    cudart_trace_large_htod("cudaMemcpy", "return", dst, src, count, kind, NULL, cuda_result);
     return (cuda_result == 0) ? cudaSuccess : cudaErrorInvalidValue;
 }
 
@@ -1222,6 +1257,7 @@ cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, int kind, 
     }
     if (!dst || !src) return cudaErrorInvalidValue;
     if (count == 0) return cudaSuccess;
+    cudart_trace_large_htod("cudaMemcpyAsync", "enter", dst, src, count, kind, stream, 0);
 
     typedef int (*cuMemcpyHtoDAsync_func)(void *, const void *, size_t, void *);
     typedef int (*cuMemcpyDtoHAsync_func)(void *, void *, size_t, void *);
@@ -1279,6 +1315,7 @@ cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, int kind, 
             cudart_log_error_to_file(err_msg);
     }
 
+    cudart_trace_large_htod("cudaMemcpyAsync", "return", dst, src, count, kind, stream, cuda_result);
     return (cuda_result == 0) ? cudaSuccess : cudaErrorInvalidValue;
 }
 

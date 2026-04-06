@@ -1,0 +1,117 @@
+{
+  "version": "2026-04-06",
+  "description": "Pre-integration deterministic gate suite for Phase 1 milestone closure.",
+  "model": "qwen2.5:0.5b",
+  "accuracy_cases": [
+    {
+      "id": "A1_exact_string",
+      "request": {
+        "prompt": "Return exactly this token and nothing else: PHASE1_OK_314159",
+        "stream": false,
+        "keep_alive": -1,
+        "options": {
+          "temperature": 0,
+          "seed": 1234,
+          "num_predict": 24
+        }
+      },
+      "expect": {
+        "type": "contains",
+        "value": "PHASE1_OK_314159"
+      }
+    },
+    {
+      "id": "A2_arithmetic",
+      "request": {
+        "prompt": "What is 37 + 58? Reply with digits only.",
+        "stream": false,
+        "keep_alive": -1,
+        "options": {
+          "temperature": 0,
+          "seed": 1234,
+          "num_predict": 8
+        }
+      },
+      "expect": {
+        "type": "regex",
+        "value": "\\b95\\b"
+      }
+    },
+    {
+      "id": "A3_json_shape",
+      "request": {
+        "prompt": "Respond with JSON only: {\"ok\":true,\"n\":7}",
+        "stream": false,
+        "keep_alive": -1,
+        "options": {
+          "temperature": 0,
+          "seed": 1234,
+          "num_predict": 32
+        }
+      },
+      "expect": {
+        "type": "json_contains",
+        "value": {
+          "ok": true,
+          "n": 7
+        }
+      }
+    }
+  ],
+  "speed_cases": {
+    "cold": {
+      "max_wall_sec": 450.0,
+      "request": {
+        "prompt": "Say hello in one short sentence.",
+        "stream": false,
+        "keep_alive": -1,
+        "options": {
+          "temperature": 0,
+          "seed": 7,
+          "num_predict": 8
+        }
+      }
+    },
+    "warm": {
+      "max_wall_sec": 30.0,
+      "request": {
+        "prompt": "Say hello in one short sentence.",
+        "stream": false,
+        "keep_alive": -1,
+        "options": {
+          "temperature": 0,
+          "seed": 7,
+          "num_predict": 8
+        }
+      }
+    }
+  },
+  "residency_cases": {
+    "keep_loaded": {
+      "request": {
+        "prompt": "warm pin",
+        "stream": false,
+        "keep_alive": -1,
+        "options": {
+          "temperature": 0,
+          "seed": 1,
+          "num_predict": 2
+        }
+      },
+      "expect_model_in_ps": true
+    },
+    "force_unload": {
+      "request": {
+        "prompt": "",
+        "stream": false,
+        "keep_alive": 0,
+        "options": {
+          "temperature": 0,
+          "seed": 1,
+          "num_predict": 1
+        }
+      },
+      "expect_model_in_ps": false
+    }
+  }
+}

@@ -1,0 +1,17 @@
+---
+description: Keep Phase 3 Stage 1 work on the no-regression fast path
+alwaysApply: true
+---
+
+# Phase 3 Stage 1 Fast Path
+
+- Keep exactly one active error and queue all new earlier failures as candidates.
+- Before any new conclusion, identify the last proven checkpoint on this ladder:
+  `0x0001 -> 0x00f0 -> 0x0030 -> 0x003c -> before_LoadModelFromFile -> after_LoadModelFromFile -> before_NewContextWithModel -> before_backend_graph_reserve i=1 -> after_backend_graph_reserve i=1 -> before_backend_graph_reserve i=2 -> after_backend_graph_reserve i=2 -> HTTP 200 -> residency`.
+- Change only one layer per cycle: host QEMU stub, mediator, guest shim, Ollama binary/shared libs, or runtime config.
+- After every deploy, prove the live artifact path before interpreting runtime behavior.
+- Use one clean bounded repro payload and the same trace set until the active error changes.
+- If a run fails earlier than the last proven checkpoint, classify it as a regression and repair that baseline first.
+- Do not reopen already-solved endpoint/bootstrap branches unless the checkpoint ladder genuinely falls earlier again.
+- Do not run the full Stage 1 gate while the active blocker is still earlier than the milestone path.
+- Current forced direction: stay on `P1-E`, treat `P1-Q` as the current active-branch gate, and focus on the second CUDA split reserve path, especially `cuLibraryLoadData` / BAR1 guest-shim transfer work.

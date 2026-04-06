@@ -84,7 +84,8 @@ static void write_probe_file(const char *fmt, ...)
         if ((size_t)len > sizeof(buf)) {
             len = (int)sizeof(buf);
         }
-        (void)write(fd, buf, (size_t)len);
+        ssize_t wrote = write(fd, buf, (size_t)len);
+        (void)wrote;
     }
     close(fd);
 }
@@ -136,6 +137,7 @@ static const char *call_id_to_name(uint32_t call_id)
         case CUDA_CALL_EVENT_SYNCHRONIZE: return "cuEventSynchronize";
         case CUDA_CALL_EVENT_QUERY: return "cuEventQuery";
         case CUDA_CALL_EVENT_ELAPSED_TIME: return "cuEventElapsedTime";
+        case CUDA_CALL_FUNC_GET_PARAM_INFO: return "cuFuncGetParamInfo";
         case CUDA_CALL_GET_GPU_INFO: return "cuGetGpuInfo";
         default: return "?(call_id)";
     }
@@ -343,6 +345,36 @@ static void release_transport_process_lock(int fd)
     close(fd);
 }
 
+static int acquire_shmem_owner_lock(void)
+{
+    const char *allow_multi = getenv("VGPU_ALLOW_MULTI_PROCESS_SHMEM");
+    int fd;
+
+    if (allow_multi && allow_multi[0] && strcmp(allow_multi, "0") != 0) {
+        return -2;
+    }
+
+    fd = open("/var/tmp/vgpu_shmem_owner.lock",
+              O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+    if (fd < 0) {
+        return -1;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void release_shmem_owner_lock(int fd)
+{
+    if (fd < 0) {
+        return;
+    }
+    (void)flock(fd, LOCK_UN);
+    close(fd);
+}
+
 /* Forward declaration */
 static void call_libvgpu_set_skip_interception(int skip);
 
@@ -522,6 +554,7 @@ struct cuda_transport {
     size_t         shmem_half;  /* shmem_size / 2                       */
     int            has_shmem;   /* 1 if shared-memory path is active    */
     uint64_t       shmem_registered_gpa; /* GPA passed to stub at REG_SHMEM_* */
+    int            shmem_owner_lock_fd;  /* VM-global SHMEM ownership lock */
 };
 
 /* ================================================================
@@ -741,6 +774,54 @@ static uint64_t current_effective_caps(void)
     return caps;
 }
 
+static int process_cmdline_contains(const char *needle)
+{
+    int fd;
+    char buf[4096];
+    ssize_t n;
+    size_t needle_len;
+
+    if (!needle || !needle[0]) {
+        return 0;
+    }
+
+    fd = open("/proc/self/cmdline", O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = '\0';
+    for (ssize_t i = 0; i < n; i++) {
+        if (buf[i] == '\0') {
+            buf[i] = ' ';
+        }
+    }
+    needle_len = strlen(needle);
+    if (needle_len == 0 || needle_len >= sizeof(buf)) {
+        return 0;
+    }
+    return strstr(buf, needle) != NULL ? 1 : 0;
+}
+
+static int skip_shmem_for_ollama_engine(void)
+{
+    const char *allow = getenv("VGPU_SHMEM_ALLOW_OLLAMA_ENGINE");
+    if (allow && allow[0] && strcmp(allow, "0") != 0) {
+        return 0;
+    }
+    if (!process_cmdline_contains("--ollama-engine")) {
+        return 0;
+    }
+    fprintf(stderr,
+            "[cuda-transport] SHMEM disabled for --ollama-engine helper pid=%d; using BAR1/inline only\n",
+            (int)getpid());
+    return 1;
+}
+
 static int pagemap_entry_for(const void *vaddr, uint64_t *pme_out)
 {
     int fd = open("/proc/self/pagemap", O_RDONLY);
@@ -763,6 +844,121 @@ static int pagemap_entry_for(const void *vaddr, uint64_t *pme_out)
     return VGPU_PAGEMAP_OK;
 }
 
+static void shmem_registration_trace(const char *stage,
+                                     cuda_transport_t *tp,
+                                     uint64_t requested_gpa,
+                                     size_t shmem_size,
+                                     const void *g2h_ptr,
+                                     const void *h2g_ptr)
+{
+    uint64_t pme = 0;
+    uint64_t pagemap_gpa = 0;
+    int pmst = VGPU_PAGEMAP_OPEN_FAILED;
+    char line[640];
+    int n;
+
+    if (!stage) {
+        return;
+    }
+
+    if (g2h_ptr) {
+        pmst = pagemap_entry_for(g2h_ptr, &pme);
+        if (pmst == VGPU_PAGEMAP_OK) {
+            uint64_t pfn = pme & 0x007FFFFFFFFFFFFFULL;
+            uint64_t ps = (uint64_t)sysconf(_SC_PAGESIZE);
+            pagemap_gpa = pfn * ps;
+        }
+    }
+
+    n = snprintf(line, sizeof(line),
+                 "[cuda-transport] SHMEM_REG stage=%s pid=%d tp=%p req_gpa=0x%016llx "
+                 "stored_gpa=0x%016llx size=%zu g2h=%p h2g=%p pagemap_st=%s "
+                 "pagemap_gpa=0x%016llx\n",
+                 stage, (int)getpid(), (void *)tp,
+                 (unsigned long long)requested_gpa,
+                 (unsigned long long)(tp ? tp->shmem_registered_gpa : 0),
+                 shmem_size, g2h_ptr, h2g_ptr,
+                 vgpu_pagemap_probe_status_str(pmst),
+                 (unsigned long long)pagemap_gpa);
+    if (n <= 0) {
+        return;
+    }
+
+    (void)fwrite(line, 1, (size_t)n, stderr);
+    fflush(stderr);
+
+    {
+        int fd = (int)syscall(__NR_openat, -100, "/var/tmp/vgpu_shmem_registration.log",
+                              O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            (void)syscall(__NR_write, fd, line, (size_t)n);
+            (void)syscall(__NR_close, fd);
+        }
+    }
+}
+
+static void refresh_shmem_registration_for_request(cuda_transport_t *tp,
+                                                   uint32_t call_id,
+                                                   uint32_t send_len)
+{
+    uint64_t pme = 0;
+    uint64_t gpa = 0;
+    uint64_t ps = 0;
+    int pmst;
+    uint32_t st;
+
+    if (!tp || !tp->has_shmem || !tp->bar0 || !tp->shmem_g2h ||
+        send_len <= CUDA_SMALL_DATA_MAX) {
+        return;
+    }
+
+    switch (call_id) {
+    case CUDA_CALL_MEMCPY_HTOD:
+    case CUDA_CALL_MEMCPY_HTOD_ASYNC:
+    case CUDA_CALL_MODULE_LOAD_DATA:
+    case CUDA_CALL_MODULE_LOAD_DATA_EX:
+    case CUDA_CALL_MODULE_LOAD_FAT_BINARY:
+    case CUDA_CALL_LIBRARY_LOAD_DATA:
+        break;
+    default:
+        return;
+    }
+
+    pmst = pagemap_entry_for(tp->shmem_g2h, &pme);
+    if (pmst != VGPU_PAGEMAP_OK) {
+        return;
+    }
+
+    ps = (uint64_t)sysconf(_SC_PAGESIZE);
+    if (ps == 0) {
+        ps = 4096;
+    }
+    gpa = (pme & 0x007FFFFFFFFFFFFFULL) * ps;
+    if (gpa == 0) {
+        return;
+    }
+
+    tp->shmem_registered_gpa = gpa;
+    REG32(tp->bar0, REG_SHMEM_GPA_LO) = (uint32_t)(gpa & 0xFFFFFFFFu);
+    REG32(tp->bar0, REG_SHMEM_GPA_HI) = (uint32_t)(gpa >> 32);
+    REG32(tp->bar0, REG_SHMEM_SIZE)   = (uint32_t)tp->shmem_size;
+    REG32(tp->bar0, REG_SHMEM_CTRL)   = 1;
+    __sync_synchronize();
+    st = REG32(tp->bar0, REG_STATUS);
+
+    if (vgpu_bulk_trace_logging() && call_id == CUDA_CALL_LIBRARY_LOAD_DATA) {
+        char line[320];
+        int n = snprintf(line, sizeof(line),
+                         "[cuda-transport] REFRESH_SHMEM_REG pid=%d call_id=0x%04x len=%u gpa=0x%016llx status=0x%02x\n",
+                         (int)getpid(), call_id, send_len,
+                         (unsigned long long)gpa, st);
+        if (n > 0) {
+            (void)fwrite(line, 1, (size_t)n, stderr);
+            fflush(stderr);
+        }
+    }
+}
+
 static int find_contiguous_gpa_span(void *base,
                                     size_t span_len,
                                     size_t min_len,
@@ -773,7 +969,6 @@ static int find_contiguous_gpa_span(void *base,
 {
     size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
     size_t total_pages;
-    size_t min_pages;
     size_t cur_pages = 0;
     size_t best_pages = 0;
     size_t ok_pages = 0;
@@ -800,7 +995,6 @@ static int find_contiguous_gpa_span(void *base,
     }
 
     total_pages = span_len / page_size;
-    min_pages = (min_len + page_size - 1) / page_size;
 
     for (size_t i = 0; i < total_pages; ++i) {
         char *page = (char *)base + (i * page_size);
@@ -837,18 +1031,10 @@ static int find_contiguous_gpa_span(void *base,
             best_start_virt = cur_start_virt;
             best_start_phys = cur_start_phys;
         }
-        if (cur_pages >= min_pages) {
-            size_t run_len = cur_pages * page_size;
-            /* Keep the registered window evenly split into G2H/H2G halves. */
-            run_len &= ~(size_t)((2 * page_size) - 1);
-            if (run_len >= min_len) {
-                *best_virt_out = cur_start_virt;
-                *best_gpa_out = cur_start_phys;
-                *best_len_out = run_len;
-                if (detail_out) *detail_out = pme;
-                return VGPU_PAGEMAP_OK;
-            }
-        }
+        /* Do not stop at the first qualifying run. The live Phase 1 blocker is
+         * now the largest libload payloads still falling back to BAR1 because
+         * the registered SHMEM aperture is too small. Scan the full mapping and
+         * return the largest contiguous GPA run we can find. */
     }
 
     if (detail_out) {
@@ -862,6 +1048,21 @@ static int find_contiguous_gpa_span(void *base,
         size_t best_len = best_pages * page_size;
         best_len &= ~(size_t)((2 * page_size) - 1);
         if (best_len >= min_len) {
+            write_probe_file("probe_v1 success span_len=%zu min_len=%zu ok_pages=%zu best_pages=%zu best_len=%zu best_gpa=0x%016llx best_virt=%p samples=",
+                             span_len,
+                             min_len,
+                             ok_pages,
+                             best_pages,
+                             best_len,
+                             (unsigned long long)best_start_phys,
+                             best_start_virt);
+            for (size_t i = 0; i < sample_count; ++i) {
+                write_probe_file("%s%zu:0x%llx",
+                                 (i == 0) ? "" : ",",
+                                 sample_page_idx[i],
+                                 (unsigned long long)sample_pfn[i]);
+            }
+            write_probe_file("\n");
             *best_virt_out = best_start_virt;
             *best_gpa_out = best_start_phys;
             *best_len_out = best_len;
@@ -931,9 +1132,20 @@ static void *alloc_aligned_anon_mapping(size_t size, int mmap_flags, size_t alig
 static int setup_shmem(cuda_transport_t *t)
 {
     const char *disable_shmem = getenv("VGPU_DISABLE_SHMEM");
+    int shmem_owner_lock_fd = -1;
     if (disable_shmem && disable_shmem[0] && strcmp(disable_shmem, "0") != 0) {
         fprintf(stderr, "[cuda-transport] SHMEM disabled by VGPU_DISABLE_SHMEM=%s — using BAR1\n",
                 disable_shmem);
+        return 0;
+    }
+    if (skip_shmem_for_ollama_engine()) {
+        return 0;
+    }
+    shmem_owner_lock_fd = acquire_shmem_owner_lock();
+    if (shmem_owner_lock_fd == -1) {
+        fprintf(stderr,
+                "[cuda-transport] SHMEM owner already held by another process; pid=%d using BAR1/inline only\n",
+                (int)getpid());
         return 0;
     }
 
@@ -941,6 +1153,7 @@ static int setup_shmem(cuda_transport_t *t)
     if (!(caps & VGPU_CAP_SHMEM)) {
         fprintf(stderr, "[cuda-transport] vgpu-stub does not support "
                 "shared-memory data path (caps=0x%x), using BAR1\n", caps);
+        release_shmem_owner_lock(shmem_owner_lock_fd);
         return 0;
     }
 
@@ -1020,6 +1233,28 @@ static int setup_shmem(cuda_transport_t *t)
 #endif
             memset(shmem, 0, shmem_alloc_size);
 
+#ifdef MADV_COLLAPSE
+            if (getenv("VGPU_SHMEM_TRY_COLLAPSE") &&
+                strcmp(getenv("VGPU_SHMEM_TRY_COLLAPSE"), "0") != 0) {
+                if (madvise(shmem, shmem_alloc_size, MADV_COLLAPSE) == 0) {
+                    fprintf(stderr,
+                            "[cuda-transport] madvise(MADV_COLLAPSE) succeeded "
+                            "(size=%zu MB attempt=%d map32=%d)\n",
+                            shmem_alloc_size >> 20, attempt + 1, use_map32);
+                    write_probe_file("probe_v1 collapse ok size_mb=%zu attempt=%d map32=%d\n",
+                                     shmem_alloc_size >> 20, attempt + 1, use_map32);
+                } else {
+                    fprintf(stderr,
+                            "[cuda-transport] madvise(MADV_COLLAPSE) failed "
+                            "(size=%zu MB attempt=%d map32=%d): %s\n",
+                            shmem_alloc_size >> 20, attempt + 1, use_map32,
+                            strerror(errno));
+                    write_probe_file("probe_v1 collapse fail size_mb=%zu attempt=%d map32=%d errno=%d\n",
+                                     shmem_alloc_size >> 20, attempt + 1, use_map32, errno);
+                }
+            }
+#endif
+
             if (mlock(shmem, shmem_alloc_size) != 0) {
                 fprintf(stderr, "[cuda-transport] mlock(%zu MB) failed "
                         "(attempt=%d map32=%d): %s\n",
@@ -1088,6 +1323,9 @@ static int setup_shmem(cuda_transport_t *t)
                 t->shmem_h2g  = (char *)shmem_window + shmem_size / 2;
                 t->has_shmem  = 1;
                 t->shmem_registered_gpa = gpa;
+                t->shmem_owner_lock_fd = shmem_owner_lock_fd;
+                shmem_registration_trace("register", t, gpa, shmem_size,
+                                         t->shmem_g2h, t->shmem_h2g);
 
                 if (vgpu_debug_logging()) {
                     fprintf(stderr, "[cuda-transport] Shared-memory registered: "
@@ -1115,12 +1353,14 @@ static int setup_shmem(cuda_transport_t *t)
                 if (err != VGPU_ERR_INVALID_REQUEST) {
                     fprintf(stderr, "[cuda-transport] Non-retryable shmem registration failure "
                             "— using BAR1\n");
+                    release_shmem_owner_lock(shmem_owner_lock_fd);
                     return 0;
                 }
             }
         }
     }
 
+    release_shmem_owner_lock(shmem_owner_lock_fd);
     fprintf(stderr, "[cuda-transport] Exhausted shmem registration retries — using BAR1\n");
     return 0;
 }
@@ -1189,6 +1429,7 @@ int cuda_transport_init(cuda_transport_t **tp)
     t->bar1_fd  = -1;
     t->has_bar1 = 0;
     t->has_shmem = 0;
+    t->shmem_owner_lock_fd = -1;
     t->seq_counter = 1;
     /* Use snprintf to avoid truncation warning */
     snprintf(t->pci_bdf, sizeof(t->pci_bdf), "%.*s", (int)(sizeof(t->pci_bdf) - 1), pci_bdf);
@@ -1236,7 +1477,8 @@ int cuda_transport_init(cuda_transport_t **tp)
                                   (size_t)(SHMEM_DEFAULT_SIZE >> 20),
                                   (size_t)(SHMEM_MIN_SIZE >> 20));
             if (cfglen > 0) {
-                (void)write(cfgfd, cfgbuf, (size_t)cfglen);
+                ssize_t wrote = write(cfgfd, cfgbuf, (size_t)cfglen);
+                (void)wrote;
             }
             close(cfgfd);
         }
@@ -1301,6 +1543,8 @@ void cuda_transport_destroy(cuda_transport_t *tp)
 
     /* Release shared memory */
     if (tp->has_shmem && tp->shmem) {
+        shmem_registration_trace("unregister", tp, tp->shmem_registered_gpa,
+                                 tp->shmem_size, tp->shmem_g2h, tp->shmem_h2g);
         REG32(tp->bar0, REG_SHMEM_CTRL) = 0;  /* unregister */
         munlock(tp->shmem, tp->shmem_alloc_size);
         munmap(tp->shmem, tp->shmem_alloc_size);
@@ -1308,6 +1552,8 @@ void cuda_transport_destroy(cuda_transport_t *tp)
         tp->shmem_alloc_size = 0;
         tp->has_shmem = 0;
     }
+    release_shmem_owner_lock(tp->shmem_owner_lock_fd);
+    tp->shmem_owner_lock_fd = -1;
 
     if (tp->bar0 && tp->bar0 != MAP_FAILED)
         munmap((void *)tp->bar0, BAR0_SIZE);
@@ -1347,17 +1593,27 @@ static void msync_shmem_g2h_range(void *addr, size_t len)
     __sync_synchronize();
 }
 
-static void write_bar1_data_words(cuda_transport_t *tp,
-                                  const void *data, uint32_t len)
+static void write_bar1_data_words_mode(cuda_transport_t *tp,
+                                       const void *data, uint32_t len,
+                                       int use_u64_writes)
 {
     const uint8_t *src = (const uint8_t *)data;
     uint32_t off = 0;
 
-    /* Prefer mmap + 32-bit MMIO stores so QEMU's vgpu_bar1_write() updates the
-     * stub's bar1_data backing store. pwrite(resource1) can update the BAR
-     * without going through the emulated MMIO path — mediator then reads zeros
-     * from the stub (module-chunk first8=0, INVALID_IMAGE). */
+    /* Prefer mmap + MMIO stores so QEMU's vgpu_bar1_write() updates the stub's
+     * bar1_data backing store. pwrite(resource1) can update the BAR without
+     * going through the emulated MMIO path — mediator then reads zeros from the
+     * stub (module-chunk first8=0, INVALID_IMAGE). */
     if (tp->bar1 && tp->bar1 != MAP_FAILED) {
+        if (use_u64_writes) {
+            while (off + 8u <= len) {
+                uint64_t qword = 0;
+                memcpy(&qword, src + off, sizeof(qword));
+                *(volatile uint64_t *)((volatile char *)tp->bar1 +
+                                       BAR1_GUEST_TO_HOST_OFFSET + off) = qword;
+                off += 8u;
+            }
+        }
         while (off < len) {
             uint32_t word = 0;
             uint32_t chunk = len - off;
@@ -1388,6 +1644,12 @@ static void write_bar1_data_words(cuda_transport_t *tp,
             off += (uint32_t)n;
         }
     }
+}
+
+static void write_bar1_data_words(cuda_transport_t *tp,
+                                  const void *data, uint32_t len)
+{
+    write_bar1_data_words_mode(tp, data, len, 0);
 }
 
 static int cuda_transport_use_bar1_for_htod(cuda_transport_t *tp,
@@ -1424,6 +1686,184 @@ static int htod_env_force_bar1(void)
 static int module_env_force_bar1(void)
 {
     return (bulk_all_bar1_from_env() || env_not_zero("VGPU_MODULE_BAR1")) ? 1 : 0;
+}
+
+/* Default-on correctness backstop for HtoD BAR1 shadowing.
+ * Set VGPU_HTOD_BAR1_SHADOW=0 to A/B the clean SHMEM path without the extra
+ * BAR1 mirror when host fallback is no longer expected. */
+static int htod_bar1_shadow_enabled(void)
+{
+    static int cached = -1;
+    static int enabled = 1;
+    if (cached < 0) {
+        const char *e = getenv("VGPU_HTOD_BAR1_SHADOW");
+        enabled = !(e && (!e[0] || strcmp(e, "0") == 0));
+        cached = 1;
+    }
+    return enabled;
+}
+
+/* Optional A/B for large cuLibraryLoadData BAR1 shadow cost.
+ * Default is unlimited (preserve current behavior). When set to a positive byte
+ * count, library-load BAR1 shadowing is skipped only for payloads larger than
+ * that threshold, while HtoD shadowing and smaller module/library shadows keep
+ * the current semantics. */
+static uint32_t library_bar1_shadow_max_bytes(void)
+{
+    static int cached = -1;
+    static uint32_t value = 0;
+    if (cached < 0) {
+        const char *e = getenv("VGPU_LIBRARY_BAR1_SHADOW_MAX_BYTES");
+        value = UINT32_MAX;
+        if (e && e[0]) {
+            char *end = NULL;
+            errno = 0;
+            unsigned long long parsed = strtoull(e, &end, 10);
+            if (errno == 0 && end && *end == '\0' &&
+                parsed > 0ull && parsed <= (unsigned long long)UINT32_MAX) {
+                value = (uint32_t)parsed;
+            }
+        }
+        cached = 1;
+    }
+    return value;
+}
+
+static int bulk_shadow_bar1_enabled(cuda_transport_t *tp,
+                                    uint32_t call_id,
+                                    uint32_t len,
+                                    int is_htod_bulk,
+                                    int is_mod_bulk)
+{
+    if (!tp || !tp->has_bar1 || len > BAR1_GUEST_TO_HOST_SIZE) {
+        return 0;
+    }
+    if (is_htod_bulk) {
+        return htod_bar1_shadow_enabled();
+    }
+    if (!is_mod_bulk) {
+        return 0;
+    }
+    if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA) {
+        if (tp->has_shmem && tp->shmem_half > 0 &&
+            len <= (uint32_t)tp->shmem_half) {
+            return 0;
+        }
+        uint32_t max_bytes = library_bar1_shadow_max_bytes();
+        if (len > max_bytes) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+typedef enum bulk_primary_path_e {
+    BULK_PRIMARY_BAR0 = 0,
+    BULK_PRIMARY_SHMEM,
+    BULK_PRIMARY_BAR1,
+} bulk_primary_path_t;
+
+static bulk_primary_path_t bulk_primary_path_for_call(cuda_transport_t *tp,
+                                                      uint32_t call_id,
+                                                      uint32_t len)
+{
+    const int is_htod_bulk = (call_id == CUDA_CALL_MEMCPY_HTOD ||
+                              call_id == CUDA_CALL_MEMCPY_HTOD_ASYNC);
+    const int is_mod_bulk = (call_id == CUDA_CALL_MODULE_LOAD_DATA ||
+                             call_id == CUDA_CALL_MODULE_LOAD_DATA_EX ||
+                             call_id == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                             call_id == CUDA_CALL_LIBRARY_LOAD_DATA);
+    const int force_htod_bar1 = htod_env_force_bar1();
+    const int force_mod_bar1 = module_env_force_bar1();
+
+    if (tp->has_shmem && len > CUDA_SMALL_DATA_MAX &&
+        ((is_mod_bulk && !force_mod_bar1) ||
+         (is_htod_bulk && !force_htod_bar1))) {
+        return BULK_PRIMARY_SHMEM;
+    }
+    if (cuda_transport_use_bar1_for_htod(tp, call_id, len)) {
+        return BULK_PRIMARY_BAR1;
+    }
+    if (force_mod_bar1 && tp->has_bar1 && len > CUDA_SMALL_DATA_MAX &&
+        is_mod_bulk) {
+        return BULK_PRIMARY_BAR1;
+    }
+    if (tp->has_bar1 && len > CUDA_SMALL_DATA_MAX && is_mod_bulk &&
+        !tp->has_shmem) {
+        return BULK_PRIMARY_BAR1;
+    }
+    if (tp->has_shmem && len > CUDA_SMALL_DATA_MAX) {
+        return BULK_PRIMARY_SHMEM;
+    }
+    if (tp->has_bar1 && len > CUDA_SMALL_DATA_MAX) {
+        return BULK_PRIMARY_BAR1;
+    }
+    return BULK_PRIMARY_BAR0;
+}
+
+static const char *bulk_primary_path_name(cuda_transport_t *tp,
+                                          uint32_t call_id,
+                                          uint32_t len)
+{
+    switch (bulk_primary_path_for_call(tp, call_id, len)) {
+    case BULK_PRIMARY_SHMEM:
+        return "shmem";
+    case BULK_PRIMARY_BAR1:
+        return "bar1";
+    default:
+        return "bar0";
+    }
+}
+
+static const uint8_t *bulk_primary_written_ptr(cuda_transport_t *tp,
+                                               uint32_t call_id,
+                                               uint32_t len)
+{
+    switch (bulk_primary_path_for_call(tp, call_id, len)) {
+    case BULK_PRIMARY_SHMEM:
+        return (const uint8_t *)tp->shmem_g2h;
+    case BULK_PRIMARY_BAR1:
+        return (const uint8_t *)tp->bar1 + BAR1_GUEST_TO_HOST_OFFSET;
+    default:
+        return (const uint8_t *)tp->bar0 + CUDA_REQ_DATA_OFFSET;
+    }
+}
+
+static int library_bar1_u64_writes_enabled(void)
+{
+    return env_not_zero("VGPU_LIBRARY_BAR1_U64_WRITES") ? 1 : 0;
+}
+
+static void write_bar1_data_u64_words(cuda_transport_t *tp,
+                                      const void *data, uint32_t len)
+{
+    const uint8_t *src = (const uint8_t *)data;
+    uint32_t off = 0;
+
+    if (tp->bar1 && tp->bar1 != MAP_FAILED) {
+        while (off + 8u <= len) {
+            uint64_t qword = 0;
+            memcpy(&qword, src + off, sizeof(qword));
+            *(volatile uint64_t *)((volatile char *)tp->bar1 +
+                                   BAR1_GUEST_TO_HOST_OFFSET + off) = qword;
+            off += 8u;
+        }
+        while (off < len) {
+            uint32_t word = 0;
+            uint32_t chunk = len - off;
+            if (chunk > 4) {
+                chunk = 4;
+            }
+            memcpy(&word, src + off, chunk);
+            *(volatile uint32_t *)((volatile char *)tp->bar1 +
+                                   BAR1_GUEST_TO_HOST_OFFSET + off) = word;
+            off += 4u;
+        }
+        __sync_synchronize();
+        return;
+    }
+
+    write_bar1_data_words(tp, data, len);
 }
 
 /* After memcpy into shmem_g2h: log src vs destination bytes. If src/shmem_first8
@@ -1582,8 +2022,178 @@ static void library_transport_stage_trace(const char *stage,
     }
 }
 
+static void library_chunk_trace(uint32_t seq,
+                                uint32_t offset,
+                                uint32_t chunk_len,
+                                uint32_t total_len,
+                                uint32_t flags,
+                                const void *src)
+{
+    if (!src || chunk_len == 0) {
+        return;
+    }
+
+    const uint8_t *s = (const uint8_t *)src;
+    const uint8_t *tail = s + ((chunk_len >= 8u) ? (chunk_len - 8u) : 0u);
+    char line[512];
+    int n = snprintf(line, sizeof(line),
+                     "LIBRARY_CHUNK seq=%u offset=%u chunk=%u total=%u flags=0x%x "
+                     "head8=%02x%02x%02x%02x%02x%02x%02x%02x "
+                     "tail8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                     seq, offset, chunk_len, total_len, flags,
+                     s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
+                     tail[0], tail[1], tail[2], tail[3],
+                     tail[4], tail[5], tail[6], tail[7]);
+    if (n <= 0) {
+        return;
+    }
+
+    int fd = (int)syscall(__NR_openat, -100,
+                          "/var/tmp/vgpu_library_load_fingerprint.log",
+                          O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd >= 0) {
+        (void)syscall(__NR_write, fd, line, (size_t)n);
+        (void)syscall(__NR_close, fd);
+    }
+}
+
+static void htod_bar1_shadow_trace(cuda_transport_t *tp,
+                                   uint32_t seq,
+                                   uint32_t len,
+                                   const char *branch)
+{
+    if (!tp || !branch || len == 0) {
+        return;
+    }
+
+    const uint8_t *b = NULL;
+    if (tp->bar1 && tp->bar1 != MAP_FAILED &&
+        len <= BAR1_GUEST_TO_HOST_SIZE) {
+        b = (const uint8_t *)tp->bar1 + BAR1_GUEST_TO_HOST_OFFSET;
+    }
+
+    char line[384];
+    int n = snprintf(line, sizeof(line),
+                     "[cuda-transport] HTOD_BAR1_SHADOW seq=%u len=%u branch=%s "
+                     "has_bar1=%d bar1_ptr=%p first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                     seq, len, branch, tp->has_bar1 ? 1 : 0,
+                     (const void *)b,
+                     b ? b[0] : 0, b ? b[1] : 0, b ? b[2] : 0, b ? b[3] : 0,
+                     b ? b[4] : 0, b ? b[5] : 0, b ? b[6] : 0, b ? b[7] : 0);
+    if (n <= 0) {
+        return;
+    }
+
+    int fd = (int)syscall(__NR_openat, -100, "/var/tmp/vgpu_htod_transport.log",
+                          O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        (void)syscall(__NR_write, fd, line, (size_t)n);
+        (void)syscall(__NR_close, fd);
+    }
+}
+
+static void htod_bar1_shadow_decision_trace(cuda_transport_t *tp,
+                                            uint32_t call_id,
+                                            uint32_t seq,
+                                            uint32_t len,
+                                            const char *branch,
+                                            int shadow_enabled)
+{
+    if (!tp || !branch) {
+        return;
+    }
+
+    const uint8_t *b = NULL;
+    if (tp->bar1 && tp->bar1 != MAP_FAILED &&
+        len <= BAR1_GUEST_TO_HOST_SIZE) {
+        b = (const uint8_t *)tp->bar1 + BAR1_GUEST_TO_HOST_OFFSET;
+    }
+
+    char line[416];
+    int n = snprintf(line, sizeof(line),
+                     "[cuda-transport] HTOD_BAR1_DECISION seq=%u call_id=0x%04x "
+                     "len=%u branch=%s has_bar1=%d over_limit=%d enabled=%d "
+                     "bar1_ptr=%p first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                     seq, call_id, len, branch, tp->has_bar1 ? 1 : 0,
+                     len > BAR1_GUEST_TO_HOST_SIZE ? 1 : 0, shadow_enabled ? 1 : 0,
+                     (const void *)b,
+                     b ? b[0] : 0, b ? b[1] : 0, b ? b[2] : 0, b ? b[3] : 0,
+                     b ? b[4] : 0, b ? b[5] : 0, b ? b[6] : 0, b ? b[7] : 0);
+    if (n <= 0) {
+        return;
+    }
+
+    int fd = (int)syscall(__NR_openat, -100, "/var/tmp/vgpu_htod_transport.log",
+                          O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        (void)syscall(__NR_write, fd, line, (size_t)n);
+        (void)syscall(__NR_close, fd);
+    }
+}
+
+static uint64_t transport_fnv1a64(const void *data, uint32_t len)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    uint64_t h = 1469598103934665603ull;
+    uint32_t i;
+
+    if (!p || len == 0) {
+        return h;
+    }
+    for (i = 0; i < len; ++i) {
+        h ^= (uint64_t)p[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+static uint64_t monotonic_ns_now(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static void library_timing_trace(const char *stage,
+                                 uint32_t seq,
+                                 uint32_t len,
+                                 uint64_t elapsed_ns,
+                                 const char *detail)
+{
+    if (!stage) {
+        return;
+    }
+
+    char line[320];
+    unsigned long long us = (unsigned long long)((elapsed_ns + 500ull) / 1000ull);
+    int n;
+    if (detail && detail[0]) {
+        n = snprintf(line, sizeof(line),
+                     "LIBLOAD_TIMING stage=%s seq=%u len=%u us=%llu %s\n",
+                     stage, seq, len, us, detail);
+    } else {
+        n = snprintf(line, sizeof(line),
+                     "LIBLOAD_TIMING stage=%s seq=%u len=%u us=%llu\n",
+                     stage, seq, len, us);
+    }
+    if (n <= 0) {
+        return;
+    }
+
+    int fd = (int)syscall(__NR_openat, -100,
+                          "/var/tmp/vgpu_library_load_timing.log",
+                          O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd >= 0) {
+        (void)syscall(__NR_write, fd, line, (size_t)n);
+        (void)syscall(__NR_close, fd);
+    }
+}
+
 static void write_bulk_data(cuda_transport_t *tp,
                             uint32_t call_id,
+                            uint32_t seq,
                             const void *data, uint32_t len)
 {
     static pid_t wb_pid;
@@ -1622,6 +2232,8 @@ static void write_bulk_data(cuda_transport_t *tp,
     const int force_mod_bar1 = module_env_force_bar1();
     const int trace_large_bulk = (len > CUDA_SMALL_DATA_MAX) &&
                                  (is_htod_bulk || is_mod_bulk);
+    const int trace_library_timing =
+        (call_id == CUDA_CALL_LIBRARY_LOAD_DATA && len > CUDA_SMALL_DATA_MAX);
 
 #define TRACE_BULK_BRANCH(BRANCH_NAME)                                                   \
     do {                                                                                 \
@@ -1665,23 +2277,57 @@ static void write_bulk_data(cuda_transport_t *tp,
         /* memmove: host source buffer may overlap shmem_g2h (same mmap or
          * GGML views); memcpy has undefined behavior when regions overlap,
          * which produced all-zero G2H after copy on Ollama/llama.cpp. */
+        uint64_t shmem_copy_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
         memmove(tp->shmem_g2h, data, len);
         msync_shmem_g2h_range(tp->shmem_g2h, (size_t)len);
+        if (trace_library_timing) {
+            library_timing_trace("shmem_copy", seq, len,
+                                 monotonic_ns_now() - shmem_copy_start_ns,
+                                 "branch=shmem-preferred");
+        }
         if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA)
             library_write_site_trace("post", tp, data, len, "shmem-preferred");
         diag_shmem_after_memmove(tp, call_id, data, len);
         if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA)
             library_transport_stage_trace("after_memmove", tp, data, len);
         bulk_guest_payload_trace(call_id, len, data, tp->shmem_g2h);
-        /* Keep module/fatbin mirroring available, but let large HtoD use pure
-         * SHMEM once the guest-side copy is verified healthy. Mirroring every
-         * HtoD chunk into BAR1 makes the host consume the BAR1 path and turns
-         * weight upload back into the slow path. */
-        if (is_mod_bulk && tp->has_bar1 && len <= BAR1_GUEST_TO_HOST_SIZE) {
-            write_bar1_data_words(tp, tp->shmem_g2h, len);
+        /* Current HTOD SHMEM readback can stay zero while the stub falls back
+         * to BAR1. Mirror the current HTOD bytes into BAR1 as a correctness
+         * backstop so the fallback path does not consume stale payloads. */
+        {
+            const int shadow_bar1 =
+                bulk_shadow_bar1_enabled(tp, call_id, len, is_htod_bulk, is_mod_bulk);
+            if (is_htod_bulk) {
+                htod_bar1_shadow_decision_trace(tp, call_id, seq, len,
+                                               "shmem-preferred", shadow_bar1);
+            }
+            if (shadow_bar1) {
+            const void *bar1_src = is_htod_bulk ? data : tp->shmem_g2h;
+            uint64_t bar1_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
+            if (trace_library_timing && library_bar1_u64_writes_enabled()) {
+                write_bar1_data_u64_words(tp, bar1_src, len);
+            } else {
+                write_bar1_data_words(tp, bar1_src, len);
+            }
+            if (trace_library_timing) {
+                library_timing_trace("bar1_mirror", seq, len,
+                                     monotonic_ns_now() - bar1_start_ns,
+                                     library_bar1_u64_writes_enabled()
+                                         ? "branch=shmem-preferred mode=u64"
+                                         : "branch=shmem-preferred mode=u32");
+            }
             if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA)
                 library_transport_stage_trace("after_bar1_mirror", tp, data, len);
-        } else if (is_mod_bulk && !tp->has_bar1) {
+            if (is_htod_bulk) {
+                htod_bar1_shadow_trace(tp, seq, len, "shmem-preferred");
+            }
+            } else if (trace_library_timing && is_mod_bulk && tp->has_bar1 &&
+                       len <= BAR1_GUEST_TO_HOST_SIZE) {
+            char detail[96];
+            snprintf(detail, sizeof(detail), "branch=shmem-preferred max=%u",
+                     (unsigned)library_bar1_shadow_max_bytes());
+            library_timing_trace("bar1_mirror_skipped", seq, len, 0, detail);
+            } else if (is_mod_bulk && !tp->has_bar1) {
             static int mod_no_bar1_once;
             if (!mod_no_bar1_once) {
                 mod_no_bar1_once = 1;
@@ -1691,6 +2337,7 @@ static void write_bulk_data(cuda_transport_t *tp,
                         "stub uses shmem only\n");
             }
         }
+        }
     } else if (cuda_transport_use_bar1_for_htod(tp, call_id, len)) {
         TRACE_BULK_BRANCH("htod-bar1");
         /* BAR1 MMIO when guest has no shmem or small shmem window unavailable */
@@ -1698,31 +2345,79 @@ static void write_bulk_data(cuda_transport_t *tp,
     } else if (force_mod_bar1 && tp->has_bar1 && len > CUDA_SMALL_DATA_MAX &&
                is_mod_bulk) {
         TRACE_BULK_BRANCH("module-bar1");
+        uint64_t bar1_only_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
         write_bar1_data_words(tp, data, len);
+        if (trace_library_timing) {
+            library_timing_trace("bar1_only", seq, len,
+                                 monotonic_ns_now() - bar1_only_start_ns,
+                                 "branch=module-bar1");
+        }
     } else if (tp->has_bar1 && len > CUDA_SMALL_DATA_MAX &&
                is_mod_bulk &&
                !tp->has_shmem) {
         TRACE_BULK_BRANCH("module-bar1-no-shmem");
         /* No shmem registered: module bulk must use 32-bit MMIO stores (see
          * write_bar1_data_words header). */
+        uint64_t bar1_only_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
         write_bar1_data_words(tp, data, len);
+        if (trace_library_timing) {
+            library_timing_trace("bar1_only", seq, len,
+                                 monotonic_ns_now() - bar1_only_start_ns,
+                                 "branch=module-bar1-no-shmem");
+        }
     } else if (tp->has_shmem && len > CUDA_SMALL_DATA_MAX) {
         TRACE_BULK_BRANCH("shmem-fallback");
         if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA)
             library_write_site_trace("pre", tp, data, len, "shmem-fallback");
         /* See memmove note above (overlap-safe). */
+        uint64_t shmem_copy_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
         memmove(tp->shmem_g2h, data, len);
         msync_shmem_g2h_range(tp->shmem_g2h, (size_t)len);
+        if (trace_library_timing) {
+            library_timing_trace("shmem_copy", seq, len,
+                                 monotonic_ns_now() - shmem_copy_start_ns,
+                                 "branch=shmem-fallback");
+        }
         if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA)
             library_write_site_trace("post", tp, data, len, "shmem-fallback");
         diag_shmem_after_memmove(tp, call_id, data, len);
         if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA)
             library_transport_stage_trace("after_memmove", tp, data, len);
         bulk_guest_payload_trace(call_id, len, data, tp->shmem_g2h);
-        if (is_mod_bulk && tp->has_bar1 && len <= BAR1_GUEST_TO_HOST_SIZE) {
-            write_bar1_data_words(tp, tp->shmem_g2h, len);
+        {
+            const int shadow_bar1 =
+                bulk_shadow_bar1_enabled(tp, call_id, len, is_htod_bulk, is_mod_bulk);
+            if (is_htod_bulk) {
+                htod_bar1_shadow_decision_trace(tp, call_id, seq, len,
+                                               "shmem-fallback", shadow_bar1);
+            }
+            if (shadow_bar1) {
+            const void *bar1_src = is_htod_bulk ? data : tp->shmem_g2h;
+            uint64_t bar1_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
+            if (trace_library_timing && library_bar1_u64_writes_enabled()) {
+                write_bar1_data_u64_words(tp, bar1_src, len);
+            } else {
+                write_bar1_data_words(tp, bar1_src, len);
+            }
+            if (trace_library_timing) {
+                library_timing_trace("bar1_mirror", seq, len,
+                                     monotonic_ns_now() - bar1_start_ns,
+                                     library_bar1_u64_writes_enabled()
+                                         ? "branch=shmem-fallback mode=u64"
+                                         : "branch=shmem-fallback mode=u32");
+            }
             if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA)
                 library_transport_stage_trace("after_bar1_mirror", tp, data, len);
+            if (is_htod_bulk) {
+                htod_bar1_shadow_trace(tp, seq, len, "shmem-fallback");
+            }
+            } else if (trace_library_timing && is_mod_bulk && tp->has_bar1 &&
+                       len <= BAR1_GUEST_TO_HOST_SIZE) {
+            char detail[96];
+            snprintf(detail, sizeof(detail), "branch=shmem-fallback max=%u",
+                     (unsigned)library_bar1_shadow_max_bytes());
+            library_timing_trace("bar1_mirror_skipped", seq, len, 0, detail);
+            }
         }
     } else if (tp->has_bar1 && len > CUDA_SMALL_DATA_MAX) {
         TRACE_BULK_BRANCH("bar1-fallback");
@@ -1826,7 +2521,13 @@ static inline void flush_cuda_payload_writes(cuda_transport_t *tp,
         volatile uint8_t *tail =
             (volatile uint8_t *)tp->shmem_g2h + (send_len - 1u);
         (void)*tail;
-        if (tp->has_bar1 && send_len <= BAR1_GUEST_TO_HOST_SIZE) {
+        if (bulk_shadow_bar1_enabled(tp, call_id, send_len,
+                                     call_id == CUDA_CALL_MEMCPY_HTOD ||
+                                     call_id == CUDA_CALL_MEMCPY_HTOD_ASYNC,
+                                     call_id == CUDA_CALL_MODULE_LOAD_DATA ||
+                                     call_id == CUDA_CALL_MODULE_LOAD_DATA_EX ||
+                                     call_id == CUDA_CALL_MODULE_LOAD_FAT_BINARY ||
+                                     call_id == CUDA_CALL_LIBRARY_LOAD_DATA)) {
             volatile uint32_t *btail =
                 (volatile uint32_t *)((volatile char *)tp->bar1 +
                                       BAR1_GUEST_TO_HOST_OFFSET +
@@ -1974,12 +2675,15 @@ static int do_single_cuda_call(cuda_transport_t *tp,
     int log_library_payload = (call_id == CUDA_CALL_LIBRARY_LOAD_DATA) &&
                               send_data && send_len > 0 &&
                               bulk_trace_enabled;
+    int trace_library_timing = (call_id == CUDA_CALL_LIBRARY_LOAD_DATA) &&
+                               send_data && send_len > CUDA_SMALL_DATA_MAX;
     if (!g_first_call_done) {
         g_first_call_done = 1;
         cuda_transport_write_checkpoint("FIRST_CALL");
     }
     uint32_t seq = tp->seq_counter++;
     time_t start;
+    uint64_t poll_start_ns = 0;
     uint32_t status;
 
     if (bulk_trace_enabled && call_id == CUDA_CALL_LIBRARY_LOAD_DATA) {
@@ -2068,17 +2772,78 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             }
         }
     }
+    if (call_id == CUDA_CALL_MEMCPY_HTOD ||
+        call_id == CUDA_CALL_MEMCPY_HTOD_ASYNC) {
+        if (send_len > CUDA_SMALL_DATA_MAX) {
+            const uint8_t *handoff = (const uint8_t *)send_data;
+            uint64_t handoff_hash = transport_fnv1a64(send_data, send_len);
+            int lfd = (int)syscall(__NR_openat, -100, "/var/tmp/vgpu_htod_handoff.log",
+                                   O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (lfd >= 0) {
+                char lbuf[384];
+                int n = snprintf(lbuf, sizeof(lbuf),
+                                 "HTOD handoff seq=%u len=%u src=%p g2h=%p has_shmem=%d "
+                                 "fnv1a64=0x%016llx first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                                 seq, send_len, (void *)send_data, (void *)tp->shmem_g2h,
+                                 tp->has_shmem ? 1 : 0,
+                                 (unsigned long long)handoff_hash,
+                                 (handoff && send_len > 0) ? handoff[0] : 0,
+                                 (handoff && send_len > 1) ? handoff[1] : 0,
+                                 (handoff && send_len > 2) ? handoff[2] : 0,
+                                 (handoff && send_len > 3) ? handoff[3] : 0,
+                                 (handoff && send_len > 4) ? handoff[4] : 0,
+                                 (handoff && send_len > 5) ? handoff[5] : 0,
+                                 (handoff && send_len > 6) ? handoff[6] : 0,
+                                 (handoff && send_len > 7) ? handoff[7] : 0);
+                if (n > 0 && n < (int)sizeof(lbuf)) {
+                    (void)syscall(__NR_write, lfd, lbuf, (size_t)n);
+                }
+                (void)syscall(__NR_close, lfd);
+            }
+        }
+    }
     if (log_htod_payload) {
         const uint8_t *src = (const uint8_t *)send_data;
+        uint64_t htod_hash = transport_fnv1a64(send_data, send_len);
+        const int force_htod_bar1_live = htod_env_force_bar1();
+        const int shadow_enabled_live =
+            bulk_shadow_bar1_enabled(tp, call_id, send_len, 1, 0);
+        const char *primary_path = bulk_primary_path_name(tp, call_id, send_len);
+        {
+            const int shadow_enabled =
+                bulk_shadow_bar1_enabled(tp, call_id, send_len, 1, 0);
+            const uint8_t *bar1_cur = NULL;
+            if (tp->bar1 && tp->bar1 != MAP_FAILED &&
+                send_len <= BAR1_GUEST_TO_HOST_SIZE) {
+                bar1_cur = (const uint8_t *)tp->bar1 + BAR1_GUEST_TO_HOST_OFFSET;
+            }
+            char dbuf[384];
+            int dn = snprintf(dbuf, sizeof(dbuf),
+                              "HTOD_OUTER_DECISION seq=%u len=%u shadow_enabled=%d "
+                              "has_bar1=%d bar1_ptr=%p bar1_first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                              seq, send_len, shadow_enabled ? 1 : 0,
+                              tp->has_bar1 ? 1 : 0, (const void *)bar1_cur,
+                              bar1_cur ? bar1_cur[0] : 0, bar1_cur ? bar1_cur[1] : 0,
+                              bar1_cur ? bar1_cur[2] : 0, bar1_cur ? bar1_cur[3] : 0,
+                              bar1_cur ? bar1_cur[4] : 0, bar1_cur ? bar1_cur[5] : 0,
+                              bar1_cur ? bar1_cur[6] : 0, bar1_cur ? bar1_cur[7] : 0);
+            if (dn > 0) {
+                int dfd = (int)syscall(__NR_openat, -100, "/var/tmp/vgpu_htod_transport.log",
+                                       O_WRONLY | O_CREAT | O_APPEND, 0644);
+                if (dfd >= 0) {
+                    (void)syscall(__NR_write, dfd, dbuf, (size_t)dn);
+                    (void)syscall(__NR_close, dfd);
+                }
+            }
+        }
         fprintf(stderr,
-                "[cuda-transport] HTOD source marker=phase3-htod-marker-20260331c seq=%u len=%u first8=%02x%02x%02x%02x%02x%02x%02x%02x path=%s\n",
+                "[cuda-transport] HTOD source marker=phase3-htod-marker-20260331c seq=%u len=%u first8=%02x%02x%02x%02x%02x%02x%02x%02x path=%s force_htod_bar1=%d shadow=%d\n",
                 seq, send_len,
                 send_len > 0 ? src[0] : 0, send_len > 1 ? src[1] : 0,
                 send_len > 2 ? src[2] : 0, send_len > 3 ? src[3] : 0,
                 send_len > 4 ? src[4] : 0, send_len > 5 ? src[5] : 0,
                 send_len > 6 ? src[6] : 0, send_len > 7 ? src[7] : 0,
-                (tp->has_shmem && send_len > CUDA_SMALL_DATA_MAX) ? "shmem" :
-                (tp->has_bar1 && send_len > CUDA_SMALL_DATA_MAX ? "bar1" : "bar0"));
+                primary_path, force_htod_bar1_live, shadow_enabled_live);
         fprintf(stderr,
                 "[cuda-transport] pre_write_bulk seq=%u len=%u pid=%d g2h=%p src=%p has_shmem=%d\n",
                 seq, send_len, (int)getpid(),
@@ -2090,15 +2855,17 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             /* One snprintf + one write: same text as stderr; file may be ollama-only (ACL). */
             char lbuf[768];
             int n = snprintf(lbuf, sizeof(lbuf),
-                            "HTOD source marker=phase3-htod-marker-20260331c seq=%u len=%u first8=%02x%02x%02x%02x%02x%02x%02x%02x path=%s\n"
+                            "HTOD source marker=phase3-htod-marker-20260331c seq=%u len=%u "
+                            "fnv1a64=0x%016llx first8=%02x%02x%02x%02x%02x%02x%02x%02x "
+                            "path=%s force_htod_bar1=%d shadow=%d\n"
                             "pre_write_bulk seq=%u len=%u pid=%d g2h=%p src=%p has_shmem=%d\n",
                              seq, send_len,
+                             (unsigned long long)htod_hash,
                              send_len > 0 ? src[0] : 0, send_len > 1 ? src[1] : 0,
                              send_len > 2 ? src[2] : 0, send_len > 3 ? src[3] : 0,
                              send_len > 4 ? src[4] : 0, send_len > 5 ? src[5] : 0,
                              send_len > 6 ? src[6] : 0, send_len > 7 ? src[7] : 0,
-                             (tp->has_shmem && send_len > CUDA_SMALL_DATA_MAX) ? "shmem" :
-                             (tp->has_bar1 && send_len > CUDA_SMALL_DATA_MAX ? "bar1" : "bar0"),
+                            primary_path, force_htod_bar1_live, shadow_enabled_live,
                              seq, send_len, (int)getpid(),
                              (void *)tp->shmem_g2h, (void *)send_data,
                              tp->has_shmem ? 1 : 0);
@@ -2114,8 +2881,16 @@ static int do_single_cuda_call(cuda_transport_t *tp,
          call_id == CUDA_CALL_LIBRARY_LOAD_DATA)) {
         module_funnel_line(tp, "pre", call_id, seq, send_len, (const uint8_t *)send_data);
     }
+    refresh_shmem_registration_for_request(tp, call_id, send_len);
     /* Write bulk data before writing metadata registers */
-    write_bulk_data(tp, call_id, send_data, send_len);
+    {
+        uint64_t bulk_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
+        write_bulk_data(tp, call_id, seq, send_data, send_len);
+        if (trace_library_timing) {
+            library_timing_trace("write_bulk_total", seq, send_len,
+                                 monotonic_ns_now() - bulk_start_ns, "");
+        }
+    }
     if (send_len > 0 &&
         (call_id == CUDA_CALL_MODULE_LOAD_DATA ||
          call_id == CUDA_CALL_MODULE_LOAD_DATA_EX ||
@@ -2218,14 +2993,7 @@ static int do_single_cuda_call(cuda_transport_t *tp,
         }
     }
     if (log_htod_payload) {
-        const uint8_t *written = NULL;
-        if (tp->has_shmem && send_len > CUDA_SMALL_DATA_MAX) {
-            written = (const uint8_t *)tp->shmem_g2h;
-        } else if (tp->has_bar1 && send_len > CUDA_SMALL_DATA_MAX) {
-            written = (const uint8_t *)tp->bar1 + BAR1_GUEST_TO_HOST_OFFSET;
-        } else {
-            written = (const uint8_t *)tp->bar0 + CUDA_REQ_DATA_OFFSET;
-        }
+        const uint8_t *written = bulk_primary_written_ptr(tp, call_id, send_len);
         /* memmove writes through void*; volatile load so the log sees RAM bytes. */
         __sync_synchronize();
         {
@@ -2252,7 +3020,14 @@ static int do_single_cuda_call(cuda_transport_t *tp,
     }
 
     /* Ensure BAR1/shmem/BAR0-inline payload is visible before BAR0 metadata. */
-    flush_cuda_payload_writes(tp, call_id, send_len);
+    {
+        uint64_t flush_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
+        flush_cuda_payload_writes(tp, call_id, send_len);
+        if (trace_library_timing) {
+            library_timing_trace("flush_payload", seq, send_len,
+                                 monotonic_ns_now() - flush_start_ns, "");
+        }
+    }
     if (bulk_trace_enabled &&
         call_id == CUDA_CALL_LIBRARY_LOAD_DATA &&
         send_data && send_len > CUDA_SMALL_DATA_MAX &&
@@ -2317,6 +3092,7 @@ static int do_single_cuda_call(cuda_transport_t *tp,
 
     /* Poll for completion */
     start = time(NULL);
+    poll_start_ns = trace_library_timing ? monotonic_ns_now() : 0;
     unsigned poll_iter = 0;
     while (1) {
         const char *status_src = cuda_transport_status_path_name(tp);
@@ -2422,6 +3198,14 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             }
         }
         if (time(NULL) - start >= poll_timeout_sec()) {
+            if (trace_library_timing) {
+                char timing_detail[96];
+                snprintf(timing_detail, sizeof(timing_detail),
+                         "iter=%u status=0x%02x", poll_iter, (unsigned)status);
+                library_timing_trace("poll_timeout", seq, send_len,
+                                     monotonic_ns_now() - poll_start_ns,
+                                     timing_detail);
+            }
             /* Verification: log timeout (guest never saw DONE or response_len) */
             if (bulk_trace_enabled) {
                 int vfd = (int)syscall(__NR_open, "/tmp/vgpu_host_response_verify.log",
@@ -2454,6 +3238,15 @@ static int do_single_cuda_call(cuda_transport_t *tp,
         usleep(POLL_INTERVAL_US);
     }
 
+    if (trace_library_timing) {
+        char timing_detail[96];
+        snprintf(timing_detail, sizeof(timing_detail),
+                 "iter=%u status=0x%02x", poll_iter, (unsigned)status);
+        library_timing_trace("poll_wait", seq, send_len,
+                             monotonic_ns_now() - poll_start_ns,
+                             timing_detail);
+    }
+
     /* BAR-level ERROR is authoritative; don't reinterpret stale CUDA result regs as success. */
     if (status == STATUS_ERROR) {
         uint32_t err = REG32(tp->bar0, REG_ERROR_CODE);
@@ -2462,8 +3255,8 @@ static int do_single_cuda_call(cuda_transport_t *tp,
         snprintf(detail, sizeof(detail), "seq=%u vm_id=%u %s", seq, tp->vm_id, err_name);
         cuda_transport_write_error(err_name, call_id, err, detail);
         fprintf(stderr,
-                "[cuda-transport] STATUS_ERROR: call_id=0x%04x seq=%u err=0x%08x(%s) vm_id=%u\n",
-                call_id, seq, err, err_name, tp->vm_id);
+                "[cuda-transport] STATUS_ERROR: call=%s(0x%04x) seq=%u err=0x%08x(%s) vm_id=%u\n",
+                call_id_to_name(call_id), call_id, seq, err, err_name, tp->vm_id);
         fflush(stderr);
         if (result) {
             memset(result, 0, sizeof(*result));
@@ -2492,6 +3285,10 @@ static int do_single_cuda_call(cuda_transport_t *tp,
                         snprintf(cuda_detail, sizeof(cuda_detail), "host_cuda_status=0x%x seq=%u",
                                  (unsigned)cst, seq);
                         cuda_transport_write_error("CUDA_CALL_FAILED", call_id, cst, cuda_detail);
+                        fprintf(stderr,
+                                "[cuda-transport] STATUS_ERROR host-cuda: call=%s(0x%04x) seq=%u "
+                                "host_status=0x%08x\n",
+                                call_id_to_name(call_id), call_id, seq, (unsigned)cst);
                     }
                 }
             } else {
@@ -2500,6 +3297,13 @@ static int do_single_cuda_call(cuda_transport_t *tp,
             }
         } else {
             debug_record_call(call_id, seq, (int)CUDA_TRANSPORT_FALLBACK_CURESULT, err);
+        }
+        if (trace_library_timing) {
+            char timing_detail[128];
+            uint32_t host_status = (result && err == VGPU_ERR_CUDA_ERROR) ? result->status : 0;
+            snprintf(timing_detail, sizeof(timing_detail),
+                     "vm_err=0x%08x host_status=0x%08x", err, host_status);
+            library_timing_trace("status_error", seq, send_len, 0, timing_detail);
         }
         if (recv_len) *recv_len = 0;
         return result ? (int)result->status : CUDA_TRANSPORT_FALLBACK_CURESULT;
@@ -2570,6 +3374,12 @@ static int do_single_cuda_call(cuda_transport_t *tp,
 
     {
         int ret = result ? (int)result->status : 0;
+        if (trace_library_timing) {
+            char timing_detail[96];
+            snprintf(timing_detail, sizeof(timing_detail),
+                     "ret=%d resp_len=%u", ret, resp_len);
+            library_timing_trace("return", seq, send_len, 0, timing_detail);
+        }
         if (ret != 0) {
             int fd = (int)syscall(__NR_open, "/tmp/vgpu_transport_returned_nonzero",
                     O_WRONLY | O_CREAT | O_TRUNC, 0666);
@@ -2716,12 +3526,12 @@ static int cuda_transport_call_dtoh_chunked(cuda_transport_t *tp,
 }
 
 /* ================================================================
- * Chunked module image upload (cuModuleLoadData / cuModuleLoadFatBinary)
+ * Chunked image upload (module/library load payloads)
  *
- * Carries CUDA_CHUNK_FLAG_* in args[14]; the mediator accumulates
- * on the host side and calls cuModuleLoadData on the LAST chunk.
+ * Carries CUDA_CHUNK_FLAG_* in args[14]; the executor accumulates
+ * on the host side and performs the real load on the LAST chunk.
  * ================================================================ */
-static int cuda_transport_call_module_load_chunked(
+static int cuda_transport_call_image_load_chunked(
     cuda_transport_t *tp,
     uint32_t call_id,
     const void *send_data, uint32_t send_len,
@@ -2778,13 +3588,17 @@ static int cuda_transport_call_module_load_chunked(
             return 1;
         }
         memcpy(chunk_copy, (const uint8_t *)send_data + offset, chunk);
+        if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA) {
+            library_chunk_trace(tp->seq_counter, offset, chunk, send_len,
+                                chunk_args[14], chunk_copy);
+        }
         rc = do_single_cuda_call(tp, call_id,
                                  chunk_args, CUDA_MAX_INLINE_ARGS,
                                  chunk_copy, chunk,
                                  &chunk_result, NULL, 0, NULL);
         free(chunk_copy);
         if (rc != 0) {
-            fprintf(stderr, "[cuda-transport] MODULE_LOAD chunk failed "
+            fprintf(stderr, "[cuda-transport] IMAGE_LOAD chunk failed "
                     "at offset=%u chunk=%u total=%u rc=%d\n",
                     offset, chunk, send_len, rc);
             if (result) *result = chunk_result;
@@ -2879,9 +3693,23 @@ static int cuda_transport_call_impl(cuda_transport_t *tp,
          call_id == CUDA_CALL_MODULE_LOAD_FAT_BINARY) &&
         send_data && send_len > CUDA_SMALL_DATA_MAX)
     {
-        rc = cuda_transport_call_module_load_chunked(tp, call_id,
+        rc = cuda_transport_call_image_load_chunked(tp, call_id,
                                                        send_data, send_len,
                                                        result);
+        release_transport_process_lock(process_lock_fd);
+        pthread_mutex_unlock(&g_transport_mutex);
+        return rc;
+    }
+
+    /* ---- Chunked library image upload ----
+     * Only chunk the oversized libloads that still exceed the active SHMEM
+     * half-window. Smaller libloads now complete quickly via single-call SHMEM. */
+    if (call_id == CUDA_CALL_LIBRARY_LOAD_DATA &&
+        send_data && send_len > limit)
+    {
+        rc = cuda_transport_call_image_load_chunked(tp, call_id,
+                                                    send_data, send_len,
+                                                    result);
         release_transport_process_lock(process_lock_fd);
         pthread_mutex_unlock(&g_transport_mutex);
         return rc;
