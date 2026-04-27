@@ -1,37 +1,35 @@
 #!/usr/bin/env python3
 """
-Connect to VM using pexpect for password authentication.
-Target VM is read from vm_config.py (test-3@10.25.33.11 by default).
+Connect to a Server 2 VM using pexpect for password authentication.
 
-Requires: Run this script from a machine that can reach the VM (same LAN/VPN as
-10.25.33.x). If you see "Connection timed out" or "No route to host", the
-current host has no route to the VM — run from your workstation or a jump host
-that can ping/SSH the VM.
+Target VM is read from vm_config.py and may be overridden with environment
+variables such as VM_HOST, VM_USER, and VM_PASSWORD.
 """
-import sys
 import os
-import pexpect
+import sys
 import time
+
+import pexpect
+
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
-from vm_config import VM_HOST, VM_USER, VM_PASSWORD
+
+from vm_config import VM_HOST, VM_PASSWORD, VM_USER
+
 
 CONNECT_TIMEOUT_SEC = int(os.environ.get("CONNECT_VM_CONNECT_TIMEOUT_SEC", "30"))
-# Must be > SSH ConnectTimeout (15s) so we see SSH error message before giving up
 PROMPT_TIMEOUT_SEC = int(os.environ.get("CONNECT_VM_PROMPT_TIMEOUT_SEC", "25"))
-# Default 45 minutes; user can override per command.
 COMMAND_TIMEOUT_SEC = int(os.environ.get("CONNECT_VM_COMMAND_TIMEOUT_SEC", "2700"))
 CONNECT_RETRIES = int(os.environ.get("CONNECT_VM_RETRIES", "3"))
 CONNECT_RETRY_DELAY_SEC = float(os.environ.get("CONNECT_VM_RETRY_DELAY_SEC", "2"))
 
+
 def connect_and_run_command(command):
-    """Connect to VM and run a command"""
-    # Merge SSH stderr into stdout so connection errors (e.g. "No route to host",
-    # "Connection timed out") appear in child.before when we get EOF/TIMEOUT
+    """Connect to the configured VM and run a command."""
     ssh_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 {VM_USER}@{VM_HOST}"
     run_cmd = f"/bin/sh -c '{ssh_cmd} 2>&1'"
-    
+
     for attempt in range(1, CONNECT_RETRIES + 1):
         child = None
         try:
@@ -39,7 +37,7 @@ def connect_and_run_command(command):
             child = pexpect.spawn(
                 run_cmd,
                 timeout=CONNECT_TIMEOUT_SEC,
-                encoding='utf-8',
+                encoding="utf-8",
             )
 
             def run_remote_command():
@@ -52,9 +50,7 @@ def connect_and_run_command(command):
                     f"printf '\\n{done_marker}:%s\\n' \"$__rc\""
                 )
                 child.sendline(wrapped_command)
-                # Handle sudo prompts and wait for command completion.
-                # IMPORTANT: do not stop waiting after 360s of silence.
-                # Keep waiting until done marker appears or command timeout is exceeded.
+
                 deadline = None if COMMAND_TIMEOUT_SEC <= 0 else (time.time() + COMMAND_TIMEOUT_SEC)
                 exit_code = None
                 while True:
@@ -65,66 +61,64 @@ def connect_and_run_command(command):
                         wait_timeout = 30
                         if deadline is not None:
                             wait_timeout = min(30, max(1, int(deadline - time.time())))
-                        index = child.expect([
-                            'password:',
-                            'Password:',
-                            r'\[sudo\] password',
-                            rf'{done_marker}:(\d+)',
-                            pexpect.EOF,
-                            pexpect.TIMEOUT
-                        ], timeout=wait_timeout)
-                        if index in [0, 1, 2]:  # password prompt
+                        index = child.expect(
+                            [
+                                "password:",
+                                "Password:",
+                                r"\[sudo\] password",
+                                rf"{done_marker}:(\d+)",
+                                pexpect.EOF,
+                                pexpect.TIMEOUT,
+                            ],
+                            timeout=wait_timeout,
+                        )
+                        if index in [0, 1, 2]:
                             child.sendline(VM_PASSWORD)
-                        elif index == 3:  # done marker with exit code
+                        elif index == 3:
                             try:
                                 exit_code = int(child.match.group(1))
                             except Exception:
                                 exit_code = None
                             break
-                        elif index == 4:  # EOF
+                        elif index == 4:
                             break
-                        else:  # TIMEOUT
+                        else:
                             continue
                     except pexpect.TIMEOUT:
                         continue
+
                 output = child.before
                 print("Output:")
                 print(output)
                 if exit_code is not None:
                     print(f"Remote command exit code: {exit_code}")
-                child.sendline('exit')
+                child.sendline("exit")
                 child.close()
                 return output
-        
-            # Accept either a password prompt or an already-open shell prompt.
+
             index = child.expect(
-                ['password:', 'Password:', r'\$', '#', pexpect.EOF, pexpect.TIMEOUT],
-                timeout=PROMPT_TIMEOUT_SEC
+                ["password:", "Password:", r"\$", "#", pexpect.EOF, pexpect.TIMEOUT],
+                timeout=PROMPT_TIMEOUT_SEC,
             )
-            
-            if index == 0 or index == 1:
+
+            if index in [0, 1]:
                 print("Sending password...")
                 child.sendline(VM_PASSWORD)
-                child.expect([r'\$', '#', pexpect.EOF, pexpect.TIMEOUT], timeout=PROMPT_TIMEOUT_SEC)
-                
+                time.sleep(1)
                 if child.isalive():
                     return run_remote_command()
-                else:
-                    print("Connection failed after password")
-                    print(child.before)
-            elif index == 2 or index == 3:
+                print("Connection failed after password")
+                print(child.before)
+            elif index in [2, 3]:
                 return run_remote_command()
             else:
-                # EOF (4) or TIMEOUT (5): show SSH error if present
                 buf = (child.before or "").strip()
                 if buf:
                     print(f"SSH output/error: {buf}")
+                elif index == 4:
+                    print("Connection closed immediately (EOF). Check VM reachability.")
                 else:
-                    print("Unexpected response (no output from SSH).")
-                    if index == 4:
-                        print("Connection closed immediately (EOF). Check: VM reachable? (e.g. ping", VM_HOST, ")")
-                    else:
-                        print("No prompt within timeout. Check: VM up, SSH on port 22, firewall.")
+                    print("No prompt within timeout. Check VM reachability and SSH.")
         except pexpect.ExceptionPexpect as e:
             print(f"Pexpect error: {e}")
         except Exception as e:
@@ -141,11 +135,12 @@ def connect_and_run_command(command):
 
     return None
 
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         command = " ".join(sys.argv[1:])
     else:
         command = "echo 'Connection test'; pwd; whoami"
-    
+
     result = connect_and_run_command(command)
     sys.exit(0 if result else 1)

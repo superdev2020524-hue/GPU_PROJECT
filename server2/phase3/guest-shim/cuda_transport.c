@@ -372,6 +372,12 @@ static int poll_timeout_sec(void) {
 /* Default shared-memory region (must match VGPU_SHMEM_DEFAULT_SIZE) */
 #define SHMEM_DEFAULT_SIZE   (256u * 1024u * 1024u)
 #define SHMEM_MIN_SIZE       (  8u * 1024u * 1024u)
+/*
+ * Large single memcpy() calls into the shared-memory window can stall the
+ * guest-side transport long before the next doorbell reaches the host. Keep
+ * HtoD chunk copies bounded even when shmem itself is larger.
+ */
+#define SHMEM_HTOD_CHUNK_CAP (  8u * 1024u * 1024u)
 
 /* Register access */
 #define REG32(base, off)  (*(volatile uint32_t *)((volatile char *)(base) + (off)))
@@ -1381,6 +1387,9 @@ static int cuda_transport_call_htod_chunked(cuda_transport_t *tp,
     memcpy(chunk_args, args, num_args * sizeof(uint32_t));
 
     uint32_t limit  = max_single_payload(tp);
+    if (tp->has_shmem && limit > SHMEM_HTOD_CHUNK_CAP) {
+        limit = SHMEM_HTOD_CHUNK_CAP;
+    }
     uint32_t offset = 0;
     int rc = 0;
     CUDACallResult chunk_result;

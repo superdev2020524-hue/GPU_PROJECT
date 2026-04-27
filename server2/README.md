@@ -30,6 +30,22 @@ This directory is a **full mirror** of the repository’s **`phase3/`** tree (mi
 
 - **Primary dom0** in the main repo **`phase3/vm_config.py`** defaults to **`10.25.33.10`** — do not change that file for Host 2 work.
 - **This registry** sets **`server2/phase3/vm_config.py`** to mediator **`10.25.33.20`** and the usual test VM password; run **`python3 connect_host.py '…'`** from **`server2/phase3/`** so imports resolve to that config. Override with **`MEDIATOR_HOST`** / **`MEDIATOR_PASSWORD`** if needed.
+- **Server 2 VM rule:** for the guest-compute path, keep **XCP-ng host Secure Boot disabled** on the VM unless you are intentionally testing Secure Boot. The verified host command is:
+  - **`xe vm-param-set uuid=<vm-uuid> platform:secureboot=false`**
+
+---
+
+## Isolation rule
+
+For current **Server 2** work:
+
+- edit and document only under **`server2/`**
+- treat root **`phase3/`** as active **Server 1** work
+- if you need to adapt a root `phase3` item, copy it into the **`server2`**
+  registry before modifying it
+
+See **`server2/phase3/SERVER2_ISOLATION_AND_MISSION_RULES.md`** and
+**`server2/phase3/ASSISTANT_ROLE_AND_ANTICOUPLING.md`**.
 
 ---
 

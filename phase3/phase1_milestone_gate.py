@@ -14,6 +14,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 
@@ -111,10 +112,11 @@ def eval_expect(expect: Dict[str, Any], actual_text: str) -> Tuple[bool, str]:
 
 
 def main() -> int:
+    script_dir = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--suite",
-        default="phase1_milestone_test_suite.json",
+        default=str(script_dir / "phase1_milestone_test_suite.json"),
         help="Path to JSON suite file.",
     )
     parser.add_argument(

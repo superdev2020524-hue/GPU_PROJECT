@@ -33,14 +33,21 @@ Maintain a strict queue:
 3. Continue tracing until the active error is **resolved**, **disproved**, or **proven superseded** by evidence.
 4. Only then may the next candidate be promoted to the new active error.
 5. If a candidate-side correction resolves the active error indirectly, record that closure explicitly and note the proof.
+6. If the preserved `Plan A` canary regresses during `Plan B` work, that regression becomes the active error immediately.
+7. A passing alternate model counts as transport-health or canary evidence unless the user explicitly says it is also the milestone target.
 
 This prevents the investigation from drifting across multiple symptoms without closing the current blocker.
 
 For each session note or assistant reply, include:
 
+- **Lane** (`Plan A` canary or `Plan B` target)
+- **Current Plan A state** (`pass`, `fail`, `unverified`)
 - **Active error**
 - **Candidate list**
 - **Closure condition** for the active error
+- **Last proven checkpoint**
+- **Exact bounded repro**
+- **Live artifact proof**
 - **Evidence** showing whether the active error remains open
 
 ---

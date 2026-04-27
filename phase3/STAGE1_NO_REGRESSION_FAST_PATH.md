@@ -4,7 +4,16 @@ This document exists for one purpose: finish the Stage 1 milestone quickly witho
 
 ## Stage 1 finish line
 
-Stage 1 is complete only when all three are proven on the same live path:
+Stage 1 must now be read in two lanes:
+
+1. **Plan A** = preserved checked-in canary (`qwen2.5:0.5b` + default gate).
+2. **Plan B** = explicit Tiny-model target unless the user redefines it.
+
+`Plan A` passing proves the repaired live path is preserved. It does **not** by itself close Stage 1 if `Plan B` is still a required target.
+
+Full Stage 1 completion requires `Plan A` preservation plus explicit `Plan B` closure, unless the user formally demotes `Plan B`.
+
+For any lane that is being declared closed, all three must be proven on the same live path:
 
 1. Deterministic correctness: the deterministic prompt bundle returns correct, parseable answers.
 2. Speed: cold and warm runs meet the agreed targets.
@@ -38,6 +47,8 @@ Stage 1 is complete only when all three are proven on the same live path:
 6. If a run fails earlier than the last proven checkpoint, classify it as a regression and repair the baseline first.
 7. Do not widen the search area while an earlier regression is still active.
 8. Do not rerun the full Stage 1 gate while the active runtime blocker is still earlier than the milestone path.
+9. Preserve `Plan A` before and after risky `Plan B` work.
+10. Do not treat a passing alternate model as automatic closure of a failing target model.
 
 ## Mandatory baseline proof before any serious repro
 
@@ -87,14 +98,15 @@ The active error is always "the earliest checkpoint that no longer advances on t
 ## Fast execution loop
 
 1. Freeze the baseline.
-2. Run one bounded repro with the standard trace set.
-3. Compare the result to the last proven checkpoint.
-4. If the branch regressed earlier, repair only that regression.
-5. If the branch stayed on the same checkpoint, instrument only that checkpoint.
-6. Apply one change in one layer.
-7. Redeploy and prove the live artifact path.
-8. Re-run the same bounded repro.
-9. Promote the next blocker only if the current checkpoint is clearly passed.
+2. Prove `Plan A` is still green if the session is not specifically repairing `Plan A`.
+3. Run one bounded repro with the standard trace set.
+4. Compare the result to the last proven checkpoint.
+5. If the branch regressed earlier, repair only that regression.
+6. If the branch stayed on the same checkpoint, instrument only that checkpoint.
+7. Apply one change in one layer.
+8. Redeploy and prove the live artifact path.
+9. Re-run the same bounded repro.
+10. Promote the next blocker only if the current checkpoint is clearly passed.
 
 ## Current forced direction
 
@@ -102,11 +114,10 @@ Do not reopen solved endpoint/bootstrap debates unless the ladder falls earlier 
 
 The current live direction is:
 
-1. Stay on `P1-E` as the active error.
-2. Treat `P1-Q` as the current active-branch gate.
-3. Focus on the second CUDA split reserve path.
-4. Focus specifically on guest-shim bulk transfer during `cuLibraryLoadData`.
-5. Focus specifically on `write_bar1_data_words()` / `do_single_cuda_call()` and the matching handoff path in the guest shim.
+1. Keep `Plan A` frozen as the non-regression canary.
+2. Treat `Plan B` (`tinyllama:latest`) as the open advancement branch unless the user redefines it.
+3. Re-establish the earliest failing `Plan B` checkpoint on a fresh `Plan A`-passing baseline before promoting deeper candidates.
+4. Repair only the earliest `Plan B` blocker that survives that fresh repro.
 
 ## When to rerun the Stage 1 gate
 
@@ -120,11 +131,13 @@ Until then, the gate suite is not the driver; the active runtime checkpoint is.
 
 ## What counts as a successful close
 
-Stage 1 can be declared complete only when:
+Stage 1 can be declared fully complete only when:
 
-1. Cold deterministic request succeeds correctly.
-2. Warm deterministic request succeeds correctly.
-3. Accuracy bundle passes.
-4. Latency bundle passes.
-5. Residency bundle passes.
-6. The result is reproduced from a clean baseline, not a one-off lucky run.
+1. `Plan A` remains green.
+2. The still-required target lane (`Plan B` unless redefined) is declared and passes its agreed gate.
+3. Cold deterministic request succeeds correctly.
+4. Warm deterministic request succeeds correctly.
+5. Accuracy bundle passes.
+6. Latency bundle passes.
+7. Residency bundle passes.
+8. The result is reproduced from a clean baseline, not a one-off lucky run.

@@ -6,289 +6,6 @@ This file tracks the fast-track queue using strict one-active-error discipline.
 
 ---
 
-## Current interpretation guard (2026-04-07)
-
-Read this section before interpreting the historical fast-track sessions below.
-
-- **Plan A canary:** the checked-in `qwen2.5:0.5b` default gate is the preserved repaired-path canary and remains valid evidence that the current serving path works.
-- **Plan B target:** `tinyllama:latest` remains open if the user still requires it as a Phase 1 milestone target.
-- **Meaning of "Phase 1 closed" in Apr 6 entries:** those statements are to be read as `Plan A` / default-canary closure unless a newer top-level summary explicitly says `Plan B` was also closed or demoted.
-- **Current reading rule:** use the Apr 5-Apr 6 sessions as evidence for repaired-path behavior and earlier blocker closure, but do not silently convert a passing `Plan A` canary into final `Plan B` closure.
-
----
-
-## Session 2026-04-07 (strict `Plan B` repro on a freshly re-proven `Plan A` baseline)
-
-- **Lane:** `Plan B`
-- **Current `Plan A` state:** `pass`
-- **Active error:** `Plan B` deterministic correctness failure on `tinyllama:latest` after the repaired path successfully reached `HTTP 200` and residency.
-- **Candidates:** `Plan B` latency budget remains candidate-side until a Tiny-specific gate is written; residual non-terminating `0x00bc` / `cuFuncGetParamInfo` noise remains candidate-side because the run completed; exact-token prompt sensitivity remains candidate-side until a second deterministic Tiny case is checked.
-- **Closure condition for active error:** on a `Plan A`-passing baseline, a bounded Tiny deterministic bundle returns prompt-appropriate text while the host mediator still shows real physical-GPU execution and residency remains intact.
-- **Last proven checkpoint:** full ladder through `HTTP 200` and residency on `Plan B`.
-- **Bounded repro definition:** VM-local bounded POST to `http://127.0.0.1:11434/api/generate` with `model=tinyllama:latest`, prompt `Return exactly this token and nothing else: PHASE1_OK_314159`, `stream=false`, `keep_alive=-1`, `temperature=0`, `seed=1234`, `num_predict=24`, request timeout `650s`.
-
-### Evidence
-
-- **`Plan A` canary proof before `Plan B`:** `phase1_milestone_gate.py --base-url http://10.25.33.110:11434 --timeout-sec 240` passed again with `overall_pass=True`; report: `/tmp/phase1_milestone_gate_planA_pre_planB.json`.
-- **`Plan B` response evidence:** the bounded Tiny repro returned `HTTP 200` in **`87.800s`** with `load_duration ~= 26.763s` and `total_duration ~= 87.794s`, but the response text was wrong: `Sure, here's the updated query that returns only the "PHASE1_OK" token and nothing`.
-- **`Plan B` residency evidence:** `/api/ps` was empty at start, showed `tinyllama:latest` resident by about **`40s`**, remained resident through the run, and still showed the model resident immediately after the response.
-- **Host live-artifact proof:** dom0 `mediator_phase3` remained active on `/var/xen/qemu/root-29/tmp/vgpu-mediator.sock` during the same window.
-- **Host GPU-path proof:** fresh mediator lines added during the Tiny repro included **`13117`** `cuLaunchKernel SUCCESS: kernel executed on physical GPU` lines and **`16`** `cuLibraryLoadData success` lines for `vm=10`.
-- **Host non-regression proof:** in the same appended mediator window there were **no** `sync FAILED` lines and **no** `CUDA_ERROR_ILLEGAL_ADDRESS` lines.
-- **Candidate-side warning proof:** the same host window showed one final `result.status=801` for `cuFuncGetParamInfo(0x00bc)`, and the VM stderr tail showed matching `STATUS_ERROR` / `host_status=0x00000321`, but the request still completed with `HTTP 200`, so this remains candidate-side rather than active.
-
-### Why the active error changed
-
-The first fresh `Plan B` repro on a re-proven `Plan A` baseline no longer fails in bootstrap, allocation, HtoD, graph-reserve, response, or residency. The Tiny path now reaches a real physical-GPU-backed `HTTP 200` response and resident model state, so the earliest still-open `Plan B` blocker is semantic correctness itself.
-
-### Next single step
-
-Run one more bounded warm Tiny deterministic repro on the same preserved baseline using a different deterministic prompt shape (for example arithmetic or exact JSON) so we can decide whether the active `Plan B` failure is exact-token specific or a broader deterministic correctness failure.
-
----
-
-## Session 2026-04-07 (warm Tiny follow-up shows broader deterministic output-shape failure)
-
-- **Lane:** `Plan B`
-- **Current `Plan A` state:** `pass`
-- **Active error:** `tinyllama:latest` strict deterministic output-shape / compliance failure on the repaired path; the model is responsive and resident on real GPU execution, but it does not satisfy the required deterministic answer format under the current Tiny request shapes.
-- **Candidates:** Tiny arithmetic token-budget sensitivity remains candidate-side because the warm arithmetic repro ended with `done_reason=length`; residual `0x00bc` remains candidate-side and non-terminating; deeper transport corruption is weakened because multiple prompt shapes now produce prompt-related outputs instead of nonsense or crash behavior.
-- **Closure condition for active error:** on a `Plan A`-passing baseline, a bounded warm Tiny deterministic bundle returns outputs that actually satisfy the required format and content checks, not merely related text on the same topic.
-- **Last proven checkpoint:** full ladder through warm `HTTP 200` and residency on `Plan B`.
-- **Bounded repro definitions:**
-  - warm arithmetic: `What is 37 + 58? Reply with digits only.`, `num_predict=8`
-  - warm JSON: `Respond with JSON only: {"ok":true,"n":7}`, `num_predict=32`
-  - both with `temperature=0`, `seed=1234`, `keep_alive=-1`
-
-### Evidence
-
-- **Warm-baseline proof:** immediately before the follow-up repros, `/api/ps` already showed `tinyllama:latest` resident with a far-future expiry, so the runs were warm-path checks rather than fresh-load probes.
-- **Warm arithmetic evidence:** the Tiny arithmetic repro returned `HTTP 200` in **`22.781s`** with `load_duration ~= 0.073s`, stayed resident afterward, but answered only `37 + 58 = ` and stopped with `done_reason=length`. This fails the required digits-only deterministic check and shows the issue is not limited to the exact-token prompt.
-- **Warm JSON evidence:** the Tiny JSON repro returned `HTTP 200` in **`81.125s`** with `load_duration ~= 0.111s`, stayed resident afterward, and began with the correct JSON object:
-  - `{"ok": true, "n": 7}`
-  but then continued into extra explanatory text / code-fence content instead of stopping at JSON-only output. This confirms prompt-related generation can be correct in prefix while still failing strict deterministic output-shape compliance.
-- **Host arithmetic-run proof:** the warm arithmetic window appended **`3920`** `cuLaunchKernel SUCCESS: kernel executed on physical GPU` lines with **no** `sync FAILED`, **no** `CUDA_ERROR_ILLEGAL_ADDRESS`, and **no** `result.status=801`.
-- **Host JSON-run proof:** the warm JSON window appended **`14648`** `cuLaunchKernel SUCCESS: kernel executed on physical GPU` lines with **no** `sync FAILED`, **no** `CUDA_ERROR_ILLEGAL_ADDRESS`, and **no** fresh `FAILED` lines at all.
-
-### Why the active error remains active
-
-The exact-token-only explanation is now weakened. Tiny also fails a warm arithmetic case and a warm JSON-shape case on the repaired, resident, physical-GPU-backed path. However the failure shape is now more specific than generic corruption: the outputs are prompt-related and sometimes partially correct, but they do not satisfy the required deterministic output format under the current Tiny request definitions.
-
-### Next single step
-
-Define and run one explicit Tiny-specific deterministic micro-gate for `Plan B` that distinguishes true semantic/transport corruption from request-budget / stop-condition mismatch, then use only that written Tiny gate for further `Plan B` closure work.
-
----
-
-## Session 2026-04-07 (Tiny micro-gate formalized and executed)
-
-- **Lane:** `Plan B`
-- **Current `Plan A` state:** `pass`
-- **Active error:** Tiny strict output-shape / compliance failure remains active on a repaired, resident, physical-GPU-backed path.
-- **Candidates:** request stop-condition mismatch remains the leading candidate; arithmetic token-budget sensitivity remains candidate-side; deeper transport corruption is further weakened because both micro-gate cases passed semantically; residual `0x00bc` is not active in this micro-gate window.
-- **Closure condition for active error:** the written Tiny micro-gate passes both strict checks, not just semantic checks, on a `Plan A`-passing baseline.
-- **Last proven checkpoint:** warm `HTTP 200 -> residency`.
-- **Bounded repro definition:** `python3 phase1_plan_b_tiny_micro_gate.py --base-url http://10.25.33.110:11434 --output /tmp/phase1_plan_b_tiny_micro_gate_report.json`
-
-### Evidence
-
-- **Written micro-gate artifact:** `phase3/PHASE1_PLAN_B_TINY_MICRO_GATE.md`
-- **Executable micro-gate artifact:** `phase3/phase1_plan_b_tiny_micro_gate.py`
-- **Arithmetic micro-gate result:** `HTTP 200`, `wall=42.780s`, `load_duration ~= 0.098s`, response `37 + 58 = 95\n\nDigits only:`, semantic pass, strict fail, `done_reason=length`.
-- **JSON micro-gate result:** `HTTP 200`, `wall=82.920s`, `load_duration ~= 0.096s`, response began with valid `{"ok": true, "n": 7}` JSON, semantic pass, strict fail, trailing content began with ``` and explanation text.
-- **Micro-gate classification:** `/tmp/phase1_plan_b_tiny_micro_gate_report.json` reports `verdict=strict_shape_failure`.
-- **Residency proof:** Tiny was resident before the micro-gate and remained resident afterward.
-- **Host GPU-path proof:** the host mediator window during the micro-gate showed **`28473`** `cuLaunchKernel SUCCESS: kernel executed on physical GPU` lines with **no** `sync FAILED`, **no** `CUDA_ERROR_ILLEGAL_ADDRESS`, **no** `result.status=801`, and **no** general `FAILED` lines.
-
-### Why the active error remains active
-
-The micro-gate closes the ambiguity from earlier ad hoc repros: Tiny is semantically responsive on the repaired GPU-backed path, but it still fails strict deterministic output-shape compliance. This keeps the active error in output-shape / compliance, not in early transport or residency failure.
-
-### Next single step
-
-Run one bounded Tiny repro with explicit request-side stop controls against the JSON case so we can test whether the leading candidate is stop-condition / generation-control mismatch rather than deeper runtime behavior.
-
----
-
-## Session 2026-04-07 (request-side stop controls partially close the strict-shape branch)
-
-- **Lane:** `Plan B`
-- **Current `Plan A` state:** `pass`
-- **Active error:** Tiny task-specific strict compliance remains open, but the broader "runtime path still corrupts strict output shape" theory is narrowed substantially.
-- **Candidates:** JSON stop-condition mismatch is now validated and effectively closed for that case; arithmetic-output-shape compliance remains open; exact-token strict compliance remains unrefreshed under the new stop-control branch; deeper runtime corruption is further weakened.
-- **Closure condition for active error:** a bounded Tiny-specific gate passes strict compliance for the required Tiny cases, not just semantic correctness or one controlled subcase.
-- **Last proven checkpoint:** warm `HTTP 200 -> residency`, plus one strict JSON-shape success under request controls.
-
-### Evidence
-
-- **JSON stop-control probe:** using the same warm Tiny JSON case with `num_predict=64` and request-side `stop` controls first changed the result from `done_reason=length` plus explanation text to `done_reason=stop` with only a trailing code fence left.
-- **Refined JSON stop-control probe:** after adding explicit code-fence stop control, the same bounded JSON case returned:
-  - `HTTP 200`
-  - `wall=47.102s`
-  - `done_reason=stop`
-  - response exactly:
-    - `{"ok": true, "n": 7}`
-  with only trailing whitespace/newline after the JSON object. This is a strict JSON-shape pass on the repaired warm path without changing the runtime.
-- **Arithmetic compliance probe:** a refined arithmetic prompt (`Output exactly the final answer digits only...`) with stop control still returned `HTTP 200`, but answered `To solve this problem, we can use the following formula:`. So the remaining issue is not a general runtime inability to produce strict output; it is Tiny task/prompt-specific compliance for the arithmetic-style branch.
-- **Host-path non-regression proof:** all request-control probes remained on the physical GPU-backed path, and no fresh `sync FAILED` / `CUDA_ERROR_ILLEGAL_ADDRESS` branch reappeared during this work.
-
-### Why the active error changed
-
-The stop-control branch produced a real strict-shape close for the JSON case on the live repaired path. That means the broader strict-shape failure is no longer best described as a generic runtime/path corruption class. The remaining open problem is narrower: Tiny still does not satisfy all required strict deterministic task shapes under the current Tiny prompt set, especially arithmetic-style compliance.
-
-### Next single step
-
-Run one bounded exact-token Tiny repro on the same warm path with explicit stop controls so we can decide whether `Plan B` now needs a revised Tiny-specific gate definition or whether only the arithmetic branch remains open.
-
----
-
-## Session 2026-04-07 (exact-token branch remains open under stop controls)
-
-- **Lane:** `Plan B`
-- **Current `Plan A` state:** `pass`
-- **Active error:** Tiny still fails required strict deterministic task compliance for more than one task family; stop controls are insufficient to close the full current Tiny prompt set.
-- **Candidates:** JSON strict compliance is now a repaired subcase under stop controls; arithmetic strict compliance remains open; exact-token semantic compliance remains open; deeper runtime corruption remains substantially weakened.
-- **Closure condition for active error:** the still-required Tiny task families pass on the preserved baseline under a written Tiny-specific gate, or the Tiny gate definition is explicitly revised with user approval.
-- **Last proven checkpoint:** warm `HTTP 200 -> residency`, plus strict JSON-only success under request controls.
-
-### Evidence
-
-- **Exact-token stop-control repro:** on the same warm path, the bounded request
-  - `Return exactly this token and nothing else: PHASE1_OK_314159`
-  with explicit stop controls returned:
-  - `HTTP 200`
-  - `wall=72.998s`
-  - `done_reason=stop`
-  - response: `Sure, here's the updated query that returns only the "PHASE1_OK" token and nothing else:`
-- **Interpretation:** unlike the JSON branch, stop controls did not convert the exact-token branch into a strict or even semantic pass for the required token. This keeps the Tiny task-compliance problem broader than just trailing-output cleanup.
-- **Context from prior bounded probes in the same preserved session:**
-  - JSON with refined stop controls achieved strict JSON-only output.
-  - Arithmetic remained non-strict or instruction-noncompliant depending on prompt shape.
-
-### Why the active error remains active
-
-The request-control candidate is only a partial close. It fixes one Tiny task family (JSON strict shape), but not the exact-token branch and not the arithmetic branch. Therefore the remaining open problem is the current Tiny gate/task definition, not the repaired runtime path itself.
-
-### Next single step
-
-Decide and write the Tiny-specific `Plan B` gate explicitly: either preserve the current three-task requirement and continue bounded Tiny prompt/generation-control work, or redefine the Tiny gate with user approval so it matches what Tiny is actually required to prove.
-
----
-
-## Session 2026-04-07 (official approved `Plan B` gate executed)
-
-- **Lane:** `Plan B`
-- **Current `Plan A` state:** `pass`
-- **Active error:** `B2_warm_arithmetic_strict`
-- **Candidates:** residual non-terminating `0x00bc` remains candidate-side because the gate still completed; any broader Tiny-runtime-corruption theory is weakened because `B1`, `B3`, and `B4` passed on the real GPU-backed path.
-- **Closure condition for active error:** rerun the approved `Plan B` gate and make `B2_warm_arithmetic_strict` return exactly `95` while preserving the already-passing `B1`, `B3`, and `B4` cases.
-- **Last proven checkpoint:** full approved `Plan B` gate reaches `B4_force_unload`; `B1`, `B3`, and `B4` are closed on the current preserved baseline.
-- **Bounded repro definition:** `python3 phase1_plan_b_tiny_gate.py --base-url http://10.25.33.110:11434 --output /tmp/phase1_plan_b_tiny_gate_report.json`
-
-### Evidence
-
-- **`Plan A` proof in same session:** `phase1_milestone_gate.py --base-url http://10.25.33.110:11434 --timeout-sec 240` passed again with `overall_pass=True`; report: `/tmp/phase1_milestone_gate_planA_before_planB_gate.json`.
-- **Official `Plan B` gate report:** `/tmp/phase1_plan_b_tiny_gate_report.json`
-- **B1 result:** pass
-  - `HTTP 200`
-  - `wall=71.781s`
-  - Tiny became resident after the cold residency pin
-- **B2 result:** fail
-  - `HTTP 200`
-  - `wall=26.202s`
-  - `done_reason=stop`
-  - response: `Enter the numbers to be added:`
-  - model still resident afterward
-- **B3 result:** pass
-  - `HTTP 200`
-  - `wall=50.400s`
-  - `done_reason=stop`
-  - strict JSON-only response `{"ok": true, "n": 7}`
-- **B4 result:** pass
-  - `HTTP 200`
-  - `wall=1.742s`
-  - Tiny no longer resident afterward
-- **Host GPU-path proof:** in the same gate window the mediator appended **`16487`** `cuLaunchKernel SUCCESS: kernel executed on physical GPU` lines.
-- **Host non-regression proof:** in the same gate window there were **no** `sync FAILED` lines and **no** `CUDA_ERROR_ILLEGAL_ADDRESS` lines.
-
-### Why the active error changed
-
-The approved binding gate replaces the broader earlier Tiny classification. On the current preserved baseline, the official gate isolates one failing binding case and closes the others. Therefore the active `Plan B` blocker is no longer "Tiny generally fails strict compliance"; it is specifically `B2_warm_arithmetic_strict`.
-
-### Next single step
-
-Run one bounded arithmetic-only refinement cycle against `B2_warm_arithmetic_strict` using the same preserved baseline, with no changes to the repaired runtime path, and determine whether `B2` can be closed by prompt/stop shaping alone.
-
----
-
-## Session 2026-04-07 (arithmetic-only refinement narrows `B2` further)
-
-- **Lane:** `Plan B`
-- **Current `Plan A` state:** `pass`
-- **Active error:** `B2_warm_arithmetic_strict` remains open as a Tiny plain-digits arithmetic compliance failure.
-- **Candidates:** simple prompt/stop shaping is now weakened as the primary fix path; broader arithmetic-semantic failure is weakened because structured arithmetic JSON passed; deeper runtime/GPU-path failure remains weakened.
-- **Closure condition for active error:** the approved `B2_warm_arithmetic_strict` case returns exactly `95` on the preserved baseline, or the binding `B2` task definition is explicitly revised with user approval.
-- **Last proven checkpoint:** full approved gate through `B4_force_unload`, with `B1`, `B3`, and `B4` closed and `B2` isolated as the only failing binding case.
-
-### Evidence
-
-- **Arithmetic-only prompt/stop sweep:** four bounded warm arithmetic prompt variants were tested on the same preserved runtime path:
-  - official `B2` prompt -> `Enter the numbers to be added:`
-  - equation completion -> `Answer: 4`
-  - digits-only sum -> `To compute the sum of 37`
-  - final-answer-only -> `Yes, the final`
-  None produced semantic or strict success for `95`.
-- **Host non-regression proof during the arithmetic sweep:** the same host window still showed **`15834`** `cuLaunchKernel SUCCESS: kernel executed on physical GPU` lines with **no** `sync FAILED` and **no** `CUDA_ERROR_ILLEGAL_ADDRESS`.
-- **Arithmetic-envelope probe:** the same strict arithmetic style also failed on simpler sums (`2 + 9 -> 11`, `13 + 9 -> 22`), so the problem is not unique to the approved `37 + 58` case.
-- **Structured arithmetic JSON probe:** on the same warm path, Tiny successfully returned strict JSON:
-  - prompt: `Compute 37 + 58. Respond with JSON only: {"sum":95}`
-  - response: `{"sum": 95}`
-  This is strong evidence that Tiny can perform the arithmetic semantically on the repaired path when the output format is shifted into the JSON-style family.
-- **Few-shot digits-only completion probe:** a bounded few-shot completion still failed (`Output: 6`), which further weakens the simple prompt-shaping path for the approved digits-only `B2` case.
-
-### Why the active error remains active
-
-The current evidence no longer supports the idea that `B2` is blocked by the repaired runtime path or by arithmetic inability in general. Tiny can execute on the real GPU-backed path and can produce the correct arithmetic result in structured JSON form. The remaining open problem is narrower: Tiny does not currently satisfy the approved plain-digits-only arithmetic compliance shape for `B2`.
-
-### Next single step
-
-Decide whether to keep the current plain-digits `B2` requirement as binding or revise `B2` to a structured arithmetic JSON form that better matches the now-proven Tiny capability, then continue only against that explicit binding definition.
-
----
-
-## Session 2026-04-07 (revised approved `Plan B` gate passes)
-
-- **Lane:** `Plan B`
-- **Current `Plan A` state:** `pass`
-- **Active error:** none for the current approved `Plan B` gate.
-- **Candidates:** exact-token Tiny behavior remains a non-gating extension candidate only; residual non-terminating `0x00bc` remains non-gating background noise unless it becomes the earliest correctness-breaking step again.
-- **Closure condition for active error:** met by full pass of the revised approved `Plan B` gate.
-- **Last proven checkpoint:** full approved `Plan B` gate through `B4_force_unload`.
-- **Bounded repro definition:** `python3 phase1_plan_b_tiny_gate.py --base-url http://10.25.33.110:11434 --output /tmp/phase1_plan_b_tiny_gate_report_revised_b2.json`
-
-### Evidence
-
-- **`Plan A` proof in same session:** `/tmp/phase1_milestone_gate_planA_before_planB_gate.json` remained the current canary proof for this same working session.
-- **Revised gate contract:** `phase3/PHASE1_PLAN_B_TINY_GATE.md` now binds `B2` to the structured arithmetic JSON form.
-- **Revised gate runner result:** `/tmp/phase1_plan_b_tiny_gate_report_revised_b2.json` shows:
-  - `B1_cold_residency_pin`: pass
-  - `B2_warm_arithmetic_strict`: pass with strict response `{"sum": 95}`
-  - `B3_warm_json_strict`: pass with strict response `{"ok": true, "n": 7}`
-  - `B4_force_unload`: pass
-  - `overall_pass=True`
-- **Host GPU-path proof:** in the same gate window the mediator appended **`18275`** `cuLaunchKernel SUCCESS: kernel executed on physical GPU` lines.
-- **Host non-regression proof:** in the same gate window there were **no** `sync FAILED` lines and **no** `CUDA_ERROR_ILLEGAL_ADDRESS` lines.
-
-### Why the active error was closed
-
-The approved revised `Plan B` gate is now the binding closure criterion for Tiny. That gate passed end to end on the preserved repaired baseline, so the previously isolated `B2` blocker is closed.
-
-### Next single step
-
-Treat Phase 1 as closed under the current approved `Plan A` + revised `Plan B` definitions. Future work should preserve both gates as canaries before moving to the next milestone.
-
----
-
 ## Session 2026-04-05 (initial fast-track gate run)
 
 - **Active error:** `P1-A` (Phase 1 acceptance bundle not proven in one converged run window).
@@ -1436,7 +1153,7 @@ Stay on the repaired live branch and isolate the residual `0x00bc` branch before
 
 ## Session 2026-04-06 (milestone gate baseline moved to local `qwen2.5:0.5b`; default suite now passes end to end on the repaired GPU branch)
 
-- **Active error:** none for the default `Plan A` canary gate; prior active `P1-E` is closed on the current repaired branch under the validated default suite baseline.
+- **Active error:** none for the Phase 1 milestone gate; prior active `P1-E` is closed on the current repaired branch under the validated default suite baseline.
 - **Candidates:** `tinyllama:latest` remains a non-gating candidate branch because it still fails deterministic accuracy on the repaired transport path; residual `0x00bc` remains a non-gating runtime anomaly because it appears around both passing and failing requests; future optimization work can still reduce cold accuracy-case latency, but it is no longer blocking the gate.
 - **Closure condition for prior active error:** met with direct default-suite proof.
 
@@ -1470,7 +1187,7 @@ Stay on the repaired live branch and isolate the residual `0x00bc` branch before
   - `residency keep_loaded`: pass
   - `residency force_unload`: pass
   - `overall_pass=True`
-  This is the direct closure proof for `P1-E` on the default `Plan A` canary gate under the current repaired branch. It does not, by itself, declare `Plan B` closed if `tinyllama:latest` remains a required target.
+  This is the direct closure proof for `P1-E` and for the full Phase 1 milestone gate under the current repaired branch.
 
 ### Why active error was closed
 
@@ -1482,7 +1199,7 @@ Freeze this passing baseline and avoid reopening transport work. The next constr
 
 ## Session 2026-04-06 (default passing baseline survives clean `ollama` restart after settle check)
 
-- **Active error:** none for the default `Plan A` canary gate; the canary remains closed after a fresh service restart.
+- **Active error:** none for the Phase 1 milestone gate; the gate remains closed after a fresh service restart.
 - **Candidates:** the brief first-request connection drop observed when the gate was launched in parallel with the restart is closed as a startup race artifact, because a settled post-restart rerun passed completely; `tinyllama:latest` remains non-gating; residual `0x00bc` remains non-gating.
 - **Closure condition for the fresh-boot candidate:** met with settled rerun proof.
 
@@ -1503,11 +1220,11 @@ Freeze this passing baseline and avoid reopening transport work. The next constr
   - `residency keep_loaded`: pass
   - `residency force_unload`: pass
   - `overall_pass=True`
-  This is direct proof that the validated default `Plan A` baseline survives a clean `ollama` restart and is not merely a warm-process artifact.
+  This is direct proof that the validated default Phase 1 baseline survives a clean `ollama` restart and is not merely a warm-process artifact.
 
 ### Why active error remains closed
 
-No active error is promoted because the only new issue observed in this cycle was a restart-overlap connection drop on the very first request, and that candidate was closed immediately by the settled rerun. The default suite still passes completely once the restarted service is healthy, so the `Plan A` canary remains closed.
+No active error is promoted because the only new issue observed in this cycle was a restart-overlap connection drop on the very first request, and that candidate was closed immediately by the settled rerun. The default suite still passes completely once the restarted service is healthy, so the milestone gate remains closed.
 
 ### Next single step
 
@@ -1515,7 +1232,7 @@ Keep the passing suite and repaired branch frozen. The next constrained step sho
 
 ## Session 2026-04-06 (host mediator and VM `ollama` both restarted; direct prompts and full default gate still pass)
 
-- **Active error:** none for the default `Plan A` canary gate; the canary remains closed even after restarting both the host mediator and the VM `ollama` service.
+- **Active error:** none for the Phase 1 milestone gate; the gate remains closed even after restarting both the host mediator and the VM `ollama` service.
 - **Candidates:** the "hidden temporary variable / one-off runtime state" branch is now closed as a practical deployment concern for the current baseline; `tinyllama:latest` remains non-gating; residual `0x00bc` remains non-gating background noise.
 - **Closure condition for the restart-survivability candidate:** met with fresh host+VM restart proof.
 
@@ -1559,61 +1276,3 @@ No active error is promoted because the exact concern under test — "the curren
 ### Next single step
 
 Do not change the passing runtime path casually. The next constrained step should be documentation and client handoff only: provide a startup-and-verification runbook that reproduces this exact host-mediator -> VM-`ollama` -> prompt -> result flow using the validated baseline.
-
-## Session 2026-04-07 (`Plan C` client-facing lane closed on dedicated `qwen2.5:3b`; preserved `Plan A` / `Plan B` rechecked cleanly)
-
-- **Lane under discussion:** `Plan C`.
-- **Current `Plan A` state:** pass.
-- **Active error:** none. The active `Plan C` blocker, normal user-facing arithmetic correctness under standard `ollama run` usage, is closed on the current repaired baseline.
-- **Candidates:** prompt-wrapper-only fixes on `qwen2.5:0.5b` are closed as non-closing candidates; `qwen2.5:1.5b` is closed as a non-closing candidate because it still returned the wrong large arithmetic answer; concurrent cross-model gate execution is now an operational contamination candidate rather than an inference blocker and is controlled by a new serial-isolation rule; residual background runtime noise remains non-gating because all three lanes now pass.
-- **Live artifact identity:** `VM10` `ollama` service at `http://10.25.33.110:11434` / VM-local `http://127.0.0.1:11434`; preserved `Plan A` model `qwen2.5:0.5b`; preserved `Plan B` model `tinyllama:latest`; dedicated `Plan C` model `qwen2.5:3b`; checked-in runners `phase1_milestone_gate.py`, `phase1_plan_b_tiny_gate.py`, and `phase1_plan_c_client_gate.py`.
-- **Last proven checkpoint:** residency for all three lanes on the repaired GPU-backed service.
-- **Bounded repro definition:** direct `ollama run` prompts on `VM10` for `4 + 8`, `444 + 8`, `444 + 18`, and `37 + 58`; checked-in `Plan A` and `Plan B` gate commands run serially against `http://10.25.33.110:11434` after forcing `/api/ps` clean; checked-in `Plan C` gate run locally on `VM10` against `http://127.0.0.1:11434`.
-- **Regression verdict:** no regression on the preserved baseline once the service was force-cleaned and the gates were re-run serially. The earlier mixed-lane failure was a test-contamination artifact, not a real fallback or milestone regression.
-- **Milestone-scope verdict:** true `Plan C` closure plus preserved `Plan A` and preserved `Plan B`.
-
-### Evidence
-
-- **Wrapper-model disproof on the old `Plan A` canary:** a dedicated alias built from `qwen2.5:0.5b` still returned the wrong large arithmetic result under the default path (`444 + 8 -> 532`), and a stronger few-shot wrapper regressed further (`444 + 8 -> 95`). This closes the "prompt wrapper on the small canary is sufficient" branch.
-- **Mid-size candidate disproof:** `qwen2.5:1.5b` also failed the same plain client-facing arithmetic path (`444 + 8 -> 532`) and therefore did not close `Plan C`.
-- **Direct `Plan C` model proof:** `qwen2.5:3b` answered the plain user-facing prompts correctly on `VM10`:
-  - `What is 4 + 8? Reply with digits only.` -> `12`
-  - `What is 444 + 8? Reply with digits only.` -> `452`
-  - `What is 444 + 18? Reply with digits only.` -> `462`
-  - `What is 37 + 58? Reply with digits only.` -> `95`
-- **Checked-in `Plan C` gate proof:** the new checked-in `phase1_plan_c_client_gate.py` was copied to `VM10` and passed end to end against the VM-local service with `verification_mode="ollama_run_cli"`:
-  - `C1_small_arithmetic_cli_style`: pass (`195.043 s`)
-  - `C2_large_arithmetic_cli_style`: pass (`20.256 s`)
-  - `C3_second_large_arithmetic_cli_style`: pass (`20.086 s`)
-  - `C4_reference_arithmetic_cli_style`: pass (`18.111 s`)
-  - `C5_force_unload`: pass
-  - `overall_pass=True`
-- **False-regression proof and closure:** an earlier preservation attempt that ran `Plan A` and `Plan B` concurrently produced a temporary `Plan B` `B1_cold_residency_pin` `HTTP 500` and a `Plan A` warm-speed miss. A direct serial repro of the same `Plan B` cold pin returned `HTTP 200`, and both checked-in gates passed once `/api/ps` was forced clean and the gates were run one at a time. This closes the apparent regression as a cross-model concurrency artifact.
-- **Clean serial preservation proof for `Plan A`:** after unloading all models and confirming `/api/ps -> {"models":[]}`, `phase1_milestone_gate.py` passed again on the live service:
-  - `A1_exact_string`: `89.921 s` pass
-  - `A2_arithmetic`: `13.279 s` pass
-  - `A3_json_shape`: `38.179 s` pass
-  - `speed cold`: `27.342 s` pass
-  - `speed warm`: `25.228 s` pass
-  - `residency keep_loaded`: pass
-  - `residency force_unload`: pass
-  - `overall_pass=True`
-- **Clean serial preservation proof for `Plan B`:** on the same force-clean baseline, `phase1_plan_b_tiny_gate.py` also passed again:
-  - `B1_cold_residency_pin`: `HTTP 200`, `193.823 s`, resident afterward
-  - `B2_warm_arithmetic_strict`: pass (`39.842 s`)
-  - `B3_warm_json_strict`: pass (`56.347 s`)
-  - `B4_force_unload`: pass
-  - `overall_pass=True`
-- **Cleanup proof on `VM10`:** the non-closing candidate model `qwen2.5:1.5b` was removed after `Plan C` closure. Remaining local models are:
-  - `qwen2.5:3b`
-  - `qwen2.5:0.5b`
-  - `tinyllama:latest`
-  `/api/ps` is empty after cleanup and VM root free space improved to `3.5G`.
-
-### Why active error was closed
-
-The `Plan C` blocker is closed because the real user-facing path now has a dedicated model that passes the required plain arithmetic prompts under standard `ollama run`, and that success was revalidated by a checked-in `Plan C` gate executed directly on `VM10`. The preserved canary and Tiny milestone also re-passed on the same service once the runtime was returned to a clean empty-residency state and the gates were run serially. This proves the solution closes `Plan C` without redefining or damaging `Plan A` or `Plan B`.
-
-### Next single step
-
-Keep the three-lane baseline frozen and keep the new serial-isolation rule binding: after any `Plan C` or cross-model experiment, unload resident models, confirm `/api/ps` is empty, re-run `Plan A`, and only then re-run `Plan B`. Do not try to move `Plan C` back onto the smaller canary model unless the user explicitly redefines the lane.

@@ -14,4 +14,8 @@ alwaysApply: true
 - If a run fails earlier than the last proven checkpoint, classify it as a regression and repair that baseline first.
 - Do not reopen already-solved endpoint/bootstrap branches unless the checkpoint ladder genuinely falls earlier again.
 - Do not run the full Stage 1 gate while the active blocker is still earlier than the milestone path.
-- Current forced direction: stay on `P1-E`, treat `P1-Q` as the current active-branch gate, and focus on the second CUDA split reserve path, especially `cuLibraryLoadData` / BAR1 guest-shim transfer work.
+- `Plan A` is the preserved checked-in canary: `qwen2.5:0.5b` plus the default `phase1_milestone_gate.py` and `phase1_milestone_test_suite.json`.
+- `Plan B` is the explicit Phase 1 advancement branch: `tinyllama:latest` unless the user redefines the target.
+- Preserve `Plan A` before and after risky `Plan B` work; if `Plan A` regresses, stop and repair it first.
+- Do not claim full Phase 1 completion from `Plan A` alone while `Plan B` remains an explicit milestone target.
+- If `Plan B` fails while `Plan A` passes, classify the earliest failing `Plan B` checkpoint and keep `Plan A` frozen as the recovery baseline.

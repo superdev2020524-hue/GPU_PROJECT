@@ -1,6 +1,23 @@
 # Error tracking status (from where we left off)
 
-*Updated: Mar 22, 2026 — post–**cuBLAS** reinstall (**scp** dom0 → VM + **`install_cublas_align_from_dom0_on_vm.py`**): checkpoints **A–C** OK; **E1** **`grep -c`** still **2** until a new **401312** load is triggered.*
+*Updated: Apr 22, 2026 — current Server 2 passthrough path validated on the live VM.*
+
+## Server 2 note - Apr 18, 2026
+
+- **Lane:** Server 2 passthrough fast path
+- **Plan A canary:** unverified / not applicable to this Server 2 passthrough track
+- **Current active error:** `S2-G1` mixed guest configuration shadowed the real passthrough driver with old mediated-path CUDA/NVML shims
+- **Candidate list:** none promoted beyond `S2-G1` in the current passthrough guest cycle
+- **Last proven checkpoint:** guest `lspci -nn` already showed the real passthrough device `10de:2321`
+- **Live artifact / deployed-path proof:** `other-config:pci=0/0000:81:00.0` is active on VM `5b9acc4b-d62b-6dc6-576f-82175e87fc2b`; guest `lspci` shows `00:08.0`; `/usr/lib64/libcuda.so.1` now resolves to `/lib/x86_64-linux-gnu/libcuda.so.1`; `/usr/lib64/libnvidia-ml.so.1` now resolves to `/lib/x86_64-linux-gnu/libnvidia-ml.so.1`
+- **Exact bounded repro used for closure:** on `10.25.33.21`, before cleanup, `lspci -nn` showed `10de:2321` but `/usr/lib64/libcuda.so.1 -> /usr/lib64/libvgpu-cuda.so`, `/usr/lib64/libnvidia-ml.so.1 -> /usr/lib64/libvgpu-nvml.so`, and `nvidia-smi` failed with `Failed to initialize NVML: Function Not Found`; after `python3 server2/phase3/clean_passthrough_vm.py`, re-run `lspci`, `nvidia-smi`, and `curl /api/generate`
+- **Evidence for the current step:** plain `lspci` now shows `NVIDIA Corporation HEXACORE vH100 CAP`; `lspci -nn` shows `[10de:2321]`; the normal `nvidia-smi` command now shows `HEXACORE vH100 CAP` through the guest wrapper path at `/usr/bin/nvidia-smi`; a tiny global user-space preload at `/usr/local/lib/libhexacore_userland_name_preload.so` is now active via `/etc/ld.so.preload`; the linked CUDA/NVML probe reports `cuDeviceGetName_name=HEXACORE vH100 CAP` and `nvmlDeviceGetName_name=HEXACORE vH100 CAP`; TensorFlow logs `name: HEXACORE vH100 CAP` while still executing on `GPU:0`; PyTorch reports `DEVICE_NAME: HEXACORE vH100 CAP` while still executing on `cuda:0`; Ollama now logs `library=CUDA compute=9.0 ... description="HEXACORE vH100 CAP"` and completes a short generate; `HEXACORE_NVIDIA_SMI_BYPASS=1 /usr/bin/nvidia-smi --query-gpu=name --format=csv,noheader` still returns the real hardware name `NVIDIA H100 NVL`
+- **Why `S2-G1` was the active error:** host-side passthrough was already present, so the remaining failure had moved into the guest where old shim files, `/usr/lib64` linker overrides, and mediated-path cleanup omissions were still hijacking the real driver path
+- **Resolution state:** resolved on the current VM
+- **Resolution artifact:** `server2/phase3/clean_passthrough_vm.py`
+- **Resolved earlier blockers in the same chain:** `S2-P1` is not the current blocker on this VM because the guest now sees and uses the real passthrough H100; `S2-P2` is historical and no longer blocks current host reachability
+- **Operational conclusion:** the validated Server 2 production path is now PCI passthrough, not the unfinished mediated stack. For **new** Server 2 VMs, run the host attach script `server2/attach_passthrough_vm.sh <vm-uuid>`, keep `platform:secureboot=false`, then use `python3 server2/phase3/fix_pci_ids_vm.py` for guest-visible `HEXACORE` branding (`lspci`, the normal `nvidia-smi` command, and CUDA/NVML user-space framework names such as TensorFlow, PyTorch, and Ollama). Use `python3 server2/phase3/clean_passthrough_vm.py` only for **older mixed** VMs that still carry mediated-path guest overrides
+
 
 **Systematic tracking (checkpoints, gates, next steps):** **`SYSTEMATIC_ERROR_TRACKING_PLAN.md`**
 

@@ -599,10 +599,15 @@ Environment="LD_LIBRARY_PATH=/opt/vgpu/lib:/usr/local/lib/ollama/cuda_v12:/usr/l
 Environment="OLLAMA_LOAD_TIMEOUT=4h"
 Environment="OLLAMA_FLASH_ATTENTION=0"
 Environment="CUDA_TRANSPORT_TIMEOUT_SEC=14400"
-Environment="VGPU_SHMEM_MIN_SPAN_KB=64"
+Environment="VGPU_SHMEM_MIN_SPAN_KB=32"
+Environment="VGPU_ALLOW_MULTI_PROCESS_SHMEM=1"
+Environment="VGPU_HTOD_BAR1=0"
+Environment="VGPU_MODULE_BAR1=0"
+Environment="VGPU_HTOD_BAR1_SHADOW=0"
 Environment="GGML_CUDA_DISABLE_GRAPHS=1"
 Environment="GGML_CUDA_DISABLE_GRAPH_RESERVE=1"
 Environment="GGML_CUDA_DISABLE_BATCHED_CUBLAS=1"
+Environment="OLLAMA_NO_MMAP=1"
 Environment="NVIDIA_VISIBLE_DEVICES=all"
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_IPC_LOCK
 AmbientCapabilities=CAP_SYS_ADMIN CAP_IPC_LOCK
@@ -652,7 +657,12 @@ Environment="OLLAMA_LLM_LIBRARY=cuda_v12"
 # the first model load request uses GPU layers without waiting for a client
 # to supply num_gpu > 0.
 Environment="OLLAMA_NUM_GPU=999"
-Environment="VGPU_SHMEM_MIN_SPAN_KB=64"
+Environment="VGPU_SHMEM_MIN_SPAN_KB=32"
+Environment="VGPU_ALLOW_MULTI_PROCESS_SHMEM=1"
+Environment="VGPU_HTOD_BAR1=0"
+Environment="VGPU_MODULE_BAR1=0"
+Environment="VGPU_HTOD_BAR1_SHADOW=0"
+Environment="OLLAMA_NO_MMAP=1"
 
 # ── Resource limits ────────────────────────────────────────────────────────
 # Allow mlock() of the 256 MB shared-memory region used by the VGPU transport.

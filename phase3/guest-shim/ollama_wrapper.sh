@@ -11,7 +11,12 @@ export LD_LIBRARY_PATH="/opt/vgpu/lib:/usr/local/lib/ollama/cuda_v12:/usr/local/
 export NVIDIA_VISIBLE_DEVICES=all
 export OLLAMA_LLM_LIBRARY=cuda_v12
 export OLLAMA_NUM_GPU=999
-export VGPU_SHMEM_MIN_SPAN_KB=64
+export VGPU_SHMEM_MIN_SPAN_KB=32
+export VGPU_ALLOW_MULTI_PROCESS_SHMEM=1
+export VGPU_HTOD_BAR1=0
+export VGPU_MODULE_BAR1=0
+export VGPU_HTOD_BAR1_SHADOW=0
+export OLLAMA_NO_MMAP=1
 
 # Log wrapper execution
 echo "[ollama-wrapper] Starting Ollama with shim injection (pid=$$, LD_PRELOAD=$LD_PRELOAD)" >&2

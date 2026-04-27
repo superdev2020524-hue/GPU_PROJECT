@@ -1302,8 +1302,12 @@ int cuda_executor_call(cuda_executor_t *exec,
 
     /* ---- Kernel launch ----------------------------------------- */
     case CUDA_CALL_LAUNCH_KERNEL: {
-        rc = ensure_vm_context(exec, vm);
-        if (rc != CUDA_SUCCESS) break;
+        /* Use the same primary context as module load/get-function and memory
+         * operations. Launching a host CUfunction in a per-VM cuCtxCreate()
+         * context yields CUDA_ERROR_INVALID_HANDLE because the function handle
+         * belongs to the primary context. */
+        cuCtxSetCurrent(exec->primary_ctx);
+        rc = CUDA_SUCCESS;
 
         if (!data || data_len < sizeof(CUDALaunchParams)) {
             rc = CUDA_ERROR_INVALID_VALUE;

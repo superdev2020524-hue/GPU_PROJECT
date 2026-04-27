@@ -6,6 +6,9 @@ alwaysApply: true
 # Phase 3 Error Tracing Discipline
 
 - Keep exactly one **active error** at a time.
+- Before any conclusion, state which lane is under discussion:
+  - **Plan A** = preserved `qwen2.5:0.5b` canary baseline
+  - **Plan B** = explicit follow-on milestone target (currently `tinyllama:latest` unless the user changes it)
 - Any newly observed error must be recorded as a **candidate**, not promoted immediately.
 - Do not abandon the active error just because a new candidate appears.
 - Promote a candidate to active only when the current active error is:
@@ -13,9 +16,17 @@ alwaysApply: true
   - disproved as the current blocker, or
   - proven to have been superseded by another error in the same causal chain.
 - Every Phase 3 status update must include:
+  - current lane (`Plan A` or `Plan B`),
+  - current `Plan A` canary state (`pass`, `fail`, or `unverified`),
   - current active error,
   - candidate list,
+  - last proven checkpoint,
+  - live artifact / deployed-path proof,
+  - exact bounded repro used for the conclusion,
   - evidence for the current step,
   - why the active error remains active or why it was closed.
 - If a candidate fix accidentally resolves the active error, explicitly record that closure and the proof.
+- If `Plan A` regresses during `Plan B` work, treat that regression as the active error immediately and repair `Plan A` before interpreting deeper `Plan B` behavior.
+- Do not treat a passing alternate model as proof that a failing target model is closed; that is transport-health evidence unless the user explicitly redefines the milestone.
+- Do not declare full Phase 1 closure from `Plan A` alone while `Plan B` remains an explicit milestone target.
 - Do not run broad ad hoc tracing that mixes multiple blockers without preserving this queue discipline.

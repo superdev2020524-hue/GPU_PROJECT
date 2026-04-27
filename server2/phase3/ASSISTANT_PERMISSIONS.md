@@ -1,8 +1,18 @@
 # Assistant permissions (Phase 3)
 
-*Clarified: Mar 18, 2026 — after host/VM modifications for VGPU display name (lspci) and rebuild.*
+*Clarified: Mar 18, 2026 - after host/VM modifications for VGPU display name (lspci) and rebuild.*
 
 ---
+
+## Server 2 boundary
+
+For the current Server 2 mission, follow
+**`SERVER2_ISOLATION_AND_MISSION_RULES.md`** and treat:
+
+- **`server2/phase3/`** as the editable Server 2 registry
+- root **`phase3/`** as protected Server 1 work
+
+These permissions do **not** authorize edits to root `phase3/` for Server 2.
 
 ## Host
 
@@ -14,7 +24,7 @@ Host-side fixes are documented; you apply them on the host when edits/builds are
 
 ---
 
-## VM (test-4)
+## VM (Server 2 target VM)
 
 - **Full authority:** Run commands, configure, deploy guest artifacts, edit VM files, read VM logs, rebuild and install software on the VM (e.g. ollama.bin, guest shims), restart services.
 
@@ -32,6 +42,7 @@ Host-side fixes are documented; you apply them on the host when edits/builds are
 ## Role and anti-coupling
 
 - **ASSISTANT_ROLE_AND_ANTICOUPLING.md** — On error: first search PHASE3 for past resolutions; verify no negative impact on previously working behavior (e.g. GPU mode, runner env); for VM build always check `/usr/local/go/bin/go version` before concluding the VM cannot build.
+- **SERVER2_ISOLATION_AND_MISSION_RULES.md** — mandatory Server 2 mission registration, path boundary, and non-mixing rule.
 - **SYSTEMATIC_ERROR_TRACKING_PLAN.md** — **Mandatory** operational procedure: checkpoints **A–D**, error registry **E1/E2/…**, gates before long runs, and required fields in assistant status updates (see **ASSISTANT_ROLE_AND_ANTICOUPLING.md §5**).
 
 ---

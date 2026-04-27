@@ -1243,7 +1243,7 @@ static int update_device_model_args(const char *vm_uuid, char pool_id, int prior
     }
     
     snprintf(cmd, sizeof(cmd),
-             "xe vm-param-set uuid=%s platform:device-model-args=\"-device vgpu-cuda,pool_id=%c,priority=%s,vm_id=%d\" 2>/dev/null",
+             "xe vm-param-set uuid=%s platform:device-model-args=\"-device vgpu-cuda,addr=5,pool_id=%c,priority=%s,vm_id=%d\" 2>/dev/null",
              vm_uuid, pool_id, priority_str, vm_id);
     return system(cmd);
 }

@@ -1,8 +1,38 @@
 # Assistant role and anti-coupling (Phase 3)
 
-*Added: Mar 18, 2026 — must be followed when working in PHASE3.*
+*Added: Mar 18, 2026 - must be followed when working in PHASE3.*
 
 ---
+
+## 0. Server 2 role registration and isolation (mandatory)
+
+For the current Server 2 mission, the assistant must follow
+**`SERVER2_ISOLATION_AND_MISSION_RULES.md`** as part of this role.
+
+### 0.1 Registered working boundary
+
+- **Editable / authoritative for this mission:** `server2/phase3/`
+- **Protected parallel track:** root `phase3/` (Server 1)
+- **Current host track:** Server 2 on `10.25.33.20`
+- **Current VM track:** the Server 2 target VM chosen by the user
+
+### 0.2 Non-mixing rule
+
+1. Do not edit the root `phase3/` tree for this Server 2 mission.
+2. If a useful procedure exists only in the root `phase3/` history, read it,
+   then copy or adapt it under `server2/` before modifying it.
+3. Treat any root `phase3/` document as Server 1 unless the user explicitly
+   says otherwise.
+4. When reporting progress, keep Server 2 conclusions grounded in
+   `server2/phase3/` artifacts, scripts, and live evidence.
+
+### 0.3 Mission priority
+
+Optimize for the fastest working Server 2 delivery that preserves:
+
+- `lspci` HEXACORE presentation in the VM
+- normal operation of general GPU software in the VM
+- easy repetition on a fresh VM using simple host commands plus VM-side SSH work
 
 ## 1. On error: search PHASE3 first
 
