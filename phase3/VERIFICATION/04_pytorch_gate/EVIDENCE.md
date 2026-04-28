@@ -140,3 +140,42 @@ isolated environment and rerun the probe.
   direct CUDA factory/fill kernels (`torch.eye(device=...)`, CUDA range/fill)
   can still trigger unsupported PyTorch kernel layouts; these are not mixed into
   the current active cuBLAS blocker.
+
+## Closure Evidence After Final Serial Preservation
+
+- `M04-E5` is closed by the final bounded PyTorch gate:
+  `/tmp/m04_pytorch_probe_64k_final_repeat.json` ->
+  `overall_pass=True`, `run_passes=[true,true,true]`.
+- The passing PyTorch cases include CUDA availability, device count/name, CPU to
+  CUDA transfer, CUDA to CPU transfer, elementwise add, matrix multiply, small
+  `torch.nn` inference, repeated warm execution, and fresh-process repetition.
+- The final live transport uses conservative BAR1 copy chunks:
+  `guest-shim/cuda_transport.c` deployed SHA
+  `81e3017a6ffdb4ba182c79ba48199782fa86f5c32e0eef983b5fdea316251be4`;
+  `/opt/vgpu/lib/libvgpu-cuda.so.1` deployed SHA
+  `c97cfb9e619bbb110a72f4b94505bbab4a5ae88350bc207a52051e5268fc835b`.
+- The reopened M03 preservation regression is closed:
+  `/tmp/async_stream_event_probe_after_m04_64k_final.json` ->
+  `overall_pass=True`, `pass_count=3`, `runs=3`, `bytes_per_run=4194304`,
+  `chunk_cap_bytes=65536`.
+- Final serial preservation after the M04 fix:
+  - Plan A:
+    `/tmp/phase1_milestone_gate_serial_00_after_m04_64k_final.json` ->
+    `overall_pass=True`.
+  - Plan B:
+    `/tmp/phase1_plan_b_serial_00_after_m04_64k_final.json` ->
+    `overall_pass=True`.
+  - Plan C:
+    `/tmp/phase1_plan_c_serial_00_after_m04_64k_final.json` ->
+    `overall_pass=True`.
+  - Milestone 01 raw CUDA:
+    `/tmp/phase3_general_cuda_gate_serial_01_after_m04_64k_final.json` ->
+    `overall_pass=True`, Driver API 5/5 and Runtime API 5/5.
+  - Milestone 02 API audit:
+    `/tmp/phase3_api_audit_serial_02_after_m04_64k_final.json` ->
+    `overall_pass=True`, `protocol_ids_excluding_sentinel=87`,
+    no missing executor mentions, matrix terms, or gap terms.
+- Candidate queue carried forward:
+  CUDA-side PyTorch factory/fill kernels and reduction kernels remain outside
+  the bounded M04 gate and should be promoted only in a later broader PyTorch
+  coverage milestone.

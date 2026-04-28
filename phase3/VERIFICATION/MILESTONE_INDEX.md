@@ -53,6 +53,10 @@ Purpose: validate PyTorch GPU availability, tensor allocation, transfer,
 elementwise operation, matmul, small model inference, repeated execution, and
 process restart.
 
+Milestone 04 is complete. The bounded PyTorch gate passed 3/3 fresh-process
+runs, and final serial preservation passed Plan A, Plan B, Plan C, Milestone 01,
+Milestone 02, and Milestone 03 after the 64 KiB BAR1 copy-chunk correction.
+
 ## 05 - Second Framework Gate
 
 Folder: `05_second_framework_gate/`

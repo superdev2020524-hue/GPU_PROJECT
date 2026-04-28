@@ -71,3 +71,27 @@
 - Reversal/removal condition: only reconsider after a separate bounded cuBLAS
   shim compatibility fix proves import, handle creation, GEMM, and process
   cleanup without hanging.
+
+## 2026-04-29 - Close M04 With Scoped PyTorch Gate
+
+- Decision: close Milestone 04 on the bounded PyTorch gate after matrix multiply,
+  small `torch.nn` inference, repeated warm execution, and 3/3 fresh-process runs
+  pass.
+- Reason: the gate covers the documented M04 scope without mixing in separate
+  PyTorch CUDA factory/fill and reduction-kernel families.
+- Rejected alternatives: keep M04 open for every PyTorch CUDA kernel family; call
+  M04 closed before rerunning the serial preservation chain.
+- Reversal/removal condition: reopen only if a later final preservation run on
+  the same deployed artifacts fails one of the required M04 cases or regresses a
+  prior milestone.
+
+## 2026-04-29 - Reduce BAR1 Copy Chunks For Preservation
+
+- Decision: cap mediated BAR1 copy chunks at 64 KiB for HtoD/DtoH copy paths.
+- Reason: final serial preservation found a repeated M03 4 MiB async-copy timeout
+  with 256 KiB chunks; 64 KiB chunks passed 3/3 and preserved the final M04 gate.
+- Rejected alternatives: accept 2/3 M03 pass as sufficient; restart the mediator
+  and claim closure without a code fix; widen the timeout instead of reducing
+  the burst size.
+- Reversal/removal condition: only raise the cap again after a dedicated BAR1
+  throughput/stability gate proves repeated large async copies without stalls.

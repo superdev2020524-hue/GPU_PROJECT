@@ -25,7 +25,7 @@ Validate the mediated vGPU path with PyTorch after the raw CUDA gate is stable.
 
 ## Current Status
 
-Milestone 04 is active.
+Milestone 04 is complete.
 
 Entry baseline:
 
@@ -35,7 +35,12 @@ Entry baseline:
 - Milestone 02 API audit consistency is passing.
 - Milestone 03 memory/sync/cleanup gate is passing.
 
-Current first step:
+Closure result:
 
-Run a bounded PyTorch environment probe and promote exactly one active error if
-the probe finds a blocker.
+- Final PyTorch gate passed 3/3 fresh-process runs:
+  `/tmp/m04_pytorch_probe_64k_final_repeat.json` -> `overall_pass=True`.
+- Final serial preservation passed:
+  Plan A, Plan B, Plan C, Milestone 01 raw CUDA, Milestone 02 API audit, and
+  Milestone 03 4 MiB async/mixed memory/sync.
+- M03 BAR1 async-copy preservation regression found during closure was repaired
+  by reducing mediated BAR1 copy chunks to 64 KiB before the final chain.

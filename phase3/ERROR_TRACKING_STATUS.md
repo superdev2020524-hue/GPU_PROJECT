@@ -242,6 +242,20 @@ Use this section before reading the historical sessions below.
 - **Why active changed:** the environment/capacity blocker is closed and the first framework-level required operation still failing is matrix multiply, specifically at cuBLAS handle creation.
 - **Next single step:** isolate why bundled PyTorch cuBLAS cannot create a handle on the mediated driver path without using the hanging preload path, then rerun the bounded PyTorch gate and only afterward run Plan A/raw CUDA preservation regressions.
 
+## Session 2026-04-29 (Milestone 04 closure and serial preservation)
+
+- **Lane:** `04_pytorch_gate`.
+- **Current `Plan A` state:** `pass` after final M04 changes (`/tmp/phase1_milestone_gate_serial_00_after_m04_64k_final.json` -> `overall_pass=True`).
+- **Closed errors:** `M04-E1` PyTorch missing/insufficient capacity; `M04-E2` `cuCtxGetStreamPriorityRange` unsupported; `M04-E3` `cuStreamIsCapturing` unsupported; `M04-E4` mediator double-free after default-stream async HtoD staging; `M04-E5` PyTorch matmul/cuBLAS and small inference path failure; final-closure M03 BAR1 async-copy preservation regression.
+- **Active error:** none for Milestone 04.
+- **Candidates carried forward:** CUDA-side PyTorch factory/fill kernels and reduction kernels remain outside the bounded M04 gate; broader cuDNN/NCCL/allocator/framework behavior remains for later milestones; BAR1 remains the fallback when shmem GPA resolution reports `pfn_hidden`.
+- **Last proven checkpoint:** serial preservation `00 -> 01 -> 02 -> 03 -> 04` passed after the final deployed M04 artifacts.
+- **Live artifact proof:** guest `/home/test-10/phase3/guest-shim/cuda_transport.c` sha256 `81e3017a6ffdb4ba182c79ba48199782fa86f5c32e0eef983b5fdea316251be4`; guest `/opt/vgpu/lib/libvgpu-cuda.so.1` sha256 `c97cfb9e619bbb110a72f4b94505bbab4a5ae88350bc207a52051e5268fc835b`; PyTorch environment remains `/mnt/m04-pytorch/venv` with `torch==2.5.1+cu121`.
+- **Exact bounded repro:** final PyTorch gate `/tmp/m04_pytorch_probe_64k_final_repeat.json` -> `overall_pass=True`, `run_passes=[true,true,true]`, covering CUDA availability, device identity, HtoD/DtoH tensor transfer, elementwise add, matrix multiply, small `torch.nn` inference, repeated warm execution, and process restart.
+- **Serial evidence:** Plan B passed (`/tmp/phase1_plan_b_serial_00_after_m04_64k_final.json` -> `overall_pass=True`); Plan C passed (`/tmp/phase1_plan_c_serial_00_after_m04_64k_final.json` -> `overall_pass=True`); Milestone 01 raw CUDA passed (`/tmp/phase3_general_cuda_gate_serial_01_after_m04_64k_final.json` -> `overall_pass=True`, Driver API 5/5 and Runtime API 5/5); Milestone 02 audit passed (`/tmp/phase3_api_audit_serial_02_after_m04_64k_final.json` -> `overall_pass=True`, `protocol_ids_excluding_sentinel=87`, no missing executor/matrix/gap terms); Milestone 03 passed (`/tmp/async_stream_event_probe_after_m04_64k_final.json` -> `overall_pass=True`, `pass_count=3`, `runs=3`, `bytes_per_run=4194304`, `chunk_cap_bytes=65536`).
+- **Why closed:** the required PyTorch gate and every prior milestone preservation lane passed on the same final artifact set. The M03 regression discovered during closure was not ignored; it was repaired by reducing BAR1 copy chunks to 64 KiB and then the full serial chain was rerun.
+- **Next single step:** proceed to Milestone 05, the second independent framework/runtime gate, when instructed.
+
 ## Session 2026-04-07 (fresh `Plan B` queue establishment on a `Plan A`-passing baseline)
 
 - **Lane:** `Plan B`

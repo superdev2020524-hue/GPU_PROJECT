@@ -6,14 +6,14 @@ Milestone 04: PyTorch Gate
 
 ## Current Plan A State
 
-Pass at entry:
+Pass after final M04 serial preservation:
 
-- `/tmp/phase1_milestone_gate_serial_00_after_planc_fix.json` ->
+- `/tmp/phase1_milestone_gate_serial_00_after_m04_64k_final.json` ->
   `overall_pass=True`.
 
 ## Active Error
 
-`M04-E5`: PyTorch matmul fails at cuBLAS handle creation.
+None. Milestone 04 active errors are closed.
 
 Evidence:
 
@@ -23,21 +23,16 @@ Evidence:
 - PyTorch CUDA discovery passes:
   `torch.cuda.is_available() == True`, `device_count == 1`, device name
   `HEXACORE vH100 CAP`.
-- Repeated adjusted gate runs pass:
-  CPU-to-CUDA copy, CUDA-to-CPU copy, and PyTorch elementwise add with verified
-  values.
-- Repeated adjusted gate runs fail at:
-  `RuntimeError: CUDA error: CUBLAS_STATUS_INTERNAL_ERROR when calling
-  cublasCreate(handle)` during `matmul = (a @ b).cpu()`.
-- PyTorch resolves bundled cuBLAS from the venv:
-  `/mnt/m04-pytorch/venv/.../nvidia/cublas/lib/libcublas.so.12`, not the
-  `/opt/vgpu/lib/libvgpu-cublas.so.12` shim, under normal gate execution.
+- `M04-E5` is closed: the final PyTorch gate passed matrix multiply, small
+  `torch.nn` inference, repeated warm execution, and fresh-process repetition:
+  `/tmp/m04_pytorch_probe_64k_final_repeat.json` ->
+  `overall_pass=True`, `run_passes=[true,true,true]`.
 
 Impact:
 
-Milestone 04 can now exercise PyTorch CUDA discovery, mediated allocation/copy,
-and one PyTorch CUDA elementwise kernel, but it cannot yet pass the required
-matrix multiply or small `torch.nn` inference coverage.
+Milestone 04 now exercises PyTorch CUDA discovery, mediated allocation/copy,
+elementwise operation, matrix multiply, small `torch.nn` inference, repeated
+warm execution, and process restart cleanup on the scoped mediated path.
 
 ## Candidate Queue
 
@@ -52,9 +47,9 @@ matrix multiply or small `torch.nn` inference coverage.
 
 ## Last Proven Checkpoint
 
-Milestones `00`, `01`, `02`, and `03` are preserved at Milestone 04 entry,
-including Plan A, Plan B, Plan C, raw CUDA, API audit consistency, and 4 MiB
-async/mixed memory/sync gate.
+Milestones `00`, `01`, `02`, and `03` are preserved after the final Milestone 04
+transport and PyTorch changes, including Plan A, Plan B, Plan C, raw CUDA, API
+audit consistency, and the 4 MiB async/mixed memory/sync gate.
 
 ## Closed Errors
 
@@ -65,10 +60,13 @@ async/mixed memory/sync gate.
   first tensor copy.
 - `M04-E4`: host mediator crashed with double-free after default-stream
   `cuMemcpyHtoDAsync` staging ownership.
+- `M04-E5`: PyTorch matmul/cuBLAS and small inference path failed until the
+  scoped cuBLAS/cuBLASLt and PyTorch kernel-layout fixes were deployed.
+- M03 preservation regression during M04 closure: repeated 4 MiB BAR1
+  `cuMemcpyHtoDAsync` timed out with 256 KiB chunks; closed by reducing mediated
+  BAR1 copy chunks to 64 KiB and rerunning the final serial chain.
 
 ## Closure Condition
 
-Close `M04-E5` only after the bounded PyTorch gate passes matrix multiply and
-small `torch.nn` inference with verified values, repeated fresh-process runs,
-and mediator evidence showing no crash, no `CUDA_ERROR_ILLEGAL_ADDRESS`, no
-poisoned follow-on context, and no hidden fake-success output mismatch.
+Satisfied by `/tmp/m04_pytorch_probe_64k_final_repeat.json` and the final serial
+preservation chain listed in `EVIDENCE.md`.
