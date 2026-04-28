@@ -1,0 +1,27 @@
+---
+description: Require serial prior-milestone preservation before Phase 3 milestone closure
+alwaysApply: true
+---
+
+# Phase 3 Serial Milestone Preservation
+
+- Do not say a Phase 3 milestone is complete only because its own new gate
+  passed.
+- For milestone `N`, report prior milestone preservation separately from current
+  milestone evidence: `00` through `N-1`, then `N`.
+- After any shared runtime, guest shim, transport, host mediator, CUDA executor,
+  QEMU stub, service config, or model/runtime library change, rerun the current
+  preserved baseline and the most relevant prior runtime gate before closure.
+- For the current sequence, minimum closure evidence is:
+  - `00`: Plan A canary after the final change.
+  - `01`: raw CUDA gate after the final change.
+  - `02`: API audit records/source consistency reviewed after the final change;
+    newly found fake-success or unclassified behavior must be closed or carried
+    forward with impact analysis.
+  - Current milestone: its bounded gate after the final change.
+- Do not defer an issue by saying "next milestone" unless the relationship has
+  been investigated and documented: why it is not a previous-stage regression,
+  why it is outside the current acceptance criteria, and what evidence supports
+  that decision.
+- Hidden or potential errors found during closure are candidates first, then
+  promoted one at a time if they are the earliest blocker for the current lane.

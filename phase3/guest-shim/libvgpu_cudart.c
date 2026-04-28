@@ -273,6 +273,7 @@ static int ensure_transport_connected(void) {
 #define cudaErrorNoDevice             8
 #define cudaErrorMemoryAllocation     2
 #define cudaErrorInvalidDevice        8
+#define cudaErrorNotSupported         801
 
 /* CUDA Runtime API types */
 typedef int cudaError_t;
@@ -897,6 +898,7 @@ const char* cudaGetErrorString(cudaError_t error) {
         case cudaErrorInitializationError: return "initialization error";
         case cudaErrorNoDevice:            return "no CUDA device";
         case cudaErrorMemoryAllocation:   return "out of memory";
+        case cudaErrorNotSupported:       return "operation not supported";
         default:                          return "unknown error";
     }
 }
@@ -1058,7 +1060,10 @@ cudaError_t cudaFreeHost(void *ptr) {
 
 /* cudaDeviceSynchronize - synchronize device */
 cudaError_t cudaDeviceSynchronize(void) {
-    return cudaSuccess;
+    typedef int (*cuCtxSynchronize_t)(void);
+    cuCtxSynchronize_t fn = (cuCtxSynchronize_t)dlsym(RTLD_DEFAULT, "cuCtxSynchronize");
+    if (!fn) return cudaErrorInitializationError;
+    return fn() == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 /* cudaDeviceReset - reset device */
@@ -1077,13 +1082,13 @@ cudaError_t cudaDeviceCanAccessPeer(int *canAccessPeer, int device, int peerDevi
 /* cudaDeviceEnablePeerAccess - enable peer access */
 cudaError_t cudaDeviceEnablePeerAccess(int peerDevice, unsigned int flags) {
     (void)peerDevice; (void)flags;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaDeviceDisablePeerAccess - disable peer access */
 cudaError_t cudaDeviceDisablePeerAccess(int peerDevice) {
     (void)peerDevice;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* ================================================================
@@ -1121,9 +1126,9 @@ cudaError_t cudaMemset(void *devPtr, int value, size_t count) {
     if (fn) {
         int rc = fn(devPtr, (unsigned char)(value & 0xFF), count);
         if (rc == 0) return cudaSuccess;
+        return cudaErrorInvalidValue;
     }
-    /* Fallback: no-op if Driver API unavailable or transport error (avoids inference abort) */
-    return cudaSuccess;
+    return cudaErrorInitializationError;
 }
 
 /* cudaMemsetAsync - set device memory asynchronously (sync for now) */
@@ -1136,8 +1141,8 @@ cudaError_t cudaMemsetAsync(void *devPtr, int value, size_t count, void *stream)
 cudaError_t cudaMallocManaged(void **devPtr, size_t size, unsigned int flags) {
     (void)size; (void)flags;
     if (!devPtr) return cudaErrorInvalidValue;
-    *devPtr = (void*)0x2000;
-    return cudaSuccess;
+    *devPtr = NULL;
+    return cudaErrorNotSupported;
 }
 
 /* cudaMemGetInfo - get memory info */
@@ -1152,13 +1157,13 @@ cudaError_t cudaMemGetInfo(size_t *free, size_t *total) {
 /* cudaHostRegister - register host memory */
 cudaError_t cudaHostRegister(void *ptr, size_t size, unsigned int flags) {
     (void)ptr; (void)size; (void)flags;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaHostUnregister - unregister host memory */
 cudaError_t cudaHostUnregister(void *ptr) {
     (void)ptr;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* ================================================================
@@ -1322,19 +1327,19 @@ cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, int kind, 
 /* cudaMemcpy2DAsync - async 2D memory copy */
 cudaError_t cudaMemcpy2DAsync(void *dst, size_t dpitch, const void *src, size_t spitch, size_t width, size_t height, int kind, void *stream) {
     (void)dst; (void)dpitch; (void)src; (void)spitch; (void)width; (void)height; (void)kind; (void)stream;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaMemcpy3DPeerAsync - async 3D peer memory copy */
 cudaError_t cudaMemcpy3DPeerAsync(const void *p, int dstDevice, void *dstStream) {
     (void)p; (void)dstDevice; (void)dstStream;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaMemcpyPeerAsync - async peer memory copy */
 cudaError_t cudaMemcpyPeerAsync(void *dst, int dstDevice, const void *src, int srcDevice, size_t count, void *stream) {
     (void)dst; (void)dstDevice; (void)src; (void)srcDevice; (void)count; (void)stream;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* ================================================================
@@ -1370,12 +1375,12 @@ cudaError_t cudaStreamDestroy(void *stream) {
         fn = (cuStreamDestroy_t)dlsym(RTLD_DEFAULT, "cuStreamDestroy_v2");
     }
     if (!fn) {
-        return cudaSuccess;
+        return cudaErrorInitializationError;
     }
     return fn(stream) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
-/* cudaStreamSynchronize - forward to driver; on failure return success to avoid GGML exit(2) */
+/* cudaStreamSynchronize - forward to Driver API and preserve failures. */
 cudaError_t cudaStreamSynchronize(void *stream) {
     {
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
@@ -1387,24 +1392,24 @@ cudaError_t cudaStreamSynchronize(void *stream) {
     if (cuSync) {
         int rc = cuSync(stream);
         cudart_trace_stream_sync("cudaStreamSynchronize_driver_return", stream, rc);
-        (void)rc; /* ignore so we don't trigger GGML error path */
+        return rc == 0 ? cudaSuccess : cudaErrorInvalidValue;
     } else {
         cudart_trace_stream_sync("cudaStreamSynchronize_no_symbol", stream, 0);
     }
-    return cudaSuccess;
+    return cudaErrorInitializationError;
 }
 
 /* cudaStreamBeginCapture - begin stream capture */
 cudaError_t cudaStreamBeginCapture(void *stream, int mode) {
     (void)stream; (void)mode;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaStreamEndCapture - end stream capture */
 cudaError_t cudaStreamEndCapture(void *stream, void **pGraph) {
     (void)stream;
-    if (pGraph) *pGraph = (void*)0x4000;
-    return cudaSuccess;
+    if (pGraph) *pGraph = NULL;
+    return cudaErrorNotSupported;
 }
 
 /* cudaStreamIsCapturing - check if stream is capturing */
@@ -1419,7 +1424,7 @@ cudaError_t cudaStreamWaitEvent(void *stream, void *event, unsigned int flags) {
     typedef int (*cuStreamWaitEvent_t)(void *, void *, unsigned int);
     cuStreamWaitEvent_t fn = (cuStreamWaitEvent_t)dlsym(RTLD_DEFAULT, "cuStreamWaitEvent");
     if (!fn) {
-        return cudaSuccess;
+        return cudaErrorInitializationError;
     }
     return fn(stream, event, flags) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
@@ -1444,12 +1449,17 @@ cudaError_t cudaEventCreateWithFlags(void **event, unsigned int flags) {
     return fn(event, flags) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
+/* cudaEventCreate - create event with default flags */
+cudaError_t cudaEventCreate(void **event) {
+    return cudaEventCreateWithFlags(event, 0);
+}
+
 /* cudaEventDestroy - destroy event */
 cudaError_t cudaEventDestroy(void *event) {
     typedef int (*cuEventDestroy_t)(void *);
     cuEventDestroy_t fn = (cuEventDestroy_t)dlsym(RTLD_DEFAULT, "cuEventDestroy");
     if (!fn) {
-        return cudaSuccess;
+        return cudaErrorInitializationError;
     }
     return fn(event) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
@@ -1459,7 +1469,7 @@ cudaError_t cudaEventRecord(void *event, void *stream) {
     typedef int (*cuEventRecord_t)(void *, void *);
     cuEventRecord_t fn = (cuEventRecord_t)dlsym(RTLD_DEFAULT, "cuEventRecord");
     if (!fn) {
-        return cudaSuccess;
+        return cudaErrorInitializationError;
     }
     return fn(event, stream) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
@@ -1469,7 +1479,7 @@ cudaError_t cudaEventSynchronize(void *event) {
     typedef int (*cuEventSynchronize_t)(void *);
     cuEventSynchronize_t fn = (cuEventSynchronize_t)dlsym(RTLD_DEFAULT, "cuEventSynchronize");
     if (!fn) {
-        return cudaSuccess;
+        return cudaErrorInitializationError;
     }
     return fn(event) == 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
@@ -1483,7 +1493,7 @@ cudaError_t cudaLaunchKernel(const void *func, unsigned int gridDimX, unsigned i
     (void)func; (void)gridDimX; (void)gridDimY; (void)gridDimZ;
     (void)blockDimX; (void)blockDimY; (void)blockDimZ; (void)sharedMemBytes;
     (void)stream; (void)kernelParams; (void)extra;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaFuncGetAttributes - get function attributes */
@@ -1611,32 +1621,32 @@ cudaError_t cudaOccupancyAvailableDynamicSMemPerBlock(size_t *dynamicSmemSize, c
 /* cudaGraphDestroy - destroy graph */
 cudaError_t cudaGraphDestroy(void *graph) {
     (void)graph;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaGraphInstantiate - instantiate graph */
 cudaError_t cudaGraphInstantiate(void **graphExec, void *graph, void *errorNode, char *errorLog, size_t errorLogSize) {
     (void)graph; (void)errorNode; (void)errorLog; (void)errorLogSize;
-    if (graphExec) *graphExec = (void*)0x6000;
-    return cudaSuccess;
+    if (graphExec) *graphExec = NULL;
+    return cudaErrorNotSupported;
 }
 
 /* cudaGraphLaunch - launch graph */
 cudaError_t cudaGraphLaunch(void *graphExec, void *stream) {
     (void)graphExec; (void)stream;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaGraphExecDestroy - destroy graph exec */
 cudaError_t cudaGraphExecDestroy(void *graphExec) {
     (void)graphExec;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* cudaGraphExecUpdate - update graph exec */
 cudaError_t cudaGraphExecUpdate(void *graphExec, void *graph, void *errorNode, char *errorLog, size_t errorLogSize) {
     (void)graphExec; (void)graph; (void)errorNode; (void)errorLog; (void)errorLogSize;
-    return cudaSuccess;
+    return cudaErrorNotSupported;
 }
 
 /* ================================================================

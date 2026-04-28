@@ -1,8 +1,9 @@
 /*
  * libvgpu_cublas.c - CUBLAS API shim library
  * 
- * This library replaces libcublas.so.12 and provides stub implementations
- * of CUBLAS functions required by GGML's CUDA backend.
+ * This library replaces libcublas.so.12 and forwards supported CUBLAS calls
+ * through the mediated vGPU transport. Unsupported compute paths must fail
+ * closed rather than reporting fake success.
  */
 
 #ifndef _GNU_SOURCE
@@ -59,12 +60,26 @@ typedef int cublasStatus_t;
 #define CUBLAS_STATUS_NOT_SUPPORTED 15
 #define CUBLAS_STATUS_LICENSE_ERROR 16
 
-/* Stub handle when transport is unavailable — VM-only fallback, no host. */
+#define CUDA_R_32F 0
+
+/* Historical stub handle marker. New handles must not use this fallback. */
 #define CUBLAS_STUB_MAGIC 0xCB1A5FAC
 typedef struct { unsigned int magic; } cublas_stub_handle_t;
 static int is_stub_handle(cublasHandle_t h) {
     if (!h) return 0;
     return ((cublas_stub_handle_t *)h)->magic == CUBLAS_STUB_MAGIC;
+}
+
+static cublasStatus_t reject_stub_handle_compute(const char *fn_name)
+{
+    char msg[192];
+    int n = snprintf(msg, sizeof(msg),
+                     "[libvgpu-cublas] %s() rejected historical stub handle: no host compute path\n",
+                     fn_name ? fn_name : "cublas");
+    if (n > 0 && n < (int)sizeof(msg)) {
+        syscall(__NR_write, 2, msg, (size_t)n);
+    }
+    return CUBLAS_STATUS_NOT_INITIALIZED;
 }
 
 #define CUBLAS_REMOTE_MAGIC 0xCB1A5FAD
@@ -174,6 +189,7 @@ static uint64_t cublas_resolve_device_ptr(const void *ptr)
 
 #define CUBLAS_COMPUTE_16F          64
 #define CUBLAS_COMPUTE_16F_PEDANTIC 65
+#define CUBLAS_COMPUTE_32F          68
 
 static float cublas_half_bits_to_float(uint16_t h)
 {
@@ -611,17 +627,14 @@ cublasStatus_t cublasCreate_v2(cublasHandle_t *handle) {
     ensure_cuda_primary_context();
     log_cuda_context_snapshot("before-real-create");
 
-    /* VM-only fallback: no real context (transport unavailable). Return stub handle. */
+    /* Fail closed: no real context/transport means no BLAS compute path. */
     if (!g_has_real_context) {
-        cublas_write_mode("STUB");  /* Deterministic: no host used */
+        cublas_write_mode("NO_TRANSPORT");
         write_cublas_init_diag(g_cublas_chosen_path, g_real_cublas ? 1 : 0,
                                g_cublas_dlerror_buf[0] ? g_cublas_dlerror_buf : NULL,
-                               "skipped(stub)", -1);
-        cublas_stub_handle_t *stub = (cublas_stub_handle_t *)malloc(sizeof(cublas_stub_handle_t));
-        if (!stub) return CUBLAS_STATUS_ALLOC_FAILED;
-        stub->magic = CUBLAS_STUB_MAGIC;
-        *handle = (cublasHandle_t)stub;
-        return CUBLAS_STATUS_SUCCESS;
+                               "failed(no real context/transport)", -1);
+        *handle = NULL;
+        return CUBLAS_STATUS_NOT_INITIALIZED;
     }
     {
         typedef cublasStatus_t (*fn_t)(cublasHandle_t *);
@@ -730,7 +743,7 @@ cublasStatus_t cublasSetStream_v2(cublasHandle_t handle, void *stream) {
     CUDACallResult result = {0};
     uint32_t args[4];
 
-    if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasSetStream_v2");
     if (is_remote_handle(handle)) {
         if (as_remote_handle(handle)->stream_handle == (uint64_t)(uintptr_t)stream) {
             return CUBLAS_STATUS_SUCCESS;
@@ -761,10 +774,48 @@ cublasStatus_t cublasSetStream(cublasHandle_t handle, void *stream) {
     return cublasSetStream_v2(handle, stream);
 }
 
+cublasStatus_t cublasSetPointerMode_v2(cublasHandle_t handle, int mode)
+{
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasSetPointerMode_v2");
+    if (is_remote_handle(handle)) {
+        (void)mode;
+        return CUBLAS_STATUS_SUCCESS;
+    }
+    typedef cublasStatus_t (*fn_t)(cublasHandle_t, int);
+    RESOLVE_OR_FALLBACK("cublasSetPointerMode_v2", fn_t, CUBLAS_STATUS_NOT_INITIALIZED);
+    return real_fn(handle, mode);
+}
+
+cublasStatus_t cublasGetPointerMode_v2(cublasHandle_t handle, int *mode)
+{
+    if (!mode) return CUBLAS_STATUS_INVALID_VALUE;
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasGetPointerMode_v2");
+    if (is_remote_handle(handle)) {
+        *mode = 0; /* CUBLAS_POINTER_MODE_HOST */
+        return CUBLAS_STATUS_SUCCESS;
+    }
+    typedef cublasStatus_t (*fn_t)(cublasHandle_t, int *);
+    RESOLVE_OR_FALLBACK("cublasGetPointerMode_v2", fn_t, CUBLAS_STATUS_NOT_INITIALIZED);
+    return real_fn(handle, mode);
+}
+
+cublasStatus_t cublasSetWorkspace_v2(cublasHandle_t handle, void *workspace, size_t workspaceSizeInBytes)
+{
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasSetWorkspace_v2");
+    if (is_remote_handle(handle)) {
+        (void)workspace;
+        (void)workspaceSizeInBytes;
+        return CUBLAS_STATUS_SUCCESS;
+    }
+    typedef cublasStatus_t (*fn_t)(cublasHandle_t, void *, size_t);
+    RESOLVE_OR_FALLBACK("cublasSetWorkspace_v2", fn_t, CUBLAS_STATUS_NOT_INITIALIZED);
+    return real_fn(handle, workspace, workspaceSizeInBytes);
+}
+
 /* CUBLAS get stream */
 cublasStatus_t cublasGetStream_v2(cublasHandle_t handle, void **stream) {
     if (!stream) return CUBLAS_STATUS_INVALID_VALUE;
-    if (is_stub_handle(handle)) { *stream = NULL; return CUBLAS_STATUS_SUCCESS; }
+    if (is_stub_handle(handle)) { *stream = NULL; return reject_stub_handle_compute("cublasGetStream_v2"); }
     if (is_remote_handle(handle)) {
         *stream = (void *)(uintptr_t)as_remote_handle(handle)->stream_handle;
         return CUBLAS_STATUS_SUCCESS;
@@ -781,7 +832,7 @@ cublasStatus_t cublasGetStream(cublasHandle_t handle, void **stream) {
 
 /* CUBLAS set math mode */
 cublasStatus_t cublasSetMathMode(cublasHandle_t handle, int mode) {
-    if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasSetMathMode");
     if (is_remote_handle(handle)) return CUBLAS_STATUS_SUCCESS;
     typedef cublasStatus_t (*fn_t)(cublasHandle_t, int);
     RESOLVE_OR_FALLBACK("cublasSetMathMode", fn_t, CUBLAS_STATUS_NOT_SUPPORTED);
@@ -791,7 +842,7 @@ cublasStatus_t cublasSetMathMode(cublasHandle_t handle, int mode) {
 /* CUBLAS get math mode */
 cublasStatus_t cublasGetMathMode(cublasHandle_t handle, int *mode) {
     if (!mode) return CUBLAS_STATUS_INVALID_VALUE;
-    if (is_stub_handle(handle)) { *mode = 0; return CUBLAS_STATUS_SUCCESS; }
+    if (is_stub_handle(handle)) { *mode = 0; return reject_stub_handle_compute("cublasGetMathMode"); }
     if (is_remote_handle(handle)) { *mode = 0; return CUBLAS_STATUS_SUCCESS; }
     typedef cublasStatus_t (*fn_t)(cublasHandle_t, int *);
     RESOLVE_OR_FALLBACK("cublasGetMathMode", fn_t, CUBLAS_STATUS_NOT_SUPPORTED);
@@ -840,7 +891,7 @@ cublasStatus_t cublasSgemm_v2(cublasHandle_t handle, int transa, int transb,
     }
     CUDACallResult result = {0};
 
-    if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasSgemm_v2");
     if (is_remote_handle(handle)) {
         CublasSgemmCall payload;
 
@@ -929,7 +980,7 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
     if (cublas_diag_logging() && log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
-    if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasGemmEx");
     if (is_remote_handle(handle)) {
         CublasGemmExCall payload;
         if (!alpha || !beta || !A || !B || !C) {
@@ -1005,6 +1056,22 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
                    beta, C, Ctype, ldc, computeType, algo);
 }
 
+cublasStatus_t cublasSgemmEx(cublasHandle_t handle,
+                             int transa, int transb,
+                             int m, int n, int k,
+                             const float *alpha,
+                             const void *A, int Atype, int lda,
+                             const void *B, int Btype, int ldb,
+                             const float *beta,
+                             void *C, int Ctype, int ldc)
+{
+    return cublasGemmEx(handle, transa, transb, m, n, k,
+                        alpha, A, Atype, lda,
+                        B, Btype, ldb,
+                        beta, C, Ctype, ldc,
+                        CUBLAS_COMPUTE_32F, 0);
+}
+
 /* cublasGemmStridedBatchedEx - strided batched GEMM with type support */
 cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
                                          int transa, int transb,
@@ -1030,7 +1097,7 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
     if (cublas_diag_logging() && log_len > 0 && log_len < (int)sizeof(log_msg)) {
         syscall(__NR_write, 2, log_msg, log_len);
     }
-    if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasGemmStridedBatchedEx");
     if (is_remote_handle(handle)) {
         CUDACallResult result = {0};
         CublasGemmStridedBatchedExCall payload;
@@ -1100,7 +1167,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
         int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
         if (nfd >= 0) { const char *msg = "gemm_batched\n"; syscall(__NR_write, nfd, msg, 13); syscall(__NR_close, nfd); }
     }
-    if (is_stub_handle(handle)) return CUBLAS_STATUS_SUCCESS;
+    if (is_stub_handle(handle)) return reject_stub_handle_compute("cublasGemmBatchedEx");
     if (is_remote_handle(handle)) {
         CUDACallResult result = {0};
         if (!alpha || !beta || !Aarray || !Barray || !Carray || batchCount < 1) {
@@ -1168,6 +1235,54 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
                    Barray, Btype, ldb, beta, Carray, Ctype, ldc, batchCount,
                    computeType, algo);
 }
+
+/* Loader-complete cuBLAS surface for frameworks. Unsupported routines fail
+ * closed if called; this avoids falling back to bundled real cuBLAS init paths
+ * that cannot create a handle on the mediated driver. */
+#define DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(name) \
+    __attribute__((visibility("default"))) cublasStatus_t name(void) { return CUBLAS_STATUS_NOT_SUPPORTED; }
+
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCdotc_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCdotu_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCgelsBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCgemmStridedBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCgemm_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCgemv_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCgeqrfBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCgetrfBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCgetrsBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCtrsmBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasCtrsm_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDdot_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDgelsBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDgemmStridedBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDgemm_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDgemv_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDgeqrfBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDgetrfBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDgetrsBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDotEx)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDtrsmBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasDtrsm_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasSdot_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasSgelsBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasSgemmStridedBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasSgemv_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasSgeqrfBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasSgetrfBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasSgetrsBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasStrsm_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZdotc_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZdotu_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZgelsBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZgemmStridedBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZgemm_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZgemv_v2)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZgeqrfBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZgetrfBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZgetrsBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZtrsmBatched)
+DEFINE_CUBLAS_NOT_SUPPORTED_EXPORT(cublasZtrsm_v2)
 
 /* Constructor */
 __attribute__((constructor))

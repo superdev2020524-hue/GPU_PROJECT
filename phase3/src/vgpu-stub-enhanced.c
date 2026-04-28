@@ -178,6 +178,14 @@ static int vgpu_stub_prefer_bar1_htod(VGPUStubState *s)
     }
 }
 
+static uint32_t vgpu_cuda_owner_id(uint32_t vm_id, uint32_t pid)
+{
+    if (pid == 0) {
+        return vm_id;
+    }
+    return ((vm_id & 0xffu) << 24) | (pid & 0x00ffffffu);
+}
+
 static int vgpu_stub_probe_fresh_g2h_nonzero(VGPUStubState *s,
                                              uint32_t data_len,
                                              uint8_t *first_byte_out)
@@ -1158,7 +1166,7 @@ static void vgpu_process_cuda_doorbell(VGPUStubState *s)
     cuda_hdr.magic    = VGPU_SOCKET_MAGIC;
     cuda_hdr.call_id  = s->cuda_op;
     cuda_hdr.seq_num  = s->cuda_seq;
-    cuda_hdr.vm_id    = s->vm_id;
+    cuda_hdr.vm_id    = vgpu_cuda_owner_id(s->vm_id, s->scratch);
     uint32_t num_args = s->cuda_num_args;
     if (num_args > VGPU_CUDA_MAX_ARGS)
         num_args = VGPU_CUDA_MAX_ARGS;

@@ -11,6 +11,7 @@ contamination.
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -87,6 +88,18 @@ def unload_model(gen_url: str, model_name: str, timeout_sec: float) -> Dict[str,
     }
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+SPINNER_CHARS = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+
+def clean_cli_stdout(stdout: str) -> str:
+    text = ANSI_RE.sub("", stdout)
+    text = text.replace("\r", "\n")
+    text = "".join(ch for ch in text if ch not in SPINNER_CHARS)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return "\n".join(lines).strip()
+
+
 def run_cli(model_name: str, prompt: str, base_url: str, timeout_sec: float) -> Dict[str, Any]:
     env = os.environ.copy()
     env["OLLAMA_HOST"] = base_url
@@ -94,7 +107,8 @@ def run_cli(model_name: str, prompt: str, base_url: str, timeout_sec: float) -> 
     t0 = time.time()
     try:
         proc = subprocess.run(
-            ["ollama", "run", model_name, prompt],
+            ["ollama", "run", model_name],
+            input=prompt + "\n",
             capture_output=True,
             text=True,
             timeout=timeout_sec,
@@ -103,15 +117,23 @@ def run_cli(model_name: str, prompt: str, base_url: str, timeout_sec: float) -> 
         )
         return {
             "rc": proc.returncode,
-            "stdout": proc.stdout.strip(),
+            "stdout": clean_cli_stdout(proc.stdout),
+            "raw_stdout": proc.stdout.strip(),
             "stderr": proc.stderr.strip(),
             "wall_sec": round(time.time() - t0, 3),
         }
     except subprocess.TimeoutExpired as e:
+        raw_stdout = e.stdout or ""
+        raw_stderr = e.stderr or ""
+        if isinstance(raw_stdout, bytes):
+            raw_stdout = raw_stdout.decode("utf-8", errors="replace")
+        if isinstance(raw_stderr, bytes):
+            raw_stderr = raw_stderr.decode("utf-8", errors="replace")
         return {
             "rc": 124,
-            "stdout": (e.stdout or "").strip(),
-            "stderr": (e.stderr or "").strip(),
+            "stdout": clean_cli_stdout(raw_stdout),
+            "raw_stdout": raw_stdout.strip(),
+            "stderr": raw_stderr.strip(),
             "wall_sec": round(time.time() - t0, 3),
         }
 
@@ -158,7 +180,12 @@ def main() -> int:
 
     forced_unloads = []
     for model_name in resident_before:
-        forced_unloads.append(unload_model(gen_url, model_name, args.timeout_sec))
+        cleanup = unload_model(gen_url, model_name, args.timeout_sec)
+        wait_code, wait_body, absent = wait_for_model_absent(ps_url, model_name)
+        cleanup["wait_ps_http_code"] = wait_code
+        cleanup["absent_after_wait"] = absent
+        cleanup["resident_after_wait"] = model_in_ps(wait_body, model_name)
+        forced_unloads.append(cleanup)
     if forced_unloads:
         ps_code, ps_body, _ = api_get(ps_url, 20.0)
     report["preflight"]["forced_unloads"] = forced_unloads
@@ -185,6 +212,7 @@ def main() -> int:
             "rc": cli["rc"],
             "wall_sec": cli["wall_sec"],
             "stdout_preview": cli["stdout"][:120],
+            "raw_stdout_preview": cli.get("raw_stdout", "")[:240],
             "stderr_preview": cli["stderr"][:240],
             "ps_http_code": ps_code,
             "resident_after": resident_after,

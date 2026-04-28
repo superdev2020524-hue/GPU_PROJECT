@@ -40,6 +40,13 @@ int cuda_transport_init(cuda_transport_t **tp);
 void cuda_transport_destroy(cuda_transport_t *tp);
 
 /*
+ * Notify the host executor that the current guest process is exiting so
+ * process-owned device memory, streams, events, modules, and handles can be
+ * released without tearing down other processes in the same VM.
+ */
+int cuda_transport_process_cleanup(cuda_transport_t *tp);
+
+/*
  * Execute a CUDA API call (blocking RPC).
  *
  * Parameters:

@@ -49,9 +49,9 @@ The VGPU-STUB and mediator are **general-purpose** for GPU remoting, not tied to
 
 ## Related documents
 
-- **OLLAMA_INVESTIGATION_PLAN.md** — notes that “vGPU works for general GPU projects (Python, CUDA, etc.)”; investigation there is Ollama-focused as one use case.
 - **VGPU_CLIENT_DEPLOYMENT_DIRECTION.md** — client behavior and deployment for the Ollama case (patient client, timeouts).
-- **CURRENT_STATE_AND_DIRECTION.md** — current test-4 state, pipeline, permissions, and next steps.
-- **REFOCUS_ON_ACTUAL_GOAL.md** — earlier “real goal” framed as “Enable GPU mode in Ollama”; that is the **first-stage** goal, not the full purpose above.
+- **SESSION_RESUME_GUIDE/README.md** — compact current handoff for future Phase 3 sessions.
+- **archive/historical-docs/root/CURRENT_STATE_AND_DIRECTION.md** — archived historical test-4 state, pipeline, permissions, and next steps.
+- **archive/historical-docs/root/REFOCUS_ON_ACTUAL_GOAL.md** — archived earlier “real goal” framed as “Enable GPU mode in Ollama”; that is the **first-stage** goal, not the full purpose above.
 
 This document (**PHASE3_PURPOSE_AND_GOALS.md**) is the authoritative statement of **purpose and goals** for Phase 3: ultimate goal = all GPU software in the VM over the vGPU path; first stage = Ollama GPU inference success.

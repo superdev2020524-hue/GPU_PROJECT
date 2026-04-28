@@ -1,0 +1,43 @@
+Bren: What are your upcoming milestones for things? What are you thinking in terms of scheduling?
+
+Client: So after the virtualization layer that you're working on, there'll be a period of time where it will require... some maintenance and improvement because as we develop it we'll develop or we'll come up with ideas to improve it and then we need to develop those out then I would like you to probably work on truncated Wigner approximation and
+
+Client:  we want to commit that to silicon commit that to hardware so the Usually what we do, and we did this with the post-quantum proofing, we'll develop it in a software, with a software platform. And once we've got the software running and it works very well, then we can commit that to an ASIC and that becomes our chipset.
+
+Client:  So those are the kind of things that we'd like potentially your help on.
+
+Bren: That makes sense.
+
+Client: So what's the first... What's the first gate you want to get through?
+
+Client: I want to finish off GPU virtualization. I want to get that stable. I want that running. And then I would like you to start looking at truncated Wignore approximation and learn more about that, understand it, and how we can create a general platform. And that could be creating our own...
+
+Client:  for a better word, CUDA-type operation set, instruction set, that's the word I'm looking for, that would allow others to build applications that run on our hardware platform. Unless one exists, there may be a kind of API layer to a a truncated Wigner. I don't think there is, but if there is, let's use it. I'm all for using existing APIs.
+
+Client:  But if it doesn't exist, then we'll have to invent our own.
+
+Bren: So, I mean, that sounds good. So once we've got that stability locked in, you want me to start mapping the truncated Wigner approximation work in parallel? or hold completely until the virtualization layer is...
+
+Client:  Yeah, no, absolutely, in parallel. The way I see it will work is the load on you for managing and maintaining the virtualization will start to fall off, and you will then switch over to TWA.
+
+Bren:  And there's always stops and starts, so that's why I ask sometimes. Unless you're in a complete crunch, there's usually starts and stops where you can kind of run some things in parallel. So for the Wigner approximation piece, do you have like a specific, like what would you want the first prototype to demonstrate before it's ready to commit to silicon?
+
+Client:  I think the first step is let's do our research, find out what's out there, what kind of layer we would need to program up to in order to make an API that others could use, unless one already exists. So there's a lot of research. I think phase one, understand what it is, how we can use it, how we could create a generalized platform for allowing applications to whether they're written for us or not, to run on our silicon.
+
+Bren:  Got it. Do you guys have a general, when you do research, do you have a formalized approach, or is it just, "hey, here's. ..."
+
+Client: No, literally, I'll give you an overview, and I'll say go, do some work on it and you'll come back and you'll say, what about this? And I'll say, no, no, no, that's not what I want to do. I want to do this. And then we kind of fine tune it until we're both pointing in the right direction. And then you do whatever you need to do. I don't care how you work, I just want the results.
+
+Bren: Yeah, that's not a problem. So I can start mapping that landscape, you know, existing APIs, any math libraries, any, you know, prior work, and then outline, I guess, what we think a minimal proof of concept layer could look like. How does that sound?
+
+Client:  Sure, yeah. 
+
+Bren: Excellent. And so, yeah, we'll do these things in parallel. We'll finish up the other. And, you know, basically that's a proof of that. And we'll just finish that up. get that tight and while I'm kind of in the stops and starts of that I'll start making headway on this as well.
+
+Bren:  then in terms of Planning deadlines, all these sorts of things with getting the GPU side tightened up. What are you looking for? you have a hard deadline for that?
+
+Client: On the virtualization, I've got people ready to test our platform, and I don't want to let them loose on our platform until I have that GPU layer. I had to explain to Mumtaz, listen, I don't need GPU virtualization working. I just need it there. So if we've got a problem with applications sitting on top of this layer, I need to know now.
+
+Client: and he didn't get it to begin with, but he's got it now. He goes, okay, now I understand what you want. Because once you've got GPU virtualization running on server 1, which is your development server, then it's very easy to take that and switch it straight to server 2. So now we have a live system running the final GPU release version. But I want that pre-release version that just is sitting there doing nothing for most of the time. on our platform as soon as possible.
+
+Bren: got it ASAP. I understand that, alright.

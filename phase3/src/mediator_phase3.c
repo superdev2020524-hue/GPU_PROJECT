@@ -108,6 +108,7 @@ typedef struct {
     uint64_t messages_sent;
     uint64_t messages_received;
     int      is_active;
+    int      is_persistent_cuda;
 } connection_info_t;
 
 static connection_info_t g_connections[MAX_TRACKED_CONNECTIONS];
@@ -121,6 +122,9 @@ static int  setup_socket_server(const char *socket_path);
 static int  setup_admin_socket(void);
 static void track_connection(uint32_t vm_id, int fd);
 static void untrack_connection(int fd);
+static void mark_connection_persistent_cuda(int fd);
+static void cleanup_cuda_connection_state(int fd, const char *reason);
+static uint32_t cuda_connection_owner_id(uint32_t vm_id, int fd);
 static void handle_client_connection(int client_fd);
 static int  handle_persistent_message(int client_fd);
 static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
@@ -735,6 +739,7 @@ static void track_connection(uint32_t vm_id, int fd)
         g_connections[idx].messages_sent = 0;
         g_connections[idx].messages_received = 0;
         g_connections[idx].is_active = 1;
+        g_connections[idx].is_persistent_cuda = 0;
     }
     
     pthread_mutex_unlock(&g_connections_lock);
@@ -751,6 +756,68 @@ static void untrack_connection(int fd)
         }
     }
     pthread_mutex_unlock(&g_connections_lock);
+}
+
+static void mark_connection_persistent_cuda(int fd)
+{
+    pthread_mutex_lock(&g_connections_lock);
+    for (int i = 0; i < g_num_connections; i++) {
+        if (g_connections[i].fd == fd && g_connections[i].is_active) {
+            g_connections[i].is_persistent_cuda = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_connections_lock);
+}
+
+static void cleanup_cuda_connection_state(int fd, const char *reason)
+{
+    uint32_t vm_id = 0;
+    uint32_t owner_id = 0;
+    int found = 0;
+    int remaining_persistent = 0;
+
+    pthread_mutex_lock(&g_connections_lock);
+    for (int i = 0; i < g_num_connections; i++) {
+        if (g_connections[i].fd == fd && g_connections[i].is_active) {
+            vm_id = g_connections[i].vm_id;
+            g_connections[i].is_active = 0;
+            g_connections[i].is_persistent_cuda = 0;
+            found = 1;
+            break;
+        }
+    }
+    if (found) {
+        for (int i = 0; i < g_num_connections; i++) {
+            if (g_connections[i].is_active &&
+                g_connections[i].is_persistent_cuda &&
+                g_connections[i].vm_id == vm_id) {
+                remaining_persistent++;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_connections_lock);
+
+    if (found && g_cuda_executor) {
+        owner_id = cuda_connection_owner_id(vm_id, fd);
+        fprintf(stderr,
+                "[PERSIST] fd=%d closed for vm=%u owner=%u; cleaning executor connection state (%s, remaining_vm_cuda=%d)\n",
+                fd, vm_id, owner_id, reason ? reason : "closed",
+                remaining_persistent);
+        cuda_executor_cleanup_vm(g_cuda_executor, owner_id);
+    } else if (found) {
+        fprintf(stderr,
+                "[PERSIST] fd=%d closed for vm=%u; %d persistent CUDA connection(s) remain (%s)\n",
+                fd, vm_id, remaining_persistent, reason ? reason : "closed");
+    }
+}
+
+static uint32_t cuda_connection_owner_id(uint32_t vm_id, int fd)
+{
+    uint32_t vm_part = (vm_id & 0xffffu) << 16;
+    uint32_t fd_part = (uint32_t)fd & 0xffffu;
+    uint32_t owner = vm_part | fd_part;
+    return owner ? owner : vm_id;
 }
 
 static void handle_client_connection(int client_fd)
@@ -837,6 +904,7 @@ static void handle_client_connection(int client_fd)
         }
         /* Note: For PING/PONG, we keep the connection open for persistent connections */
         /* But for one-shot PINGs, we close. The vgpu-stub will reconnect if needed. */
+        untrack_connection(client_fd);
         close(client_fd);
         return;
     }
@@ -1034,8 +1102,16 @@ static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
 
     /* Parse the CUDA call header */
     const CUDACallHeader *cuda_hdr = (const CUDACallHeader *)payload;
+    CUDACallHeader routed_cuda_hdr = *cuda_hdr;
     const void *bulk_data = NULL;
     uint32_t bulk_len = 0;
+
+    /* Newer stubs route executor ownership through cuda_hdr.vm_id using
+     * (vm_id,pid). Older live stubs still send the bare VM id, so keep a
+     * connection-key fallback until all stubs carry guest process identity. */
+    if (routed_cuda_hdr.vm_id == sock_hdr->vm_id) {
+        routed_cuda_hdr.vm_id = cuda_connection_owner_id(sock_hdr->vm_id, client_fd);
+    }
 
     if (payload_len > sizeof(CUDACallHeader)) {
         bulk_data = payload + sizeof(CUDACallHeader);
@@ -1073,10 +1149,27 @@ static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    int rc = cuda_executor_call(g_cuda_executor,
-                                 cuda_hdr, bulk_data, bulk_len,
-                                 &result, result_data, result_cap,
-                                 &result_len);
+    int rc;
+    if (routed_cuda_hdr.call_id == CUDA_CALL_PROCESS_CLEANUP) {
+        fprintf(stderr,
+                "[MEDIATOR] CUDA process cleanup vm_id=%u owner=%u request_id=%u\n",
+                (unsigned)sock_hdr->vm_id,
+                (unsigned)routed_cuda_hdr.vm_id,
+                (unsigned)sock_hdr->request_id);
+        cuda_executor_cleanup_vm(g_cuda_executor, routed_cuda_hdr.vm_id);
+        memset(&result, 0, sizeof(result));
+        result.magic = VGPU_SOCKET_MAGIC;
+        result.seq_num = routed_cuda_hdr.seq_num;
+        result.status = 0;
+        result.num_results = 0;
+        result.data_len = 0;
+        rc = 0;
+    } else {
+        rc = cuda_executor_call(g_cuda_executor,
+                                &routed_cuda_hdr, bulk_data, bulk_len,
+                                &result, result_data, result_cap,
+                                &result_len);
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &end);
     uint64_t elapsed_us = (uint64_t)(end.tv_sec - start.tv_sec) * 1000000
@@ -1663,13 +1756,15 @@ static void run_mediator(void)
                         }
                         if (slot >= 0) {
                             persistent_fds[slot] = client_fd;
+                            mark_connection_persistent_cuda(client_fd);
                             printf("[PERSIST] fd=%d registered for persistent "
                                    "polling (slot=%d)\n", client_fd, slot);
                             fflush(stdout);
                         } else {
                             fprintf(stderr, "[PERSIST] too many persistent "
                                     "clients, closing fd=%d\n", client_fd);
-                            untrack_connection(client_fd);
+                            cleanup_cuda_connection_state(client_fd,
+                                                          "persistent table full");
                             close(client_fd);
                         }
                     }
@@ -1703,7 +1798,7 @@ static void run_mediator(void)
             if (!keep) {
                 printf("[PERSIST] fd=%d removed from persistent set\n", pfd);
                 fflush(stdout);
-                untrack_connection(pfd);
+                cleanup_cuda_connection_state(pfd, "persistent fd closed");
                 close(pfd);
                 persistent_fds[i] = -1;
             }

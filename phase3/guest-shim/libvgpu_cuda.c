@@ -826,7 +826,13 @@ typedef struct {
     uint32_t param_offsets[VGPU_LAUNCH_PARAM_MAX];
 } vgpu_launch_param_cache_entry_t;
 
+typedef struct {
+    uint64_t function_handle;
+    char name[256];
+} vgpu_function_name_cache_entry_t;
+
 static vgpu_launch_param_cache_entry_t g_launch_param_cache[VGPU_LAUNCH_PARAM_CACHE_SIZE];
+static vgpu_function_name_cache_entry_t g_function_name_cache[VGPU_LAUNCH_PARAM_CACHE_SIZE];
 static pthread_mutex_t g_launch_param_cache_mutex;
 static int g_launch_param_cache_mutex_initialized = 0;
 
@@ -990,6 +996,71 @@ static void launch_param_cache_store(uint64_t function_handle,
     pthread_mutex_unlock(&g_launch_param_cache_mutex);
 }
 
+static void function_name_cache_store(uint64_t function_handle, const char *name)
+{
+    if (function_handle == 0 || !name || name[0] == '\0') {
+        return;
+    }
+    ensure_launch_param_cache_mutex_init();
+    if (!g_launch_param_cache_mutex_initialized) {
+        return;
+    }
+
+    uint32_t start = launch_param_cache_hash(function_handle) % VGPU_LAUNCH_PARAM_CACHE_SIZE;
+    uint32_t target = start;
+    int have_target = 0;
+
+    pthread_mutex_lock(&g_launch_param_cache_mutex);
+    for (uint32_t i = 0; i < VGPU_LAUNCH_PARAM_CACHE_PROBE_LIMIT; i++) {
+        uint32_t idx = (start + i) % VGPU_LAUNCH_PARAM_CACHE_SIZE;
+        if (g_function_name_cache[idx].function_handle == 0 ||
+            g_function_name_cache[idx].function_handle == function_handle) {
+            target = idx;
+            have_target = 1;
+            break;
+        }
+    }
+    if (!have_target) {
+        target = start;
+    }
+    g_function_name_cache[target].function_handle = function_handle;
+    snprintf(g_function_name_cache[target].name,
+             sizeof(g_function_name_cache[target].name),
+             "%s", name);
+    pthread_mutex_unlock(&g_launch_param_cache_mutex);
+}
+
+static int function_name_cache_lookup(uint64_t function_handle, char *out, size_t out_size)
+{
+    if (function_handle == 0 || !out || out_size == 0) {
+        return 0;
+    }
+    ensure_launch_param_cache_mutex_init();
+    if (!g_launch_param_cache_mutex_initialized) {
+        return 0;
+    }
+
+    int found = 0;
+    uint32_t start = launch_param_cache_hash(function_handle) % VGPU_LAUNCH_PARAM_CACHE_SIZE;
+
+    pthread_mutex_lock(&g_launch_param_cache_mutex);
+    for (uint32_t i = 0; i < VGPU_LAUNCH_PARAM_CACHE_PROBE_LIMIT; i++) {
+        uint32_t idx = (start + i) % VGPU_LAUNCH_PARAM_CACHE_SIZE;
+        const vgpu_function_name_cache_entry_t *entry = &g_function_name_cache[idx];
+        if (entry->function_handle == 0) {
+            break;
+        }
+        if (entry->function_handle == function_handle) {
+            snprintf(out, out_size, "%s", entry->name);
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_launch_param_cache_mutex);
+
+    return found;
+}
+
 static void launch_param_cache_clear(void)
 {
     ensure_launch_param_cache_mutex_init();
@@ -998,6 +1069,7 @@ static void launch_param_cache_clear(void)
     }
     pthread_mutex_lock(&g_launch_param_cache_mutex);
     memset(g_launch_param_cache, 0, sizeof(g_launch_param_cache));
+    memset(g_function_name_cache, 0, sizeof(g_function_name_cache));
     pthread_mutex_unlock(&g_launch_param_cache_mutex);
 }
 
@@ -3526,6 +3598,18 @@ static int is_runner_process(void)
 static cuda_transport_t *g_transport = NULL;
 static CUDAGpuInfo      g_gpu_info;
 static int              g_gpu_info_valid = 0;
+
+__attribute__((destructor(101)))
+static void libvgpu_cuda_on_unload(void)
+{
+    if (!g_transport) {
+        return;
+    }
+
+    (void)cuda_transport_process_cleanup(g_transport);
+    cuda_transport_destroy(g_transport);
+    g_transport = NULL;
+}
 
 static void fill_default_device_identity(CUDAGpuInfo *info)
 {
@@ -6537,10 +6621,9 @@ CUresult cuDevicePrimaryCtxRetain(CUcontext *pctx, CUdevice dev)
     }
 
     /* During init/discovery, stay transport-free and hand back the deferred
-     * dummy primary context immediately. This lets vendor libcudart complete
-     * its bootstrap probes without forcing BAR0/socket bring-up inside
-     * cudaGetDeviceCount()/discovery-time context seeding. */
-    if (g_in_init_phase) {
+     * dummy primary context immediately. Once the transport is already live,
+     * promote callers such as cuBLAS to a real mediated primary context. */
+    if (g_in_init_phase && !g_transport) {
         static CUcontext init_dummy_ctx = (CUcontext)(uintptr_t)0xDEADBEEF;
         *pctx = init_dummy_ctx;
         g_current_ctx = init_dummy_ctx;
@@ -6781,8 +6864,10 @@ CUresult cuCtxSetCurrent(CUcontext ctx)
         syscall(__NR_write, 2, buf, len);
     }
     
-    /* CRITICAL: During init phase, don't call ensure_init() - just set context locally */
-    if (g_in_init_phase) {
+    /* CRITICAL: During discovery, don't call ensure_init() - just set context locally.
+     * If compute has already brought the transport up, promote the deferred
+     * dummy context instead of re-publishing it to libraries such as cuBLAS. */
+    if (g_in_init_phase && !(ctx_is_dummy(ctx) && g_transport)) {
         g_current_ctx = ctx;
         g_global_ctx = ctx;
         const char *success_msg = "[libvgpu-cuda] cuCtxSetCurrent() SUCCESS (init phase, local): ctx=%p\n";
@@ -9004,6 +9089,7 @@ CUresult cuModuleGetFunction(CUfunction *hfunc, CUmodule hmod,
                                         &result, NULL, 0, &recv_len);
     if (rc == CUDA_SUCCESS && result.num_results >= 1) {
         *hfunc = (CUfunction)(uintptr_t)result.results[0];
+        function_name_cache_store((uint64_t)(uintptr_t)*hfunc, name);
     }
     return rc;
 }
@@ -9196,6 +9282,36 @@ CUresult cuLaunchKernel(CUfunction f,
                     if (lp.num_params > 0) {
                         break;
                     }
+                    char cached_name[256];
+                    memset(cached_name, 0, sizeof(cached_name));
+                    if (scanned_num_params >= 3 &&
+                        function_name_cache_lookup(lp.function_handle,
+                                                   cached_name,
+                                                   sizeof(cached_name)) &&
+                        strstr(cached_name, "vectorized_elementwise_kernel") &&
+                        strstr(cached_name, "ArrayIPcLi2")) {
+                        /* PyTorch vectorized elementwise kernels commonly pass
+                         * (int N, functor, Array<char*,2>). When CUDA cannot
+                         * report parameter metadata, the generic 8-byte fallback
+                         * both misplaces the functor and drops the second Array
+                         * pointer. Use the narrow known ABI layout. */
+                        lp.num_params = 3;
+                        use_raw_param_buffer = 1;
+                        param_offsets[0] = 0;
+                        param_sizes[0] = 4;
+                        param_offsets[1] = 4;
+                        param_sizes[1] = strstr(cached_name, "launch_clamp_scalar") ? 12 : 8;
+                        param_offsets[2] = 16;
+                        param_sizes[2] = 16;
+                        lp.total_param_bytes = 32;
+                        break;
+                    }
+                    /* Generic PTX functions can load and resolve successfully while
+                     * cuFuncGetParamInfo remains unavailable on the host. In that case,
+                     * preserve the already-scanned kernelParams and let the host driver
+                     * consume them through the legacy kernelParams path instead of
+                     * sending a zero-parameter launch. */
+                    lp.num_params = scanned_num_params;
                     use_raw_param_buffer = 0;
                     break;
                 }
@@ -9396,7 +9512,23 @@ DEFINE_CUDA_NOT_SUPPORTED_STUB(cuCtxDetach)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuCtxGetCacheConfig)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuCtxSetCacheConfig)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuCtxGetSharedMemConfig)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuCtxGetStreamPriorityRange)
+
+__attribute__((visibility("default"))) CUresult cuCtxGetStreamPriorityRange(int *leastPriority, int *greatestPriority)
+{
+    if (!leastPriority || !greatestPriority) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    /*
+     * The mediated path does not expose priority scheduling yet. CUDA permits
+     * devices to report a degenerate priority range, which keeps frameworks
+     * from treating basic default-stream work as unsupported.
+     */
+    *leastPriority = 0;
+    *greatestPriority = 0;
+    return CUDA_SUCCESS;
+}
+
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuCtxSetSharedMemConfig)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuCtxResetPersistingL2Cache)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuCtxEnablePeerAccess)
@@ -9644,7 +9776,21 @@ DEFINE_CUDA_OPTIONAL_EXPORT(cuStreamBeginCapture)
 DEFINE_CUDA_OPTIONAL_EXPORT(cuStreamBeginCapture_v2)
 DEFINE_CUDA_OPTIONAL_EXPORT(cuStreamBeginCaptureToGraph)
 DEFINE_CUDA_OPTIONAL_EXPORT(cuStreamEndCapture)
-DEFINE_CUDA_OPTIONAL_EXPORT(cuStreamIsCapturing)
+
+__attribute__((visibility("default"))) CUresult cuStreamIsCapturing(CUstream hStream, int *captureStatus)
+{
+    (void)hStream;
+    if (!captureStatus) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    /* CU_STREAM_CAPTURE_STATUS_NONE. The current mediated stream path does not
+     * implement graph capture, so default-stream work is explicitly not inside
+     * a capture sequence. */
+    *captureStatus = 0;
+    return CUDA_SUCCESS;
+}
+
 DEFINE_CUDA_OPTIONAL_EXPORT(cuStreamGetCaptureInfo)
 DEFINE_CUDA_OPTIONAL_EXPORT(cuStreamGetCaptureInfo_v2)
 DEFINE_CUDA_OPTIONAL_EXPORT(cuStreamUpdateCaptureDependencies)
@@ -9807,33 +9953,51 @@ CUresult cuStreamGetCtx(CUstream hStream, CUcontext *pctx)
 CUresult cuStreamWaitEvent(CUstream hStream, CUevent hEvent,
                             unsigned int flags)
 {
-    (void)hStream;
-    (void)hEvent;
-    (void)flags;
-    return CUDA_SUCCESS;
+    CUresult rc = ensure_init();
+    if (rc != CUDA_SUCCESS) return rc;
+    if (!hEvent) return CUDA_ERROR_INVALID_HANDLE;
+
+    CUDACallResult result;
+    uint32_t args[6];
+    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hStream);
+    CUDA_PACK_U64(args, 2, (uint64_t)(uintptr_t)hEvent);
+    args[4] = flags;
+    args[5] = 0;
+
+    return rpc_simple(CUDA_CALL_STREAM_WAIT_EVENT, args, 6, &result);
 }
 
 /* ================================================================
  * CUDA Driver API — Event management
  * ================================================================ */
 
-static pthread_mutex_t g_fake_event_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t g_fake_event_next = 0x7000000000000000ULL;
-
 CUresult cuEventCreate(CUevent *phEvent, unsigned int flags)
 {
-    (void)flags;
+    CUresult rc = ensure_init();
+    if (rc != CUDA_SUCCESS) return rc;
     if (!phEvent) return CUDA_ERROR_INVALID_VALUE;
-    pthread_mutex_lock(&g_fake_event_lock);
-    *phEvent = (CUevent)(uintptr_t)g_fake_event_next++;
-    pthread_mutex_unlock(&g_fake_event_lock);
-    return CUDA_SUCCESS;
+
+    CUDACallResult result;
+    uint32_t args[2] = { flags, 0 };
+
+    rc = rpc_simple(CUDA_CALL_EVENT_CREATE_WITH_FLAGS, args, 2, &result);
+    if (rc == CUDA_SUCCESS && result.num_results >= 1) {
+        *phEvent = (CUevent)(uintptr_t)result.results[0];
+    }
+    return rc;
 }
 
 CUresult cuEventDestroy_v2(CUevent hEvent)
 {
-    (void)hEvent;
-    return CUDA_SUCCESS;
+    CUresult rc = ensure_init();
+    if (rc != CUDA_SUCCESS) return rc;
+    if (!hEvent) return CUDA_ERROR_INVALID_HANDLE;
+
+    CUDACallResult result;
+    uint32_t args[2];
+    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hEvent);
+
+    return rpc_simple(CUDA_CALL_EVENT_DESTROY, args, 2, &result);
 }
 
 CUresult cuEventDestroy(CUevent hEvent)
@@ -9843,21 +10007,42 @@ CUresult cuEventDestroy(CUevent hEvent)
 
 CUresult cuEventRecord(CUevent hEvent, CUstream hStream)
 {
-    (void)hEvent;
-    (void)hStream;
-    return CUDA_SUCCESS;
+    CUresult rc = ensure_init();
+    if (rc != CUDA_SUCCESS) return rc;
+    if (!hEvent) return CUDA_ERROR_INVALID_HANDLE;
+
+    CUDACallResult result;
+    uint32_t args[4];
+    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hEvent);
+    CUDA_PACK_U64(args, 2, (uint64_t)(uintptr_t)hStream);
+
+    return rpc_simple(CUDA_CALL_EVENT_RECORD, args, 4, &result);
 }
 
 CUresult cuEventSynchronize(CUevent hEvent)
 {
-    (void)hEvent;
-    return CUDA_SUCCESS;
+    CUresult rc = ensure_init();
+    if (rc != CUDA_SUCCESS) return rc;
+    if (!hEvent) return CUDA_ERROR_INVALID_HANDLE;
+
+    CUDACallResult result;
+    uint32_t args[2];
+    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hEvent);
+
+    return rpc_simple(CUDA_CALL_EVENT_SYNCHRONIZE, args, 2, &result);
 }
 
 CUresult cuEventQuery(CUevent hEvent)
 {
-    (void)hEvent;
-    return CUDA_SUCCESS;
+    CUresult rc = ensure_init();
+    if (rc != CUDA_SUCCESS) return rc;
+    if (!hEvent) return CUDA_ERROR_INVALID_HANDLE;
+
+    CUDACallResult result;
+    uint32_t args[2];
+    CUDA_PACK_U64(args, 0, (uint64_t)(uintptr_t)hEvent);
+
+    return rpc_simple(CUDA_CALL_EVENT_QUERY, args, 2, &result);
 }
 
 CUresult cuEventElapsedTime(float *pMilliseconds,
@@ -9883,12 +10068,23 @@ CUresult cuOccupancyMaxActiveBlocksPerMultiprocessor(int *numBlocks,
     if (rc != CUDA_SUCCESS) return rc;
     if (!numBlocks) return CUDA_ERROR_INVALID_VALUE;
 
-    /* Simple heuristic: max_threads_per_sm / blockSize */
+    /* Keep this consistent with CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR.
+     * Reporting max_threads_per_sm / blockSize alone gives impossible answers
+     * such as 2048 resident 1-thread blocks and breaks library init probes. */
     int max_t = g_gpu_info.max_threads_per_mp;
+    int max_blocks = 32;
     if (max_t <= 0) max_t = GPU_DEFAULT_MAX_THREADS_PER_SM;
     if (blockSize <= 0) blockSize = 1;
 
     *numBlocks = max_t / blockSize;
+    if (*numBlocks > max_blocks) *numBlocks = max_blocks;
+    if (dynSharedMem > 0) {
+        size_t per_sm_limit = (g_gpu_info.max_shared_mem_per_mp > 0)
+            ? (size_t)g_gpu_info.max_shared_mem_per_mp
+            : (size_t)GPU_DEFAULT_SHARED_MEM_PER_SM;
+        int by_smem = (int)(per_sm_limit / dynSharedMem);
+        if (by_smem > 0 && *numBlocks > by_smem) *numBlocks = by_smem;
+    }
     if (*numBlocks < 1) *numBlocks = 1;
 
     (void)func; (void)dynSharedMem;
@@ -10110,6 +10306,14 @@ CUresult cuFuncSetAttribute(CUfunction hfunc, int attrib, int value)
 {
     CUresult rc = ensure_init();
     if (rc != CUDA_SUCCESS) return rc;
+
+    if (attrib == 14) { /* CU_FUNC_ATTRIBUTE_NON_PORTABLE_CLUSTER_SIZE_ALLOWED */
+        fprintf(stderr,
+                "[libvgpu-cuda] cuFuncSetAttribute() NOT_SUPPORTED: hfunc=%p attrib=%d value=%d (cluster launch unsupported, pid=%d)\n",
+                (void *)hfunc, attrib, value, (int)getpid());
+        fflush(stderr);
+        return CUDA_ERROR_NOT_SUPPORTED;
+    }
 
     fprintf(stderr,
             "[libvgpu-cuda] cuFuncSetAttribute() NO-OP SUCCESS: hfunc=%p attrib=%d value=%d (pid=%d)\n",

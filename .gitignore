@@ -1,5 +1,7 @@
 # Build outputs (large binaries; use deploy script to copy to VM)
 phase3/out/
 phase3/out-test10/
+phase3/out-shim-test10/
+phase3/__pycache__/
 # Local Ollama clone used by run_libggml_docker_build_and_deploy.sh (do not commit)
 phase3/ollama-src-phase3/

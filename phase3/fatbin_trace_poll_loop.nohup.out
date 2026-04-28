@@ -1,12 +1,0 @@
-./fatbin_trace_poll_loop.sh: line 3: set: pipefail: invalid option name
-./fatbin_trace_poll_loop.sh: line 3: set: -: invalid option
-set: usage: set [-abefhkmnptuvxBCEHPT] [-o option-name] [--] [-] [arg ...]
-./fatbin_trace_poll_loop.sh: line 4: cd: $'.\r': No such file or directory
-./fatbin_trace_poll_loop.sh: line 6: $'\r': command not found
-./fatbin_trace_poll_loop.sh: line 7: $'{\r': command not found
-
----
-## Poll loop started 2026-03-23T09:18:41Z (local)
-
-./fatbin_trace_poll_loop.sh: line 12: syntax error near unexpected token `}'
-./fatbin_trace_poll_loop.sh: line 12: `} >>"$RECORD"'

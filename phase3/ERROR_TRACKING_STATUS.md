@@ -25,6 +25,223 @@ Use this section before reading the historical sessions below.
 - **Current candidate policy:** historical `tinyllama` failures, residual `0x00bc`, latency margin, and any earlier regression remain candidates unless a fresh bounded repro proves one is earliest again.
 - **Reading rule:** references below to "active error" are authoritative for their session date, but they are historical evidence until refreshed by a new top-of-file entry.
 
+## Session 2026-04-27 (roadmap re-baseline before general vGPU work)
+
+- **Lane:** Phase 1 preservation baseline before next-phase general vGPU work.
+- **Current `Plan A` state:** `pass` (`/tmp/phase1_milestone_gate_rebaseline_20260427.json` -> `overall_pass=True`).
+- **Active error:** none for the current Phase 1 preservation baseline.
+- **Candidates:** residual non-terminating `0x00bc` / `cuFuncGetParamInfo` status noise remains candidate-only; host mediator was initially stopped at the start of the re-baseline but was restored by the documented startup procedure before any gate conclusion was drawn.
+- **Closure proof:** `Plan A`, approved `Plan B`, and `Plan C` all pass serially on the restored live baseline, with `/api/ps` force-cleaned after cross-model checks.
+- **Last proven checkpoint:** `HTTP 200 -> residency -> force unload`, with host physical-GPU kernel execution proof.
+- **Evidence:** dom0 mediator was restarted from `/root/phase3/mediator_phase3` with a fresh `/tmp/mediator.log`; it initialized CUDA on `NVIDIA H100 PCIe`, found Test-10's live `vgpu-cuda` QEMU chroot socket, and listened on `/var/xen/qemu/root-1/tmp/vgpu-mediator.sock`. VM `test-10` showed `ollama` active, the vGPU PCI device `00:05.0 10de:2331`, expected GPU-mode service environment, and local models `qwen2.5:0.5b`, `tinyllama:latest`, and `qwen2.5:3b`. `Plan A` passed all checked-in accuracy, speed, and residency cases. Approved `Plan B` passed all four Tiny cases (`B1`-`B4`). Bounded `Plan C` CLI refresh returned `12`, `452`, `462`, and `95` for the client-facing `qwen2.5:3b` prompts. Final `/api/ps` was empty after explicit unloads. Final host snapshot showed `60709` `cuLaunchKernel SUCCESS: kernel executed on physical GPU` lines for `vm=10`, no `sync FAILED`, no `CUDA_ERROR_ILLEGAL_ADDRESS`, and only non-terminating `0x00bc` candidate lines.
+- **Why no active error remains:** the current preservation gates completed successfully through the same mediated GPU-backed path. The residual `0x00bc` signal did not prevent host execution or end-to-end gate success, so it remains a candidate consistency issue rather than the active blocker.
+- **Next single step:** start Milestone 1 from the roadmap: create the general CUDA compatibility gate below PyTorch/TensorFlow, while keeping this serial Phase 1 preservation baseline as the first regression check.
+
+## Session 2026-04-27/28 (Milestone 01 raw CUDA expansion)
+
+- **Lane:** `01_general_cuda_gate`.
+- **Current `Plan A` state:** `pass` after recovery (`/tmp/phase1_milestone_gate_after_runtime_restore_attempt.json` -> `overall_pass=True`).
+- **Active error:** none after closure of `M01-E1` and `M01-E2`.
+- **Candidates:** residual non-terminating `0x00bc` / `cuFuncGetParamInfo` remains candidate-only; shared-memory registration still falls back to BAR1 for the small probes; the Ollama CUDA Runtime restoration used the existing CUDA 13 runtime copy as a local recovery source and should be hardened later with a clean CUDA 12 runtime artifact.
+- **Closure proof:** expanded Milestone 01 gate passed after recovery (`/tmp/phase3_general_cuda_gate_runtime_expansion_after_planA_recovery.json` -> `overall_pass=True`), with Driver API probe 2/2 pass and Runtime API probe 2/2 pass. Plan A also passed after the Runtime deployment correction.
+- **Last proven checkpoint:** Driver API `device discovery -> context -> alloc/free -> HtoD -> DtoH -> stream -> event -> module load -> function lookup -> cuLaunchKernel -> DtoH verify -> cleanup`, plus Runtime API `device discovery -> cudaMalloc/cudaFree -> cudaMemcpy -> cudaMemcpyAsync -> stream/event sync -> cudaDeviceSynchronize`.
+- **Evidence:** `M01-E1` found generic PTX kernel launch serialized as `params=0` after `cuFuncGetParamInfo -> 801`; fixed by preserving scanned `kernelParams` and falling back to legacy parameter slots. `M01-E2` found Runtime API coverage missing `cudaEventCreate`; fixed by adding a default-flags wrapper over `cudaEventCreateWithFlags`. A deployment mistake briefly regressed Plan A by overwriting Ollama's real `cuda_v12/libcudart.so.12.8.90` with the vGPU Runtime shim; the overwritten file was preserved as `.bad-vgpu-cudart-20260427-1751`, the Ollama runtime path was restored, and Plan A returned to pass.
+- **Why no active error remains:** both raw CUDA probes and the preserved Plan A canary pass after the fixes and recovery.
+- **Next single step:** decide whether Milestone 01 closes with Driver API plus Runtime API coverage or add one more independent kernel/process-cleanup shape before closing.
+
+## Session 2026-04-27/28 (Milestone 01 hidden-risk sweep)
+
+- **Lane:** `01_general_cuda_gate`.
+- **Current `Plan A` state:** `pass` after hidden-risk sweep (`/tmp/phase1_milestone_gate_after_m01_hidden_risk_sweep.json` -> `overall_pass=True`).
+- **Active error:** none.
+- **Candidates:** residual non-terminating `0x00bc` / `cuFuncGetParamInfo`; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; `/usr/lib64/libcudart.so.12` still points to the vGPU Runtime shim and must be treated as a deployment-scope risk for future non-Ollama applications; Ollama CUDA v12 runtime was restored from an existing CUDA 13 runtime copy and should be replaced by a clean CUDA 12 artifact when available.
+- **Closure proof:** hidden-risk sweep passed (`/tmp/phase3_general_cuda_gate_hidden_risk_sweep_rerun1.json` -> `overall_pass=True`) with Driver API probe 5/5 pass and Runtime API probe 5/5 pass. Plan A passed afterward.
+- **Last proven checkpoint:** Driver API two-kernel path `add_one -> scale_add` with separate output buffer, DtoH verification, and cleanup; Runtime API device/memory/copy/async-copy/stream/event/device-sync path; five repeated process starts for each probe.
+- **Evidence:** path isolation audit showed standalone probes use `/opt/vgpu/lib/libvgpu-cudart.so`, while Ollama's `cuda_v12/libcudart.so.12` resolves to `libcudart.so.12.8.90` with a 704288-byte runtime file rather than the 45416-byte vGPU shim. Symbol audit confirmed required Driver and Runtime symbols are exported. The first hidden-risk run exposed a test expectation issue because `scale_add` read the device buffer after `add_one` had already mutated it; correcting the expected value closed the test-harness issue.
+- **Why no active error remains:** the hidden-risk sweep and Plan A both pass on the recovered baseline.
+- **Next single step:** either close Milestone 01 with these records or move to Milestone 02 API coverage audit to broaden beyond this bounded gate.
+
+## Session 2026-04-28 (Milestone 02 API coverage audit start)
+
+- **Lane:** `02_api_coverage_audit`.
+- **Current `Plan A` state:** `pass` from preserved Milestone 01 baseline (`/tmp/phase1_milestone_gate_after_m01_hidden_risk_sweep.json` -> `overall_pass=True`). No runtime files were changed during this audit pass.
+- **Active error:** `M02-E1` silent-success API stubs in paths that general workloads may depend on.
+- **Candidates:** residual `0x00bc` / `cuFuncGetParamInfo`; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; `/usr/lib64/libcudart.so.12` deployment-scope risk; protocol IDs without executor cases; synthetic NVML telemetry; Ollama-shaped device/property fallbacks.
+- **Closure proof:** `M02-E1` closes only when the highest-risk silent-success paths either gain real semantics or fail closed with clear unsupported errors, and the next milestone gate proves it does not depend on deferred stubs.
+- **Last proven checkpoint:** Milestone 01 hidden-risk gate: Driver API two-kernel path, Runtime API memory/copy/stream/event path, five repeated process starts per probe, plus Plan A pass afterward.
+- **Evidence:** created `phase3/VERIFICATION/02_api_coverage_audit/API_COVERAGE_MATRIX.md` and `phase3/VERIFICATION/02_api_coverage_audit/GAP_LIST.md`. Source audit found mediated Driver API coverage for the Milestone 01 core path, but also found Runtime `cudaLaunchKernel` no-op success, no-op Runtime graph APIs, success-returning cuBLASLt stubs, Runtime host-registration/managed-memory fake success, stream synchronization paths that can hide Driver failures, cuBLAS stub-handle fallback, synthetic NVML telemetry, and protocol IDs without executor cases.
+- **Why active is now this error:** the audit did not find a new runtime failure; it found a hidden correctness risk where unsupported general-workload behavior can report success. That is the earliest Milestone 02 blocker before starting PyTorch/framework work.
+- **Next single step:** choose the bounded `M02-E1` correction policy: fail-closed unsupported behavior first, or implement the smallest real support required by the next framework gate.
+
+## Session 2026-04-28 (Milestone 02 `M02-E1` fail-closed correction)
+
+- **Lane:** `02_api_coverage_audit`.
+- **Current `Plan A` state:** `pass` before and after the runtime change (`/tmp/phase1_milestone_gate_before_m02_e1.json` -> `overall_pass=True`; `/tmp/phase1_milestone_gate_after_m02_e1_fail_closed.json` -> `overall_pass=True`).
+- **Active error:** `M02-E2` cuBLAS stub-handle fallback can still return success without host compute if transport is unavailable.
+- **Closed error:** `M02-E1` high-risk silent-success Runtime/cuBLASLt stubs.
+- **Candidates:** residual `0x00bc` / `cuFuncGetParamInfo`; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; `/usr/lib64/libcudart.so.12` deployment-scope risk; protocol IDs without executor cases; synthetic NVML telemetry; Ollama-shaped Driver/Runtime property fallbacks; lower-priority Runtime status-query and Driver optional-export fake-success behavior.
+- **Closure proof:** `M02-E1` closed by fail-closed behavior and live deployment: Runtime `cudaLaunchKernel`, graph APIs, managed memory, host register/unregister, peer-access enable/disable, 2D/3D/peer async copies, and graph capture now return `cudaErrorNotSupported`; Runtime device/stream sync now preserves Driver failure; cuBLASLt descriptor/layout/preference/heuristic/matmul calls now return `CUBLAS_STATUS_NOT_SUPPORTED`.
+- **Last proven checkpoint:** Plan A passed after deployment; Milestone 01 raw CUDA regression also passed after deployment (`/tmp/phase3_general_cuda_gate_after_m02_e1_fail_closed.json` -> `overall_pass=True`) with Driver API 5/5 and Runtime API 5/5 probe runs.
+- **Live artifact proof:** VM `test-10` reports `ollama` active. `/opt/vgpu/lib/libvgpu-cudart.so` sha256 `66b10c345acd084164b115df5fc7b9b8851fe18583610e7c3d12ac90f17149cc`, size `45416`; `/opt/vgpu/lib/libvgpu-cublasLt.so.12` sha256 `28907f065f14b2e00686e1620057588dbf008e4b0da7d1091278eea4841bd3da`, size `16160`.
+- **Evidence:** local IDE lint reported no diagnostics for edited shim files; local `gcc` was unavailable, so syntax/build proof came from the VM build during deployment. The preserved Ollama canary and the Milestone 01 raw CUDA probes both remained green after the deployed fail-closed behavior.
+- **Why active changed:** the highest-risk fake-success paths identified as `M02-E1` now either fail closed or propagate Driver failure. The next earliest still-open Milestone 02 correctness risk is cuBLAS stub-handle fake success when transport is unavailable.
+- **Next single step:** fix `M02-E2` by making cuBLAS fail closed unless it has a real remote or real-library compute handle.
+
+## Session 2026-04-28 (Milestone 02 `M02-E2` cuBLAS fail-closed correction)
+
+- **Lane:** `02_api_coverage_audit`.
+- **Current `Plan A` state:** `pass` before and after the cuBLAS change (`/tmp/phase1_milestone_gate_before_m02_e2.json` -> `overall_pass=True`; `/tmp/phase1_milestone_gate_after_m02_e2_cublas_fail_closed.json` -> `overall_pass=True`).
+- **Active error:** `M02-E3` protocol IDs exist without explicit executor handling.
+- **Closed error:** `M02-E2` cuBLAS stub-handle fallback could return success without host compute if transport was unavailable.
+- **Candidates:** residual `0x00bc` / `cuFuncGetParamInfo`; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; `/usr/lib64/libcudart.so.12` deployment-scope risk; synthetic NVML telemetry; Ollama-shaped Driver/Runtime property fallbacks; lower-priority Runtime status-query and Driver optional-export fake-success behavior; cuBLAS GEMM numerical correctness still needs a later focused gate.
+- **Closure proof:** `M02-E2` closed by changing `cublasCreate_v2` so it no longer allocates a local stub handle when no real transport/context exists. That path now returns `CUBLAS_STATUS_NOT_INITIALIZED` and records `VGPU_CUBLAS_MODE=NO_TRANSPORT`. Historical stub-handle control/compute paths now also fail closed with `CUBLAS_STATUS_NOT_INITIALIZED`.
+- **Last proven checkpoint:** Plan A passed after deployment; Milestone 01 raw CUDA regression also passed after deployment (`/tmp/phase3_general_cuda_gate_after_m02_e2_cublas_fail_closed.json` -> `overall_pass=True`) with Driver API 5/5 and Runtime API 5/5 probe runs.
+- **Live artifact proof:** VM `test-10` reports `ollama` active. `/opt/vgpu/lib/libvgpu-cublas.so.12` sha256 `80659ffeb12467a8df36ff225aee5a22629eab947a6ad137abb33113f3773a5b`, size `113192`.
+- **Evidence:** VM build of `libvgpu-cublas.so.12` succeeded and the deployed artifact was installed under `/opt/vgpu/lib`. The preserved Ollama canary and the Milestone 01 raw CUDA probes both remained green after the deployed fail-closed behavior.
+- **Why active changed:** the cuBLAS no-transport path can no longer create a fake-success handle. The next earliest Milestone 02 audit blocker is protocol coverage ambiguity: protocol IDs that exist but do not have explicit executor cases.
+- **Next single step:** fix `M02-E3` by comparing `include/cuda_protocol.h` with `src/cuda_executor.c` and adding explicit unsupported handling for protocol IDs without executor behavior.
+
+## Session 2026-04-28 (Milestone 02 `M02-E3` protocol coverage closure)
+
+- **Lane:** `02_api_coverage_audit`.
+- **Current `Plan A` state:** `pass` before and after the host executor change (`/tmp/phase1_milestone_gate_before_m02_e3.json` -> `overall_pass=True`; `/tmp/phase1_milestone_gate_after_m02_e3_live_binary_restart.json` -> `overall_pass=True`).
+- **Active error:** none for Milestone 02. `M02-E1`, `M02-E2`, and `M02-E3` are closed.
+- **Closed error:** `M02-E3` protocol IDs existed without explicit executor handling.
+- **Candidates carried forward:** residual `0x00bc` / `cuFuncGetParamInfo`; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; `/usr/lib64/libcudart.so.12` deployment-scope risk; synthetic NVML telemetry; Ollama-shaped Driver/Runtime property fallbacks; lower-priority Runtime status-query and Driver optional-export fake-success behavior; cuBLAS GEMM numerical correctness still needs a later focused gate.
+- **Closure proof:** final source-level protocol comparison reports `protocol_ids=86`, `executor_case_ids=86`, `missing_cases=[]`. `src/cuda_executor.c` now has named explicit unsupported cases for protocol-only or unimplemented IDs including context push/pop, async DtoH/DtoD, D16 memset, host/managed allocation, cooperative launch, texture objects, occupancy helpers, cuBLASLt protocol IDs, and error-name/string protocol IDs.
+- **Last proven checkpoint:** Plan A passed after a verified live mediator restart; Milestone 01 raw CUDA regression also passed after the same restart (`/tmp/phase3_general_cuda_gate_after_m02_e3_live_binary_restart.json` -> `overall_pass=True`) with Driver API 5/5 and Runtime API 5/5 probe runs.
+- **Live artifact proof:** dom0 mediator PID `295063` was running from `/root/phase3/mediator_phase3`. `/root/phase3/mediator_phase3` sha256 `8f306df61150071553a5dc7c9b8cba257658111acf6a71331aaa2fb7ebebe796`; `/root/phase3/src/cuda_executor.c` sha256 `0f2b66f05b9c633592f44cdb4fe4b1596b63d2733eaedccd3af2518d35cfd21c`.
+- **Evidence:** the first post-build restart attempt was rejected as insufficient because the mediator was still running from `/root/phase3/mediator_phase3 (deleted)`. The final explicit PID restart produced a live process backed by the rebuilt binary, after which Plan A and the raw CUDA gate both passed.
+- **Why Milestone 02 closes:** the API coverage matrix exists, every audited API entry is classified, fake-success high-risk paths were either made fail-closed or carried as documented P1/P2 risks, the prioritized gap list exists, and all Milestone 02 active errors have closure evidence.
+- **Next single step:** proceed to Milestone 03 memory/sync/cleanup when instructed.
+
+## Session 2026-04-28 (Milestone 03 start and `M03-E1` promotion)
+
+- **Lane:** `03_memory_sync_cleanup`.
+- **Current `Plan A` state:** `pass` before Milestone 03 changes (`/tmp/phase1_milestone_gate_before_m03.json` -> `overall_pass=True`).
+- **Active error:** `M03-E1` guest process exit cannot safely clean executor-owned runtime state because CUDA remoting does not yet carry guest process ownership through the live QEMU vGPU stub.
+- **Candidates:** QEMU vGPU stub rebuild/reboot required for the local process-owner protocol; async HtoD staging and stream draining need gate coverage; DtoH/DtoD async protocol paths need explicit gate coverage; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; residual `0x00bc` / `cuFuncGetParamInfo` noise.
+- **Closure proof:** `M03-E1` closes only when the guest transport/stub/mediator/executor process-owner cleanup path is deployed live, a host log proves `CUDA_CALL_PROCESS_CLEANUP` cleaned the correct `(vm_id,pid)` owner id, Plan A passes, and the raw CUDA gate passes.
+- **Last proven checkpoint:** Milestone 02 closed; Plan A is green at Milestone 03 start.
+- **Evidence:** `CUDACallHeader` carried `vm_id` but no guest PID/process identity at milestone start. `vm_state_t` owns memory, stream, event, module, library, cuBLAS, and pending async HtoD state by VM. `cuda_executor_cleanup_vm()` frees those resources but source search found it only called from `cuda_executor_destroy()`. A mediator-only fd cleanup attempt was deployed and passed Plan A/raw CUDA, but host log showed the persistent fd stayed open (`registered for persistent: count=1`, cleanup count `0`), proving that fd is VM/QEMU-stub level rather than guest-process level.
+- **Why active is now this error:** Milestone 03 is specifically about memory, synchronization, and cleanup. The earliest concrete cleanup defect is that a guest process exit/kill can leave host-side runtime state alive, while cleaning by whole VM is unsafe if another process in the VM still owns GPU state.
+- **Next single step:** deploy the local process-owner protocol draft as one bounded cross-layer change, including QEMU vGPU stub rebuild/reboot, then verify process cleanup, Plan A, and raw CUDA.
+
+## Session 2026-04-28 (Milestone 03 `M03-E1` process-owner cleanup closure)
+
+- **Lane:** `03_memory_sync_cleanup`.
+- **Current `Plan A` state:** `pass` after guest transport, QEMU vGPU stub, mediator, executor, and guest shim deployment (`/tmp/phase1_milestone_gate_after_m03_e1_process_cleanup.json` -> `overall_pass=True`).
+- **Closed error:** `M03-E1` normal CUDA process exit could not safely clean executor-owned runtime state because process ownership did not cross the live vGPU remoting path.
+- **Active error:** none at this exact checkpoint; next active error must come from forced process kill behavior.
+- **Candidates:** forced `SIGKILL` behavior still needs a dedicated gate because Driver shim destructors do not run on kill; async HtoD staging and stream draining need gate coverage; DtoH/DtoD async protocol paths need explicit gate coverage; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; residual `0x00bc` / `cuFuncGetParamInfo` noise.
+- **Closure proof:** the process-owner protocol is live. Guest transport writes `getpid()` to BAR0 scratch, QEMU vGPU stub derives an internal owner id from `(vm_id,pid)`, mediator intercepts `CUDA_CALL_PROCESS_CLEANUP`, and executor cleanup runs for that owner id. Host log after the final raw CUDA regression shows `CUDA process cleanup: count=12`, `Cleaned up VM: count=12`, `Unsupported CUDA protocol call: vgpuProcessCleanup: count=0`, `sync FAILED: count=0`, and `CUDA_ERROR_ILLEGAL_ADDRESS: count=0`.
+- **Last proven checkpoint:** Plan A passed and raw CUDA gate passed after live QEMU RPM installation, VM restart, mediator restart, and guest shim installation.
+- **Live artifact proof:** installed QEMU binary `/usr/lib64/xen/bin/qemu-system-i386` sha256 `ca2275145da5bcfc1d0a48f501c6feb6b3c707e478155b5c2007692dd648eab3`; mediator PID `331347` running from `/root/phase3/mediator_phase3` sha256 `f1384d50c9252210ee7e8c5f936a2909044a8f69c0f052d504055eff2add9308`; host stub source `/root/phase3/src/vgpu-stub-enhanced.c` sha256 `b2841444ccae7e981cc3ef754049ee09785e29b9f513a1db3402c0aaadc3536a`; guest `/opt/vgpu/lib/libvgpu-cuda.so.1` sha256 `b19496ae3f1ecc0c4610df1d8df39f54c6494f8bfa326413959b3b4b192dfcff`.
+- **Regression proof:** raw CUDA gate `/tmp/phase3_general_cuda_gate_after_m03_e1_process_cleanup.json` -> `overall_pass=True`, Driver API 5/5 and Runtime API 5/5.
+- **Why closed:** the original normal-process cleanup blocker now has deployed cross-layer ownership, direct host cleanup evidence, and no Plan A/raw CUDA regression.
+- **Next single step:** promote and test the forced process kill lane; destructor-based cleanup is not sufficient for `SIGKILL`.
+
+## Session 2026-04-28 (Milestone 03 `M03-E2` forced-kill lane promotion)
+
+- **Lane:** `03_memory_sync_cleanup`.
+- **Current `Plan A` state:** `pass` after `M03-E1` deployment (`/tmp/phase1_milestone_gate_after_m03_e1_process_cleanup.json` -> `overall_pass=True`).
+- **Active error:** `M03-E2` forced guest CUDA process kill behavior is unproven.
+- **Candidates:** async HtoD staging and stream draining need gate coverage; DtoH/DtoD async protocol paths need explicit gate coverage; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; residual `0x00bc` / `cuFuncGetParamInfo` noise.
+- **Last proven checkpoint:** normal CUDA process exit cleanup is closed by `M03-E1`; Plan A and raw CUDA both pass after that cross-layer deployment.
+- **Evidence:** `M03-E1` cleanup is destructor-triggered in the Driver shim. `SIGKILL` bypasses destructors, so forced kill is a distinct Milestone 03 cleanup lane and cannot inherit closure from normal process exit.
+- **Closure/disposition proof:** start a CUDA process that allocates device memory and sleeps, kill it with `SIGKILL`, run a fresh safe raw CUDA probe, then classify whether the kill poisons the next process or only leaves a bounded leak candidate.
+- **Next single step:** run the forced-kill gate.
+
+## Session 2026-04-28 (Milestone 03 `M03-E2` stale-owner cleanup closure)
+
+- **Lane:** `03_memory_sync_cleanup`.
+- **Current `Plan A` state:** `pass` after stale-owner cleanup deployment (`/tmp/phase1_milestone_gate_after_m03_e2_stale_owner_sweep.json` -> `overall_pass=True`).
+- **Closed error:** `M03-E2` forced guest CUDA process kill behavior was unproven and initially left owner state uncleaned.
+- **Active error:** none at this exact checkpoint; next active error should come from the async/mixed stream and event cleanup lane.
+- **Candidates:** async HtoD staging and stream draining need gate coverage; DtoH/DtoD async protocol paths need explicit gate coverage; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; residual `0x00bc` / `cuFuncGetParamInfo` noise.
+- **Closure proof:** first forced-kill classification proved owner `167775312` allocated 64 MiB and did not clean up, though the next raw CUDA probe passed. The fix added guest-side `/tmp/vgpu_cuda_owner_pids` stale-owner sweep. The final forced-kill gate killed actual CUDA PID `3948`, left it in the registry, then the next CUDA process sent cleanup for owner `167776108`; host log shows `CUDA process cleanup vm_id=10 owner=167776108 request_id=287` and `Cleaned up VM 167776108`.
+- **Last proven checkpoint:** Plan A and raw CUDA both passed after `M03-E2`.
+- **Live artifact proof:** guest `/opt/vgpu/lib/libvgpu-cuda.so.1` sha256 `476d7ff3b2fecc7e42f789ba258f79a55b90291d458ae423ec7b1dc988b28bcd`; guest `/home/test-10/phase3/guest-shim/cuda_transport.c` sha256 `0ff906eb2f20c166de9d7d9335a51ce206543408836f514e7000dda2df135e91`; mediator PID `331347` still running from `/root/phase3/mediator_phase3`.
+- **Regression proof:** raw CUDA gate `/tmp/phase3_general_cuda_gate_after_m03_e2_stale_owner_sweep.json` -> `overall_pass=True`, Driver API 5/5 and Runtime API 5/5. Host log after final regression shows `CUDA process cleanup: count=27`, `Cleaned up VM: count=27`, `sync FAILED: count=0`, `CUDA_ERROR_ILLEGAL_ADDRESS: count=0`, and `Unsupported CUDA protocol call: vgpuProcessCleanup: count=0`.
+- **Why closed:** forced kill no longer poisons the next process, and the next CUDA process cleans the killed owner with direct host evidence.
+- **Next single step:** promote the async/mixed stream and event cleanup lane.
+
+## Session 2026-04-28 (Milestone 03 `M03-E3` event/stream-wait promotion)
+
+- **Lane:** `03_memory_sync_cleanup`.
+- **Current `Plan A` state:** `pass` after `M03-E2` (`/tmp/phase1_milestone_gate_after_m03_e2_stale_owner_sweep.json` -> `overall_pass=True`).
+- **Active error:** `M03-E3` Driver API event and stream-wait paths return local fake success instead of exercising host event objects.
+- **Candidates:** DtoH/DtoD async protocol paths need explicit gate coverage; BAR1 fallback after shmem GPA resolution fails with `pfn_hidden`; residual `0x00bc` / `cuFuncGetParamInfo` noise.
+- **Last proven checkpoint:** `M03-E1` normal process cleanup and `M03-E2` forced-kill stale-owner cleanup are closed; Plan A and raw CUDA are green.
+- **Evidence:** `guest-shim/libvgpu_cuda.c` creates fake local event handles from `0x7000000000000000`; `cuEventDestroy`, `cuEventRecord`, `cuEventSynchronize`, and `cuEventQuery` return `CUDA_SUCCESS` locally; `cuStreamWaitEvent` returns `CUDA_SUCCESS` locally. Host executor already has real stream/event cases.
+- **Closure proof:** replace fake Driver event and stream-wait paths with RPC-backed behavior, run an async/mixed stream-event gate, then rerun Plan A and raw CUDA.
+- **Next single step:** implement RPC-backed event and stream-wait handling in the guest Driver shim.
+
+## Session 2026-04-28 (Milestone 03 closure)
+
+- **Lane:** `03_memory_sync_cleanup`.
+- **Current `Plan A` state:** `pass` (`/tmp/phase1_milestone_gate_m03_final_after_chunking.json` -> `overall_pass=True`).
+- **Closed errors:** `M03-E3` Driver API event and stream-wait paths returned local fake success; `M03-E4` 4 MiB async HtoD over BAR1 stalled as one single transfer.
+- **Active error:** none for Milestone 03.
+- **Candidates carried forward:** BAR1 remains the live fallback when shmem GPA resolution reports `pfn_hidden`; residual `0x00bc` / `cuFuncGetParamInfo` noise remains known compatibility noise.
+- **Last proven checkpoint:** Milestone 03 closure: normal process cleanup, forced-kill stale-owner cleanup, 4 MiB async/mixed stream-event gate, final Plan A, and final raw CUDA all pass.
+- **Live artifact proof:** guest `/opt/vgpu/lib/libvgpu-cuda.so.1` sha256 `05f3cc5dc992db4eea974b98df1057ad8db1358c5487436c1f038d3dd7c32739`; guest `/home/test-10/phase3/guest-shim/libvgpu_cuda.c` sha256 `73bcd11330383ecdc2b36d1ef1f7d1a4685453e120d14c4eb4009ad1ce007bcf`; guest `/home/test-10/phase3/guest-shim/cuda_transport.c` sha256 `8ec007496ef8cc5d702000717ccb2f963d2cc3e75aa4282781cd09952a96f2bc`; VM `/tmp/async_stream_event_probe` sha256 `444aec611165834da963eeb9f1c5bb44b4f3285474cc67916958aee0ddffd6a5`.
+- **Exact bounded repro:** `/tmp/async_stream_event_probe_repeat.json` -> `overall_pass=True`, `pass_count=5`, `runs=5`, `bytes_per_run=4194304`, with byte verification; final raw CUDA gate `/tmp/phase3_general_cuda_gate_m03_final_after_chunking.json` -> `overall_pass=True`, Driver API 5/5 and Runtime API 5/5.
+- **Evidence for current step:** host log shows HtoD `call_id=0x32: count=56`, HtoDAsync `call_id=0x33: count=320`, DtoH `call_id=0x34: count=15`, DtoD `call_id=0x35: count=15`, event-create `call_id=0x71: count=62`, event-record `call_id=0x73: count=61`, event-sync `call_id=0x74: count=45`, event-query `call_id=0x75: count=15`, stream-wait-event `call_id=0x66: count=15`, event-destroy `call_id=0x72: count=60`, `CUDA process cleanup: count=73`, `Cleaned up VM: count=73`, `sync FAILED: count=0`, `CUDA_ERROR_ILLEGAL_ADDRESS: count=0`, `invalid handle: count=0`, and `Unsupported CUDA protocol call: count=0`.
+- **Why closed:** fake guest event/stream-wait paths now reach host RPC handlers; large BAR1 copy calls are chunked; the repeated 4 MiB async/mixed gate verifies data integrity; all required regressions remain green.
+- **Next single step:** await user direction for Milestone 04.
+
+## Session 2026-04-28 (Milestone 03 serial preservation recheck)
+
+- **Lane:** serial milestone preservation after `03_memory_sync_cleanup`.
+- **Current `Plan A` state:** `pass` (`/tmp/phase1_milestone_gate_serial_00_after_m03.json` -> `overall_pass=True`).
+- **Active error:** none.
+- **Candidates carried forward:** BAR1 fallback after shmem GPA `pfn_hidden`; residual `0x00bc` / `cuFuncGetParamInfo` noise; synthetic/partial API behavior already classified by Milestone 02.
+- **Last proven checkpoint:** `00 -> 01 -> 02 -> 03` preservation after the final Milestone 03 code changes.
+- **Evidence:** `00_preserve_ollama_baseline` Plan A passed; optional `00` Plan B Tiny passed via `/tmp/phase1_plan_b_serial_00_after_m03.json`; optional `00` Plan C was attempted but not proven because the local workstation lacked the `ollama` CLI and the VM-side approved CLI gate timed out on `C1_small_arithmetic_cli_style` (`rc=124`, `wall=300.103s`) before being stopped; `01_general_cuda_gate` passed via `/tmp/phase3_general_cuda_gate_serial_01_after_m03.json` with Driver API 5/5 and Runtime API 5/5; `02_api_coverage_audit` passed via `/tmp/phase3_api_audit_serial_02_after_m03.json` with `protocol_ids_excluding_sentinel=87`, no missing executor name mentions, no missing matrix terms, and no missing gap terms; `03_memory_sync_cleanup` remains passed via `/tmp/async_stream_event_probe_repeat.json` with `overall_pass=True`, `pass_count=5`, `runs=5`, and `bytes_per_run=4194304`.
+- **Why closed:** the final Milestone 03 transport/event changes did not regress the required preserved Plan A baseline, the raw CUDA gate, or the Milestone 02 audit registry/source consistency. Milestone 02 is audit-based, so its recheck is source/record consistency rather than a runtime workload gate. The optional Plan C timeout is a carried-forward candidate, not proof that `03_memory_sync_cleanup` failed, because it is a different client-facing model lane and has not yet been bounded to a Milestone 03 memory/sync regression.
+- **Rule update:** `phase3/VERIFICATION/VERIFICATION_RULES.md` and `.cursor/rules/phase3-serial-milestone-preservation.mdc` now require serial prior-milestone preservation evidence before future milestone closure claims.
+- **Next single step:** use this serial-preservation format before starting or closing Milestone 04.
+
+## Session 2026-04-28 (Plan C timeout classification and closure)
+
+- **Lane:** `00_preserve_ollama_baseline / Plan C` preservation follow-up after Milestone 03.
+- **Current `Plan A` state:** `pass` after the Plan C fix (`/tmp/phase1_milestone_gate_serial_00_after_planc_fix.json` -> `overall_pass=True`).
+- **Closed error:** optional Plan C `qwen2.5:3b` CLI gate timed out because the gate invoked `ollama run MODEL PROMPT` with the prompt as an argv parameter.
+- **Active error:** none.
+- **Candidates carried forward:** none from this Plan C timeout. BAR1 fallback, residual `0x00bc`, and synthetic/partial API behavior remain the existing broader candidates.
+- **Evidence:** bounded HTTP probe for `qwen2.5:3b` returned response `12` in 5.83s; CLI matrix showed argv-prompt `ollama run` timed out for both `qwen2.5:0.5b` and `qwen2.5:3b`, while stdin-prompt `printf PROMPT | ollama run MODEL` succeeded for both. The fixed Plan C gate passed from a clean state: `/tmp/phase1_plan_c_serial_00_after_m03_fixed_clean.json` -> `overall_pass=True`, C1-C5 all pass, and final `/api/ps` is empty.
+- **Fix:** `phase3/phase1_plan_c_client_gate.py` now sends the prompt through stdin and normalizes CLI terminal-control output before exact-answer comparison.
+- **Regression proof:** Plan A passed after the fix (`/tmp/phase1_milestone_gate_serial_00_after_planc_fix.json` -> `overall_pass=True`); Plan B passed after the fix (`/tmp/phase1_plan_b_serial_00_after_planc_fix.json` -> `overall_pass=True`); final VM `/api/ps` was `{"models":[]}`.
+- **Host/VM health:** host mediator log still shows `sync FAILED: count=0`, `CUDA_ERROR_ILLEGAL_ADDRESS: count=0`, `Unsupported CUDA protocol call: count=0`, and `invalid handle: count=0`.
+- **Why closed:** the failing path was the gate's non-interactive CLI invocation style, not a Milestone 03 runtime regression. The same model and prompt work over HTTP and via stdin-based CLI, and the corrected approved Plan C gate passes.
+- **Next single step:** Milestone 04 may start using the serial preservation format.
+
+## Session 2026-04-29 (Milestone 04 PyTorch gate start and `M04-E1` promotion)
+
+- **Lane:** `04_pytorch_gate`.
+- **Current `Plan A` state:** `pass` at entry (`/tmp/phase1_milestone_gate_serial_00_after_planc_fix.json` -> `overall_pass=True`).
+- **Active error:** `M04-E1` PyTorch is not installed in the VM Python environment, and the VM lacks enough safe free disk for a CUDA-enabled PyTorch install.
+- **Candidates:** PyTorch may fail to load mediated CUDA libraries after install; PyTorch may see no CUDA device; PyTorch may require Runtime/Driver/cuBLAS/cuDNN/NCCL/allocator behavior not covered by Milestones 01-03; PyTorch may expose fake-success or synthetic API behavior classified in Milestone 02.
+- **Last proven checkpoint:** prior milestones preserved: Plan A, Plan B, Plan C, raw CUDA, Milestone 02 audit consistency, and Milestone 03 4 MiB async/mixed gate.
+- **Evidence:** VM `/usr/bin/python3` is Python `3.10.12`; `python3 -m pip show torch` and `python3 -m pip list` fail because `pip` is not installed; direct `import torch` with `LD_LIBRARY_PATH=/opt/vgpu/lib` fails with `ModuleNotFoundError: No module named 'torch'`; root filesystem is `39G` total, `36G` used, `1.2G` free, `97%` used; no local `torch*.whl` or PyTorch cache was found; host mediator entry health shows `sync FAILED: count=0`, `CUDA_ERROR_ILLEGAL_ADDRESS: count=0`, `Unsupported CUDA protocol call: count=0`, and `invalid handle: count=0`.
+- **Why active:** the PyTorch gate cannot yet test CUDA visibility or tensor behavior. This is the earliest blocker and is environment/setup plus capacity, not a vGPU runtime failure.
+- **Next single step:** provide safe package capacity for PyTorch, preferably an expanded VM disk or mounted external package location, then install PyTorch in an isolated environment and rerun the environment probe.
+
+## Session 2026-04-29 (Milestone 04 capacity fixed; PyTorch active blocker advanced to cuBLAS)
+
+- **Lane:** `04_pytorch_gate`.
+- **Current `Plan A` state:** `unverified after M04 runtime changes` (Plan A was pass at M04 entry; post-M04 runtime regression is still pending and must run before any M04 closure claim).
+- **Closed errors:** `M04-E1` PyTorch missing/insufficient capacity; `M04-E2` `cuCtxGetStreamPriorityRange` unsupported; `M04-E3` `cuStreamIsCapturing` unsupported; `M04-E4` mediator double-free after default-stream async HtoD staging.
+- **Active error:** `M04-E5` PyTorch matmul fails at bundled cuBLAS handle creation: `CUBLAS_STATUS_INTERNAL_ERROR when calling cublasCreate(handle)`.
+- **Candidates:** PyTorch CUDA factory/fill kernels expose additional unsupported kernel-parameter layouts; `/opt/vgpu/lib` cuBLAS preload currently hangs and is not a fix; broader cuDNN/NCCL/allocator behavior remains untested until matmul closes.
+- **Last proven checkpoint:** adjusted PyTorch gate now passes CUDA discovery, device identity, CPU-to-CUDA copy, CUDA-to-CPU copy, and PyTorch elementwise add with verified values across repeated fresh-process attempts.
+- **Live artifact proof:** Test-10 has a new mounted 30G ext4 VDI at `/mnt/m04-pytorch`; PyTorch `2.5.1+cu121` is installed in `/mnt/m04-pytorch/venv`; guest CUDA shim SHA after PyTorch layout fixes is `bb11a8ef87775f2d8f6d45db372b0ed32ea8483b6255ed99f876c0372a500540`; mediator rebuilt with default-stream staging fix has SHA `75da53b2532d3ad8d8aee7d36bf13f1caa37f8b151163871b1011d6c7715db62`.
+- **Exact bounded repro:** `/tmp/m04_pytorch_probe_adjusted_repeat.json` with reports `/tmp/m04_pytorch_probe_adjusted_1.json` through `_3.json`; all three fail at `matmul = (a @ b).cpu()` with `CUBLAS_STATUS_INTERNAL_ERROR when calling cublasCreate(handle)` after earlier tensor/copy/elementwise cases pass.
+- **Evidence for current step:** `ldd` on PyTorch `libtorch_cuda.so` resolves bundled `nvidia/cublas/lib/libcublas.so.12` and `libcublasLt.so.12`; normal gate execution is not using the vGPU cuBLAS shim for PyTorch's bundled cuBLAS path. A forced cuBLAS preload experiment hung during initialization and was killed, so it remains rejected as a fix.
+- **Why active changed:** the environment/capacity blocker is closed and the first framework-level required operation still failing is matrix multiply, specifically at cuBLAS handle creation.
+- **Next single step:** isolate why bundled PyTorch cuBLAS cannot create a handle on the mediated driver path without using the hanging preload path, then rerun the bounded PyTorch gate and only afterward run Plan A/raw CUDA preservation regressions.
+
 ## Session 2026-04-07 (fresh `Plan B` queue establishment on a `Plan A`-passing baseline)
 
 - **Lane:** `Plan B`

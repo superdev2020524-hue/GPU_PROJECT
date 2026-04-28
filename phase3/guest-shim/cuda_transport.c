@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -391,6 +392,7 @@ static void call_libvgpu_set_skip_interception(int skip);
 #define REG_ERROR_CODE      0x014
 #define REG_REQUEST_LEN     0x018
 #define REG_RESPONSE_LEN    0x01C
+#define REG_SCRATCH         0x03C
 
 /* CUDA-specific registers */
 #define REG_CUDA_OP         0x080
@@ -427,6 +429,8 @@ static void call_libvgpu_set_skip_interception(int skip);
 
 /* BAR sizes */
 #define BAR0_SIZE  4096
+
+#define VGPU_OWNER_PID_REGISTRY "/tmp/vgpu_cuda_owner_pids"
 #define BAR1_SIZE  (16 * 1024 * 1024)
 /* Workaround: BAR0 status read returns stale value on some Xen/qemu-dm; poll BAR1 tail instead */
 #define BAR1_STATUS_MIRROR_OFFSET  (BAR1_SIZE - 4)
@@ -1381,6 +1385,11 @@ static const char *cuda_transport_status_path_name(cuda_transport_t *tp)
 /* ================================================================
  * Initialise transport
  * ================================================================ */
+static int cuda_transport_process_cleanup_pid(cuda_transport_t *tp, uint32_t pid);
+static void cuda_transport_cleanup_stale_owner_pids(cuda_transport_t *tp);
+static void cuda_transport_register_owner_pid(void);
+static void cuda_transport_unregister_owner_pid(pid_t pid);
+
 int cuda_transport_init(cuda_transport_t **tp)
 {
     if (vgpu_debug_logging())
@@ -1530,8 +1539,126 @@ int cuda_transport_init(cuda_transport_t **tp)
             cuda_transport_status_path_name(t));
     if (vgpu_debug_logging())
         fprintf(stderr, "[cuda-transport] (debug logging on)\n");
+    cuda_transport_cleanup_stale_owner_pids(t);
+    cuda_transport_register_owner_pid();
     *tp = t;
     return 0;
+}
+
+static int registry_pid_is_alive(pid_t pid)
+{
+    if (pid <= 0) {
+        return 0;
+    }
+    if (kill(pid, 0) == 0) {
+        return 1;
+    }
+    return errno != ESRCH;
+}
+
+static void registry_write_pids(const pid_t *pids, size_t count)
+{
+    FILE *fp = fopen(VGPU_OWNER_PID_REGISTRY, "w");
+    if (!fp) {
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (pids[i] > 0) {
+            fprintf(fp, "%ld\n", (long)pids[i]);
+        }
+    }
+    fclose(fp);
+}
+
+static size_t registry_read_pids(pid_t *pids, size_t cap)
+{
+    FILE *fp = fopen(VGPU_OWNER_PID_REGISTRY, "r");
+    long v = 0;
+    size_t count = 0;
+
+    if (!fp) {
+        return 0;
+    }
+    while (count < cap && fscanf(fp, "%ld", &v) == 1) {
+        if (v > 0) {
+            pids[count++] = (pid_t)v;
+        }
+    }
+    fclose(fp);
+    return count;
+}
+
+static void cuda_transport_cleanup_stale_owner_pids(cuda_transport_t *tp)
+{
+    pid_t pids[256];
+    pid_t keep[256];
+    size_t count = registry_read_pids(pids, 256);
+    size_t keep_count = 0;
+    pid_t self = getpid();
+
+    for (size_t i = 0; i < count; i++) {
+        pid_t pid = pids[i];
+        int duplicate = 0;
+
+        for (size_t j = 0; j < i; j++) {
+            if (pids[j] == pid) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate || pid == self) {
+            continue;
+        }
+
+        if (registry_pid_is_alive(pid)) {
+            if (keep_count < 256) {
+                keep[keep_count++] = pid;
+            }
+            continue;
+        }
+
+        fprintf(stderr,
+                "[cuda-transport] stale owner pid=%ld detected; requesting host cleanup\n",
+                (long)pid);
+        (void)cuda_transport_process_cleanup_pid(tp, (uint32_t)pid);
+    }
+
+    registry_write_pids(keep, keep_count);
+}
+
+static void cuda_transport_register_owner_pid(void)
+{
+    pid_t pids[256];
+    size_t count = registry_read_pids(pids, 256);
+    pid_t self = getpid();
+
+    for (size_t i = 0; i < count; i++) {
+        if (pids[i] == self) {
+            return;
+        }
+    }
+
+    FILE *fp = fopen(VGPU_OWNER_PID_REGISTRY, "a");
+    if (!fp) {
+        return;
+    }
+    fprintf(fp, "%ld\n", (long)self);
+    fclose(fp);
+}
+
+static void cuda_transport_unregister_owner_pid(pid_t pid)
+{
+    pid_t pids[256];
+    pid_t keep[256];
+    size_t count = registry_read_pids(pids, 256);
+    size_t keep_count = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        if (pids[i] != pid && keep_count < 256) {
+            keep[keep_count++] = pids[i];
+        }
+    }
+    registry_write_pids(keep, keep_count);
 }
 
 /* ================================================================
@@ -1562,6 +1689,32 @@ void cuda_transport_destroy(cuda_transport_t *tp)
     if (tp->bar0_fd >= 0) close(tp->bar0_fd);
     if (tp->bar1_fd >= 0) close(tp->bar1_fd);
     free(tp);
+}
+
+static int cuda_transport_process_cleanup_pid(cuda_transport_t *tp, uint32_t pid)
+{
+    CUDACallResult result;
+    uint32_t args[1];
+
+    if (!tp) {
+        return -1;
+    }
+
+    memset(&result, 0, sizeof(result));
+    args[0] = pid;
+    return cuda_transport_call_internal(tp, CUDA_CALL_PROCESS_CLEANUP,
+                                        args, 1,
+                                        NULL, 0,
+                                        &result,
+                                        NULL, 0, NULL);
+}
+
+int cuda_transport_process_cleanup(cuda_transport_t *tp)
+{
+    pid_t self = getpid();
+    int rc = cuda_transport_process_cleanup_pid(tp, (uint32_t)self);
+    cuda_transport_unregister_owner_pid(self);
+    return rc;
 }
 
 /* ================================================================
@@ -2497,6 +2650,22 @@ static uint32_t max_single_payload(cuda_transport_t *tp)
     return CUDA_SMALL_DATA_MAX;
 }
 
+static uint32_t max_copy_payload(cuda_transport_t *tp)
+{
+    uint32_t limit = max_single_payload(tp);
+
+    /* Large BAR1 MMIO writes can stall after repeated async-copy processes on
+     * the current VM path. Keep each copy round-trip small enough that a single
+     * BAR1 write burst does not monopolize the vGPU stub before the doorbell. */
+    if (tp && tp->has_bar1 && limit > (64u * 1024u)) {
+        limit = 64u * 1024u;
+    }
+    if (limit < CUDA_SMALL_DATA_MAX) {
+        limit = CUDA_SMALL_DATA_MAX;
+    }
+    return limit;
+}
+
 /*
  * Payload (BAR1 / shmem / BAR0 inline) must be visible before we write BAR0
  * metadata: the stub may read combined state when processing the CUDA doorbell.
@@ -3036,6 +3205,10 @@ static int do_single_cuda_call(cuda_transport_t *tp,
     }
 
     /* Write call metadata */
+    REG32(tp->bar0, REG_SCRATCH)       =
+        (call_id == CUDA_CALL_PROCESS_CLEANUP && args && num_args > 0)
+            ? args[0]
+            : (uint32_t)getpid();
     REG32(tp->bar0, REG_CUDA_OP)       = call_id;
     REG32(tp->bar0, REG_CUDA_SEQ)      = seq;
     REG32(tp->bar0, REG_CUDA_NUM_ARGS) = (num_args > CUDA_MAX_INLINE_ARGS)
@@ -3412,7 +3585,7 @@ static int cuda_transport_call_htod_chunked(cuda_transport_t *tp,
     uint32_t chunk_args[CUDA_MAX_INLINE_ARGS];
     memcpy(chunk_args, args, num_args * sizeof(uint32_t));
 
-    uint32_t limit  = max_single_payload(tp);
+    uint32_t limit  = max_copy_payload(tp);
     uint32_t offset = 0;
     int rc = 0;
     CUDACallResult chunk_result;
@@ -3478,7 +3651,7 @@ static int cuda_transport_call_dtoh_chunked(cuda_transport_t *tp,
     uint32_t chunk_args[CUDA_MAX_INLINE_ARGS];
     memcpy(chunk_args, args, num_args * sizeof(uint32_t));
 
-    uint32_t limit  = max_single_payload(tp);
+    uint32_t limit  = max_copy_payload(tp);
     uint32_t offset = 0;
     int rc = 0;
     CUDACallResult chunk_result;
@@ -3656,13 +3829,14 @@ static int cuda_transport_call_impl(cuda_transport_t *tp,
     }
 
     uint32_t limit = max_single_payload(tp);
+    uint32_t copy_limit = max_copy_payload(tp);
     {
     int rc;
 
     /* ---- Chunked host-to-device copy ---- */
     if ((call_id == CUDA_CALL_MEMCPY_HTOD ||
          call_id == CUDA_CALL_MEMCPY_HTOD_ASYNC) &&
-        send_data && send_len > limit)
+        send_data && send_len > copy_limit)
     {
         rc = cuda_transport_call_htod_chunked(tp, call_id,
                                                 args, num_args,
@@ -3676,7 +3850,7 @@ static int cuda_transport_call_impl(cuda_transport_t *tp,
     /* ---- Chunked device-to-host copy ---- */
     if ((call_id == CUDA_CALL_MEMCPY_DTOH ||
          call_id == CUDA_CALL_MEMCPY_DTOH_ASYNC) &&
-        recv_data && recv_cap > limit)
+        recv_data && recv_cap > copy_limit)
     {
         rc = cuda_transport_call_dtoh_chunked(tp, call_id,
                                                 args, num_args,

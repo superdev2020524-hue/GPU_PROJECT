@@ -139,6 +139,9 @@
 /* --- GPU info query (custom, host-side NVML query) -------------- */
 #define CUDA_CALL_GET_GPU_INFO              0x00F0
 
+/* --- Process lifecycle (internal cleanup) ----------------------- */
+#define CUDA_CALL_PROCESS_CLEANUP           0x00FE
+
 /* Maximum call_id sentinel */
 #define CUDA_CALL_MAX                       0x00FF
 

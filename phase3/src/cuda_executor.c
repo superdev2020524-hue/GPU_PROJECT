@@ -2162,20 +2162,60 @@ static const char *executor_call_id_to_name(uint32_t call_id)
     switch (call_id) {
     case CUDA_CALL_LAUNCH_KERNEL:
         return "cuLaunchKernel";
+    case CUDA_CALL_LAUNCH_COOPERATIVE_KERNEL:
+        return "cuLaunchCooperativeKernel";
     case CUDA_CALL_FUNC_GET_PARAM_INFO:
         return "cuFuncGetParamInfo";
     case CUDA_CALL_MODULE_LOAD_DATA:
         return "cuModuleLoadData";
     case CUDA_CALL_MODULE_LOAD_FAT_BINARY:
         return "cuModuleLoadFatBinary";
+    case CUDA_CALL_DEVICE_GET_PROPERTIES:
+        return "cuDeviceGetProperties";
+    case CUDA_CALL_DEVICE_GET_P2P_ATTRIBUTE:
+        return "cuDeviceGetP2PAttribute";
+    case CUDA_CALL_CTX_PUSH_CURRENT:
+        return "cuCtxPushCurrent";
+    case CUDA_CALL_CTX_POP_CURRENT:
+        return "cuCtxPopCurrent";
     case CUDA_CALL_MEMCPY_HTOD:
         return "cuMemcpyHtoD";
     case CUDA_CALL_MEMCPY_HTOD_ASYNC:
         return "cuMemcpyHtoDAsync";
+    case CUDA_CALL_MEMCPY_DTOH_ASYNC:
+        return "cuMemcpyDtoHAsync";
+    case CUDA_CALL_MEMCPY_DTOD_ASYNC:
+        return "cuMemcpyDtoDAsync";
+    case CUDA_CALL_MEMSET_D16:
+        return "cuMemsetD16";
+    case CUDA_CALL_MEM_ALLOC_MANAGED:
+        return "cuMemAllocManaged";
+    case CUDA_CALL_MEM_ALLOC_HOST:
+        return "cuMemAllocHost";
+    case CUDA_CALL_MEM_FREE_HOST:
+        return "cuMemFreeHost";
+    case CUDA_CALL_TEX_CREATE:
+        return "cuTexObjectCreate";
+    case CUDA_CALL_TEX_DESTROY:
+        return "cuTexObjectDestroy";
+    case CUDA_CALL_OCCUPANCY_MAX_ACTIVE_BLOCKS:
+        return "cuOccupancyMaxActiveBlocksPerMultiprocessor";
+    case CUDA_CALL_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE:
+        return "cuOccupancyMaxPotentialBlockSize";
     case CUDA_CALL_CUBLAS_GEMM_EX:
         return "cublasGemmEx";
+    case CUDA_CALL_CUBLASLT_CREATE:
+        return "cublasLtCreate";
+    case CUDA_CALL_CUBLASLT_DESTROY:
+        return "cublasLtDestroy";
     case CUDA_CALL_CUBLASLT_MATMUL:
         return "cublasLtMatmul";
+    case CUDA_CALL_GET_ERROR_STRING:
+        return "cuGetErrorString";
+    case CUDA_CALL_GET_ERROR_NAME:
+        return "cuGetErrorName";
+    case CUDA_CALL_PROCESS_CLEANUP:
+        return "vgpuProcessCleanup";
     default:
         return "cuda_call";
     }
@@ -3065,16 +3105,18 @@ int cuda_executor_call(cuda_executor_t *exec,
                 }
             }
             if (rc == CUDA_SUCCESS) {
-                if (!used_sync_fallback && !vm_add_pending_async_htod(vm, stream, staging, copy_len)) {
-                    /* Fall back to immediate completion if pending staging capacity is exhausted. */
-                    rc = cuStreamSynchronize(stream);
+                if (!used_sync_fallback && stream == NULL) {
+                    /* Default-stream async copies are ordered immediately here.
+                     * Do not enqueue staging first; it would be freed again by
+                     * the next stream/context drain. */
+                    rc = cuCtxSynchronize();
                     free(staging);
                     if (rc != CUDA_SUCCESS) {
                         break;
                     }
-                } else if (!used_sync_fallback && stream == NULL) {
-                    /* Default-stream async copies are ordered immediately here. */
-                    rc = cuCtxSynchronize();
+                } else if (!used_sync_fallback && !vm_add_pending_async_htod(vm, stream, staging, copy_len)) {
+                    /* Fall back to immediate completion if pending staging capacity is exhausted. */
+                    rc = cuStreamSynchronize(stream);
                     free(staging);
                     if (rc != CUDA_SUCCESS) {
                         break;
@@ -4613,7 +4655,36 @@ int cuda_executor_call(cuda_executor_t *exec,
         break;
     }
 
-    /* ---- Unsupported ------------------------------------------- */
+    /* ---- Explicit unsupported protocol IDs ---------------------- */
+    case CUDA_CALL_DEVICE_GET_PROPERTIES:
+    case CUDA_CALL_DEVICE_GET_P2P_ATTRIBUTE:
+    case CUDA_CALL_CTX_PUSH_CURRENT:
+    case CUDA_CALL_CTX_POP_CURRENT:
+    case CUDA_CALL_MEMCPY_DTOH_ASYNC:
+    case CUDA_CALL_MEMCPY_DTOD_ASYNC:
+    case CUDA_CALL_MEMSET_D16:
+    case CUDA_CALL_MEM_ALLOC_MANAGED:
+    case CUDA_CALL_MEM_ALLOC_HOST:
+    case CUDA_CALL_MEM_FREE_HOST:
+    case CUDA_CALL_LAUNCH_COOPERATIVE_KERNEL:
+    case CUDA_CALL_TEX_CREATE:
+    case CUDA_CALL_TEX_DESTROY:
+    case CUDA_CALL_OCCUPANCY_MAX_ACTIVE_BLOCKS:
+    case CUDA_CALL_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE:
+    case CUDA_CALL_CUBLASLT_CREATE:
+    case CUDA_CALL_CUBLASLT_DESTROY:
+    case CUDA_CALL_CUBLASLT_MATMUL:
+    case CUDA_CALL_GET_ERROR_STRING:
+    case CUDA_CALL_GET_ERROR_NAME:
+    case CUDA_CALL_PROCESS_CLEANUP:
+        fprintf(stderr,
+                "[cuda-executor] Unsupported CUDA protocol call: %s(0x%04x)\n",
+                executor_call_id_to_name(call->call_id),
+                call->call_id);
+        rc = CUDA_ERROR_NOT_SUPPORTED;
+        break;
+
+    /* ---- Unknown unsupported ------------------------------------ */
     default:
         fprintf(stderr, "[cuda-executor] Unsupported CUDA call: 0x%04x\n",
                 call->call_id);
