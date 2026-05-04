@@ -102,8 +102,8 @@
  * is fetched. Advertising a synthetic 13.0 here feeds the dark-API integrity
  * token path and can make ggml_cuda_init reject CUDA before discovery settles.
  * Format: major * 1000 + minor * 10. */
-#define GPU_DEFAULT_DRIVER_VERSION          12080  /* CUDA 12.8 default until live host info replaces it */
-#define GPU_DEFAULT_RUNTIME_VERSION         12080  /* CUDA 12.8 runtime */
+#define GPU_DEFAULT_DRIVER_VERSION          12090  /* CUDA 12.9 default until live host info replaces it */
+#define GPU_DEFAULT_RUNTIME_VERSION         12090  /* CUDA 12.9 runtime */
 
 /* ---- UUID (placeholder — 16 zero bytes, host fills in real one) - */
 #define GPU_DEFAULT_UUID_BYTES  \

@@ -197,6 +197,24 @@ void wd_clear_quarantine(watchdog_t *wd, uint32_t vm_id)
     pthread_mutex_unlock(&wd->lock);
 }
 
+void wd_set_quarantine(watchdog_t *wd, uint32_t vm_id, int quarantined)
+{
+    pthread_mutex_lock(&wd->lock);
+
+    wd_vm_state_t *vs = find_or_create_vm(wd, vm_id);
+    if (vs) {
+        vs->quarantined = quarantined ? 1 : 0;
+        if (!quarantined) {
+            vs->error_count = 0;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &vs->last_error_time);
+        printf("[WATCHDOG] Quarantine %s: vm=%u\n",
+               quarantined ? "set" : "cleared", vm_id);
+    }
+
+    pthread_mutex_unlock(&wd->lock);
+}
+
 int wd_job_timed_out(watchdog_t *wd)
 {
     pthread_mutex_lock(&wd->lock);

@@ -1,0 +1,269 @@
+===========================================================
+  MEDIATOR DAEMON v3.1 — Phase 3+: CUDA API Remoting
+  Communication: MMIO PCI BAR0/BAR1 + Unix domain socket
+===========================================================
+
+[INIT] WFQ scheduler ready
+[INIT] Rate limiter ready
+[INIT] Metrics collector ready
+[INIT] Watchdog started (timeout=30s, threshold=5)
+[WATCHDOG] Started (job_timeout=30s, fault_threshold=5)
+[NVML] GPU health monitoring enabled
+[INIT] NVML GPU health monitoring active
+[INIT] Database connected (/etc/vgpu/vgpu_config.db)
+[CONFIG] Loaded 8 VM(s) from database
+[RATE-LIMIT] vm=8: rate=0 jobs/sec, max_queue=0
+[CONFIG]   vm_id=8 uuid=4d2e3894-500b-036d-e368-867262ab3bb7 weight=50 rate=0/s queue=0 
+[RATE-LIMIT] vm=9: rate=0 jobs/sec, max_queue=0
+[CONFIG]   vm_id=9 uuid=ba77526f-8955-acf8-2616-76f56a81ae8a weight=50 rate=0/s queue=0 
+[RATE-LIMIT] vm=10: rate=0 jobs/sec, max_queue=0
+[CONFIG]   vm_id=10 uuid=2e3042c0-5fa0-7a11-5fdf-ea5089912c93 weight=50 rate=0/s queue=0 
+[RATE-LIMIT] vm=3: rate=0 jobs/sec, max_queue=0
+[CONFIG]   vm_id=3 uuid=9551b692-0f29-ccee-7226-d0de8f26b6f0 weight=50 rate=0/s queue=0 
+[RATE-LIMIT] vm=4: rate=0 jobs/sec, max_queue=0
+[CONFIG]   vm_id=4 uuid=6596df7d-17b0-4f8b-646c-143d952ccce0 weight=50 rate=0/s queue=0 
+[RATE-LIMIT] vm=5: rate=0 jobs/sec, max_queue=0
+[CONFIG]   vm_id=5 uuid=bc89754e-1f31-4cc1-ffec-dc5c07823e2d weight=50 rate=0/s queue=0 
+[RATE-LIMIT] vm=6: rate=0 jobs/sec, max_queue=0
+[CONFIG]   vm_id=6 uuid=1d11c550-01bb-d9f0-b33b-e9cdc1d7e8e1 weight=50 rate=0/s queue=0 
+[RATE-LIMIT] vm=7: rate=0 jobs/sec, max_queue=0
+[CONFIG]   vm_id=7 uuid=69ab4876-fa4f-8d50-36f7-633b038fc932 weight=50 rate=0/s queue=0 
+[CUDA] Initialized successfully (device count: 1)
+[INIT] CUDA ready
+[cuda-executor] Initialized: NVIDIA H100 PCIe, 81004 MB
+[INIT] CUDA API executor ready (remoting enabled)
+[DISCOVERY] Scanned 368 processes, found 3 vgpu-cuda process(es), discovered 3 unique chroot(s)
+[CONFIG] Found 3 QEMU VM(s) with vgpu-cuda device:
+[SOCKET] Successfully listening on /var/xen/qemu/root-2/tmp/vgpu-mediator.sock (fd=43, permissions=0666)
+  [1] /var/xen/qemu/root-2 -> /var/xen/qemu/root-2/tmp/vgpu-mediator.sock (socket created successfully)
+[SOCKET] Successfully listening on /var/xen/qemu/root-6/tmp/vgpu-mediator.sock (fd=44, permissions=0666)
+  [2] /var/xen/qemu/root-6 -> /var/xen/qemu/root-6/tmp/vgpu-mediator.sock (socket created successfully)
+[SOCKET] Successfully listening on /var/xen/qemu/root-7/tmp/vgpu-mediator.sock (fd=45, permissions=0666)
+  [3] /var/xen/qemu/root-7 -> /var/xen/qemu/root-7/tmp/vgpu-mediator.sock (socket created successfully)
+[SOCKET] Successfully listening on /var/vgpu/admin.sock (fd=46, permissions=0666)
+[ADMIN] Admin socket listening on /var/vgpu/admin.sock
+[MEDIATOR] Starting main loop...
+[MEDIATOR] Listening on 3 socket(s) for VM connections
+[MEDIATOR] Admin socket active on /var/vgpu/admin.sock
+[MEDIATOR] Server socket[0]: /var/xen/qemu/root-2/tmp/vgpu-mediator.sock  fd=43
+[MEDIATOR] Server socket[1]: /var/xen/qemu/root-6/tmp/vgpu-mediator.sock  fd=44
+[MEDIATOR] Server socket[2]: /var/xen/qemu/root-7/tmp/vgpu-mediator.sock  fd=45
+[SOCKET] New connection on /var/xen/qemu/root-2/tmp/vgpu-mediator.sock (fd=47, server_idx=0)
+[CONNECTION] New connection from  (fd=47)
+[MEDIATOR] CUDA process cleanup vm_id=10 owner=167820875 request_id=19808
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19808 call_id=0xfe result.status=0 -> stub sets DONE
+[PERSIST] fd=47 registered for persistent polling (slot=0)
+[cuda-executor] CUDA_CALL_INIT vm=167820931 — pipeline live
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19809 call_id=0x1 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19810 call_id=0xf0 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19811 call_id=0x94 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19812 call_id=0x90 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19813 call_id=0x90 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19814 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19815 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19816 call_id=0x3b result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19817 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19818 call_id=0x61 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19819 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19820 call_id=0x71 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19821 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19822 call_id=0x61 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19823 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19824 call_id=0x71 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19825 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19826 call_id=0x61 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19827 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19828 call_id=0x71 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19829 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19830 call_id=0x61 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19831 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19832 call_id=0x71 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19833 call_id=0x22 result.status=0 -> stub sets DONE
+[cuda-executor] cuMemAlloc: allocating 2097152 bytes on physical GPU (vm=167820931)
+[cuda-executor] cuMemAlloc SUCCESS: allocated 0x7f0dba800000 on physical GPU (vm=167820931)
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19834 call_id=0x30 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19835 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19836 call_id=0x73 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19837 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19838 call_id=0x66 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19839 call_id=0x22 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x003c seq=33 len=256 prefix_len=64 bytes=[00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+[cuda-executor] cuMemcpyHtoDAsync vm=167820931 seq=33 guest_dst=0x7f0dba800000 host_dst=0x7f0dba800000 size=256 stream_guest=0x2a0ad40 fnv1a64=0xdce53c1df8560f83
+[cuda-executor] cuMemcpyHtoDAsync input prefix vm=167820931 len=256 prefix_len=196 bytes=[00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ]
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19840 call_id=0x3c result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19841 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19842 call_id=0x71 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19843 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19844 call_id=0x73 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19845 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19846 call_id=0x75 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19847 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19848 call_id=0x37 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19849 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19850 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19851 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19852 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19853 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19854 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19855 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19856 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19857 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19858 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19859 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19860 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19861 call_id=0x73 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19862 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19863 call_id=0x66 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19864 call_id=0x22 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x003c seq=58 len=4 prefix_len=4 bytes=[00 00 80 3f]
+[cuda-executor] cuMemcpyHtoDAsync vm=167820931 seq=58 guest_dst=0x7f0dba800600 host_dst=0x7f0dba800600 size=4 stream_guest=0x2a0ad40 fnv1a64=0x2fa183a08531045a
+[cuda-executor] cuMemcpyHtoDAsync input prefix vm=167820931 len=4 prefix_len=4 bytes=[00 00 80 3f]
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19865 call_id=0x3c result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19866 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19867 call_id=0x73 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19868 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19869 call_id=0x75 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19870 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19871 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19872 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19873 call_id=0x73 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19874 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19875 call_id=0x66 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19876 call_id=0x22 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x003c seq=70 len=4 prefix_len=4 bytes=[00 00 00 00]
+[cuda-executor] cuMemcpyHtoDAsync vm=167820931 seq=70 guest_dst=0x7f0dba800700 host_dst=0x7f0dba800700 size=4 stream_guest=0x2a0ad40 fnv1a64=0x315446a086a23133
+[cuda-executor] cuMemcpyHtoDAsync input prefix vm=167820931 len=4 prefix_len=4 bytes=[00 00 00 00]
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19877 call_id=0x3c result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19878 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19879 call_id=0x73 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19880 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19881 call_id=0x75 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19882 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19883 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19884 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19885 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19886 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19887 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19888 call_id=0x73 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19889 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19890 call_id=0x66 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19891 call_id=0x22 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x003c seq=85 len=16 prefix_len=16 bytes=[05 00 00 00 00 00 00 00 04 00 00 00 01 00 00 00]
+[cuda-executor] cuMemcpyHtoDAsync vm=167820931 seq=85 guest_dst=0x7f0dba800800 host_dst=0x7f0dba800800 size=16 stream_guest=0x2a0ad40 fnv1a64=0xb427f85c79a90913
+[cuda-executor] cuMemcpyHtoDAsync input prefix vm=167820931 len=16 prefix_len=16 bytes=[05 00 00 00 00 00 00 00 04 00 00 00 01 00 00 00]
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19892 call_id=0x3c result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19893 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19894 call_id=0x73 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19895 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19896 call_id=0x75 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19897 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19898 call_id=0x22 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x00a8 seq=92 len=61793 prefix_len=64 bytes=[50 ed 55 ba 01 00 10 00 58 f1 00 00 00 00 00 00 02 00 01 01 40 00 00 00 68 2d 00 00 00 00 00 00 65 2d 00 00 00 00 00 00 07 00 01 00 32 00 00 00 00 00 00 00 00 00 00 00 11 20 00 00 00 00 00 00]
+[cuda-executor] cuLibraryLoadData success vm=167820931 data_len=61793 lib=0x2a2a920 guest_handle=0x2a2a920
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19899 call_id=0xa8 result.status=0 -> stub sets DONE
+[HEARTBEAT] alive — 3 server socket(s), admin_fd=46
+[HEARTBEAT]   [0] fd=43  /var/xen/qemu/root-2/tmp/vgpu-mediator.sock
+[HEARTBEAT]   [1] fd=44  /var/xen/qemu/root-6/tmp/vgpu-mediator.sock
+[HEARTBEAT]   [2] fd=45  /var/xen/qemu/root-7/tmp/vgpu-mediator.sock
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19900 call_id=0x22 result.status=0 -> stub sets DONE
+[cuda-executor] cuLibraryGetModule success vm=167820931 guest_handle=0x2a2a920 lib=0x2a2a920 mod=0x2a0c7e0 guest_mod=0x2a0c7e0
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19901 call_id=0xaa result.status=0 -> stub sets DONE
+[cuda-executor] cuModuleGetFunction success: vm=167820931 mod=0x2a0c7e0 func=0x2bacb70 name=_ZN5Eigen8internal15EigenMetaKernelINS_15TensorEvaluatorIKNS_14TensorAssignOpINS_9TensorMapINS_6TensorIfLi3ELi1ElEELi16ENS_11MakePointerEEEKNS_17TensorGeneratorOpIN10tensorflow9generator12OneGeneratorIfiEEKS8_EEEENS_9GpuDeviceEEElEEvT_T0_
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19902 call_id=0x44 result.status=0 -> stub sets DONE
+[cuda-executor] cuFuncGetParamInfo UNSUPPORTED: vm=167820931 func=0x2bacb70 name=_ZN5Eigen8internal15EigenMetaKernelINS_15TensorEvaluatorIKNS_14TensorAssignOpINS_9TensorMapINS_6TensorIfLi3ELi1ElEELi16ENS_11Ma param=0 rc=801
+[cuda-executor] call FAILED: vm=167820931 call=cuFuncGetParamInfo(0x00bc) rc=801(CUDA_ERROR_NOT_SUPPORTED) detail=operation not supported
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19903 call_id=0xbc result.status=801 -> stub sets DONE
+[cuda-executor] cuLaunchKernel: func=0x2bacb70 name=_ZN5Eigen8internal15EigenMetaKernelINS_15TensorEvaluatorIKNS_14TensorAssignOpINS_9TensorMapINS_6TensorIfLi3ELi1ElEELi16ENS_11Ma mod=0x2a0c7e0 stream=0x2211190 grid=(1,1,1) block=(1024,1,1) shared=0 params=2 mode=0 vm=167820931
+[cuda-executor] cuLaunchKernel sync FAILED: rc=700 func=0x2bacb70 name=_ZN5Eigen8internal15EigenMetaKernelINS_15TensorEvaluatorIKNS_14TensorAssignOpINS_9TensorMapINS_6TensorIfLi3ELi1ElEELi16ENS_11Ma mod=0x2a0c7e0 grid=(1,1,1) block=(1024,1,1) shared=0 params=2 vm=167820931
+[cuda-executor] cuLaunchKernel failure detail: mode=0 total_param_bytes=16 vm=167820931
+[cuda-executor] cuLaunchKernel param buffer prefix vm=167820931 len=16 prefix_len=16 bytes=[00 09 80 ba 0d 7f 00 00 28 00 00 00 00 00 00 00]
+[cuda-executor] Recovering primary context after vm_id=167820931 fault: cuLaunchKernel sync hit CUDA_ERROR_ILLEGAL_ADDRESS
+[cuda-executor] ERROR: failed to re-retain primary context after recovery: rc=700
+[cuda-executor] call FAILED: vm=167820931 call=cuLaunchKernel(0x0050) rc=700(CUDA_ERROR_ILLEGAL_ADDRESS) detail=an illegal memory access was encountered
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19904 call_id=0x50 result.status=700 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19905 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19906 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19907 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19908 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19909 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19910 call_id=0x22 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x00a8 seq=104 len=134858 prefix_len=64 bytes=[50 ed 55 ba 01 00 10 00 c0 0e 02 00 00 00 00 00 02 00 01 01 40 00 00 00 00 5d 00 00 00 00 00 00 fe 5c 00 00 00 00 00 00 07 00 01 00 32 00 00 00 00 00 00 00 00 00 00 00 11 20 00 00 00 00 00 00]
+[cuda-executor] cuLibraryLoadData success vm=167820931 data_len=134858 lib=0x2a0c7b0 guest_handle=0x2a0c7b0
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19911 call_id=0xa8 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19912 call_id=0x22 result.status=0 -> stub sets DONE
+[cuda-executor] cuLibraryGetModule failed vm=167820931 guest_handle=0x2a0c7b0 lib=0x2a0c7b0 rc=709
+[cuda-executor] call FAILED: vm=167820931 call=cuda_call(0x00aa) rc=709(CUDA_ERROR_CONTEXT_IS_DESTROYED) detail=context is destroyed
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19913 call_id=0xaa result.status=709 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19914 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19915 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19916 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19917 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19918 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19919 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19920 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19921 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19922 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19923 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19924 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19925 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19926 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19927 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19928 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19929 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19930 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19931 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19932 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19933 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19934 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19935 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19936 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19937 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19938 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19939 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19940 call_id=0x22 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19941 call_id=0x22 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=135 len=1024 prefix_len=64 bytes=[50 ed 55 ba 01 00 10 00 e0 21 00 00 00 00 00 00 02 00 01 01 40 00 00 00 68 07 00 00 00 00 00 00 61 07 00 00 00 00 00 00 07 00 01 00 32 00 00 00 00 00 00 00 00 00 00 00 11 20 00 00 00 00 00 00]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000001 first=1 last=0 single=0 data_len=1024 first8=50ed55ba01001000 used_before=0 alloc=0
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19942 call_id=0x40 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=136 len=1024 prefix_len=64 bytes=[a0 00 31 07 05 a7 48 00 40 f1 07 a4 fe 20 01 30 03 03 89 b3 03 40 5c 02 02 19 80 01 20 1c 07 70 00 20 03 6c e0 00 f0 02 fc 00 d4 1f 08 03 00 17 05 00 04 47 4c 0f 03 f7 0f b8 01 f2 04 03 05 77]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000004 first=0 last=0 single=0 data_len=1024 first8=a000310705a74800 used_before=1024 alloc=33554432
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19943 call_id=0x40 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=137 len=1024 prefix_len=64 bytes=[33 07 00 01 00 66 02 00 be 00 7b 00 01 00 21 e0 0e 07 00 31 00 a0 0c 07 00 f5 0e 00 3c 05 3c 00 40 00 38 00 03 00 40 00 09 00 01 00 00 2e 73 68 73 74 72 74 61 62 00 2e 08 00 27 79 6d 08 00 f1]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000004 first=0 last=0 single=0 data_len=1024 first8=3307000100660200 used_before=2048 alloc=33554432
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19944 call_id=0x40 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=138 len=1024 prefix_len=64 bytes=[5b 07 03 60 01 10 20 80 01 40 18 06 00 27 20 02 41 5c 02 05 77 80 00 00 40 00 00 20 01 90 f2 07 46 fe 00 c8 1f 00 04 10 00 61 02 20 5b 06 06 f9 38 00 c0 06 ff 10 05 00 07 47 4c f0 07 a0 e3 80]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000004 first=0 last=0 single=0 data_len=1024 first8=5b07036001102080 used_before=3072 alloc=33554432
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19945 call_id=0x40 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=139 len=1024 prefix_len=64 bytes=[69 6e 66 6f 00 2e 74 65 78 74 2e 4d 75 6c 5f 47 50 55 5f 44 54 5f 46 4c 4f 41 54 09 00 65 6b 65 72 6e 65 6c 30 00 0f 2a 00 13 6f 73 68 61 72 65 64 2c 00 13 9f 63 6f 6e 73 74 61 6e 74 30 2f 00]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000004 first=0 last=0 single=0 data_len=1024 first8=696e666f002e7465 used_before=4096 alloc=33554432
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19946 call_id=0x40 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=140 len=1024 prefix_len=64 bytes=[d0 00 57 ca 0f 00 10 08 60 00 10 c8 10 01 34 07 00 03 10 01 17 e2 f0 00 00 90 00 75 c6 1f 00 10 92 07 07 e0 00 02 20 00 24 03 00 50 01 61 c6 0f 00 12 aa 07 a0 00 22 ff 33 c0 00 00 40 01 14 03]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000004 first=0 last=0 single=0 data_len=1024 first8=d00057ca0f001008 used_before=5120 alloc=33554432
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19947 call_id=0x40 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=141 len=1024 prefix_len=64 bytes=[40 03 00 04 7c 08 00 d1 0f 0c 81 80 80 28 00 08 ff 81 80 28 08 0b 00 02 24 00 2f 34 00 01 00 04 03 54 00 10 04 97 00 52 04 1c 00 00 00 41 00 44 04 1c 01 00 01 00 90 04 2f 08 00 05 00 00 00 0d]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000004 first=0 last=0 single=0 data_len=1024 first8=400300047c0800d1 used_before=6144 alloc=33554432
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19948 call_id=0x40 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=142 len=1024 prefix_len=64 bytes=[ff 20 01 00 70 02 35 92 06 06 60 01 00 a0 00 21 aa 06 90 00 22 ff 33 70 00 36 10 72 00 20 00 00 90 02 21 7a 00 50 03 24 07 02 90 00 43 03 00 00 65 20 01 02 70 00 64 00 00 71 00 00 05 70 00 59]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000004 first=0 last=0 single=0 data_len=1024 first8=ff20010070023592 used_before=7168 alloc=33554432
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19949 call_id=0x40 result.status=0 -> stub sets DONE
+[mediator] CUDA call input prefix vm=10 call_id=0x0040 seq=143 len=489 prefix_len=64 bytes=[61 20 24 4c 5f 5f 42 42 30 5f 32 3b e6 00 1f 32 e6 00 17 3e 32 38 5d 40 00 1f 31 40 00 18 1f 37 40 00 00 1f 30 40 00 18 1e 30 40 00 1f 39 3f 00 17 2e 31 39 3f 00 1f 38 3f 00 18 0f fe 00 00 1f]
+[cuda-executor] vm_id=167820931 module-chunk call_id=0x0040 flags=0x00000002 first=0 last=1 single=0 data_len=489 first8=6120244c5f5f4242 used_before=8192 alloc=33554432
+[cuda-executor] vm_id=167820931 module-load start call_id=0x0040 path=cuModuleLoadData data_len=8681 magic=0xba55ed50 first8=50ed55ba01001000
+[cuda-executor] vm_id=167820931 module-load done call_id=0x0040 rc=709 name=CUDA_ERROR_CONTEXT_IS_DESTROYED detail=context is destroyed module=(nil)
+[cuda-executor] call FAILED: vm=167820931 call=cuModuleLoadData(0x0040) rc=709(CUDA_ERROR_CONTEXT_IS_DESTROYED) detail=context is destroyed
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19950 call_id=0x40 result.status=709 -> stub sets DONE
+[cuda-executor] call FAILED: vm=167820931 call=cuda_call(0x0044) rc=1(CUDA_ERROR_INVALID_VALUE) detail=invalid argument
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19951 call_id=0x44 result.status=1 -> stub sets DONE
+[cuda-executor] cuFuncGetParamInfo INVALID_VALUE: vm=167820931 func=0x0 param=0 (missing host function entry)
+[cuda-executor] call FAILED: vm=167820931 call=cuFuncGetParamInfo(0x00bc) rc=1(CUDA_ERROR_INVALID_VALUE) detail=invalid argument
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19952 call_id=0xbc result.status=1 -> stub sets DONE
+[cuda-executor] cuLaunchKernel: func=0x0 name=<unknown> mod=0x0 stream=0x2211190 grid=(1,1,1) block=(1024,1,1) shared=0 params=30 mode=0 vm=167820931
+[cuda-executor] cuLaunchKernel launch FAILED: rc=400 func=0x0 name=<unknown> mod=0x0 grid=(1,1,1) block=(1024,1,1) shared=0 params=30 vm=167820931
+[cuda-executor] cuLaunchKernel launch failure detail: mode=0 total_param_bytes=240 vm=167820931
+[cuda-executor] cuLaunchKernel param buffer prefix vm=167820931 len=240 prefix_len=196 bytes=[80 02 00 00 00 00 00 00 10 00 00 00 00 00 00 00 0a 00 00 00 00 00 00 00 00 00 80 ba 0d 7f 00 00 00 00 80 ba 0d 7f 00 00 00 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00 0a 00 00 00 00 00 00 00 10 00 00 00 00 00 00 00 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 0a 80 ba 0d 7f 00 00 00 0a 80 ba 0d 7f 00 00 00 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00 0a 00 00 00 00 00 00 00 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 10 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 0e 80 ba 0d 7f 00 00 00 0e 80 ba 0d 7f 00 00 00 00 00 00 00 00 00 00 04 00 00 ]
+[cuda-executor] call FAILED: vm=167820931 call=cuLaunchKernel(0x0050) rc=400(CUDA_ERROR_INVALID_HANDLE) detail=invalid resource handle
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19953 call_id=0x50 result.status=400 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19954 call_id=0xa9 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19955 call_id=0xa9 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA result sent vm_id=10 request_id=19956 call_id=0x91 result.status=0 -> stub sets DONE
+[MEDIATOR] CUDA process cleanup vm_id=10 owner=167820931 request_id=19957

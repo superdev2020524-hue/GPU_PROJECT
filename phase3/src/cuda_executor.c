@@ -3092,7 +3092,22 @@ int cuda_executor_call(cuda_executor_t *exec,
                     (unsigned long long)host_fnv1a64(data, copy_len));
             cuda_executor_log_prefix_bytes("cuMemcpyHtoDAsync input", data, copy_len, call->vm_id);
             int used_sync_fallback = 0;
-            rc = cuMemcpyHtoDAsync(host_dst, staging, copy_len, stream);
+            if (copy_len <= 4096) {
+                /* TensorFlow startup uses tiny HtoDAsync copies while CUDA is still
+                 * initializing internal modules. A synchronous copy has equivalent
+                 * ordering here and avoids poisoning the context if async enqueue
+                 * reports CUDA_ERROR_SHARED_OBJECT_INIT_FAILED first. */
+                rc = cuMemcpyHtoD(host_dst, staging, copy_len);
+                used_sync_fallback = (rc == CUDA_SUCCESS);
+                if (rc != CUDA_SUCCESS) {
+                    fprintf(stderr,
+                            "[cuda-executor] cuMemcpyHtoDAsync small-sync FAILED: rc=%d dst=0x%llx size=%zu stream_guest=0x%llx (vm=%u)\n",
+                            (int)rc, (unsigned long long)host_dst, copy_len,
+                            (unsigned long long)stream_handle, call->vm_id);
+                }
+            } else {
+                rc = cuMemcpyHtoDAsync(host_dst, staging, copy_len, stream);
+            }
             if (rc != CUDA_SUCCESS) {
                 fprintf(stderr,
                         "[cuda-executor] cuMemcpyHtoDAsync FAILED: rc=%d dst=0x%llx size=%zu stream_guest=0x%llx (vm=%u) -> fallback sync copy\n",

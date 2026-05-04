@@ -88,6 +88,9 @@ int wd_is_quarantined(watchdog_t *wd, uint32_t vm_id);
 /* Manually clear quarantine for a VM */
 void wd_clear_quarantine(watchdog_t *wd, uint32_t vm_id);
 
+/* Explicitly set or clear quarantine for a VM from admin/config state */
+void wd_set_quarantine(watchdog_t *wd, uint32_t vm_id, int quarantined);
+
 /* Check if the current job has timed out */
 int wd_job_timed_out(watchdog_t *wd);
 

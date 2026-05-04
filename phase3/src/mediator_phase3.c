@@ -917,10 +917,25 @@ static void handle_client_connection(int client_fd)
         return;
     }
 
-    /* Read payload — for CUDA calls, payload may be large */
+    /* Read payload — for CUDA calls, payload may be large but still bounded.
+     * Reject before malloc so a malformed socket header cannot force arbitrary
+     * host heap allocation. */
     uint8_t *payload_buf = rx_buf + VGPU_SOCKET_HDR_SIZE;
     uint8_t *alloc_buf = NULL;
     uint32_t total_payload = hdr->payload_len;
+    uint32_t max_payload =
+        (hdr->msg_type == VGPU_MSG_CUDA_CALL)
+            ? (uint32_t)(sizeof(CUDACallHeader) + VGPU_CUDA_SOCKET_MAX_PAYLOAD)
+            : (uint32_t)VGPU_SOCKET_MAX_PAYLOAD;
+
+    if (total_payload > max_payload) {
+        fprintf(stderr,
+                "[ERROR] Oversized payload from vm%u fd=%d msg_type=0x%x len=%u max=%u\n",
+                hdr->vm_id, client_fd, hdr->msg_type, total_payload, max_payload);
+        untrack_connection(client_fd);
+        close(client_fd);
+        return;
+    }
 
     if (total_payload > 0) {
         if (total_payload > VGPU_SOCKET_MAX_PAYLOAD) {
@@ -1106,6 +1121,25 @@ static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
     const void *bulk_data = NULL;
     uint32_t bulk_len = 0;
 
+    if (cuda_hdr->magic != VGPU_SOCKET_MAGIC) {
+        fprintf(stderr,
+                "[ERROR] Invalid CUDA payload magic from vm%u fd=%d: 0x%08x\n",
+                sock_hdr->vm_id, client_fd, cuda_hdr->magic);
+        untrack_connection(client_fd);
+        close(client_fd);
+        return;
+    }
+
+    if (cuda_hdr->num_args > CUDA_MAX_INLINE_ARGS) {
+        fprintf(stderr,
+                "[ERROR] CUDA num_args out of range from vm%u fd=%d: %u > %u\n",
+                sock_hdr->vm_id, client_fd, cuda_hdr->num_args,
+                (unsigned)CUDA_MAX_INLINE_ARGS);
+        untrack_connection(client_fd);
+        close(client_fd);
+        return;
+    }
+
     /* Newer stubs route executor ownership through cuda_hdr.vm_id using
      * (vm_id,pid). Older live stubs still send the bare VM id, so keep a
      * connection-key fallback until all stubs carry guest process identity. */
@@ -1116,6 +1150,16 @@ static void handle_cuda_call(int client_fd, VGPUSocketHeader *sock_hdr,
     if (payload_len > sizeof(CUDACallHeader)) {
         bulk_data = payload + sizeof(CUDACallHeader);
         bulk_len = payload_len - sizeof(CUDACallHeader);
+    }
+
+    if (cuda_hdr->data_len != bulk_len) {
+        fprintf(stderr,
+                "[ERROR] CUDA payload length mismatch from vm%u fd=%d call=0x%04x seq=%u header=%u actual=%u\n",
+                sock_hdr->vm_id, client_fd, cuda_hdr->call_id,
+                cuda_hdr->seq_num, cuda_hdr->data_len, bulk_len);
+        untrack_connection(client_fd);
+        close(client_fd);
+        return;
     }
 
     if ((cuda_hdr->call_id == CUDA_CALL_MEMCPY_HTOD ||
@@ -1334,11 +1378,12 @@ static void handle_admin_connection(int client_fd)
                                     configs[i].max_jobs_per_sec,
                                     configs[i].max_queue_depth);
 
-                    if (configs[i].quarantined) {
-                        /* Sync quarantine state from DB */
-                        /* (watchdog tracks its own state, but DB is source of truth
-                           for admin-set quarantines) */
-                    }
+                    /* Sync admin-set quarantine state from DB into the live
+                     * watchdog so vgpu-admin quarantine-vm takes effect without
+                     * a mediator restart. */
+                    wd_set_quarantine(&g_watchdog,
+                                      (uint32_t)configs[i].vm_id,
+                                      configs[i].quarantined);
                 }
                 data_len = snprintf(buf, ADMIN_BUF_SIZE,
                     "Config reloaded: %d VM(s) updated\n", count);

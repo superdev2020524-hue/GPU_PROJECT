@@ -148,6 +148,11 @@ typedef enum {
     NVML_COMPUTEMODE_EXCLUSIVE_PROCESS = 3,
 } nvmlComputeMode_t;
 
+typedef enum {
+    NVML_FEATURE_DISABLED = 0,
+    NVML_FEATURE_ENABLED  = 1,
+} nvmlEnableState_t;
+
 /* Forward declarations — versioned API wrappers */
 nvmlReturn_t nvmlInit_v2(void);
 nvmlReturn_t nvmlDeviceGetCount_v2(unsigned int *deviceCount);
@@ -1229,4 +1234,51 @@ nvmlReturn_t nvmlDeviceGetHostVgpuMode(nvmlDevice_t device,
     (void)device;
     *pHostVgpuMode = 0;
     return NVML_SUCCESS;
+}
+
+/* ================================================================
+ * NVML API — TensorFlow GPU-registration compatibility
+ *
+ * TensorFlow probes these symbols during GPU registration. The mediated device
+ * exposes no guest-visible NVLink or fabric topology, but the symbols must be
+ * present so TensorFlow can classify the topology instead of rejecting the NVML
+ * library as incomplete.
+ * ================================================================ */
+
+nvmlReturn_t nvmlDeviceGetNvLinkState(nvmlDevice_t device,
+                                      unsigned int link,
+                                      nvmlEnableState_t *isActive)
+{
+    if (!isActive) return NVML_ERROR_INVALID_ARGUMENT;
+    (void)device;
+    (void)link;
+    *isActive = NVML_FEATURE_DISABLED;
+    return NVML_SUCCESS;
+}
+
+nvmlReturn_t nvmlDeviceGetNvLinkCapability(nvmlDevice_t device,
+                                           unsigned int link,
+                                           unsigned int capability,
+                                           unsigned int *capResult)
+{
+    if (!capResult) return NVML_ERROR_INVALID_ARGUMENT;
+    (void)device;
+    (void)link;
+    (void)capability;
+    *capResult = 0;
+    return NVML_SUCCESS;
+}
+
+nvmlReturn_t nvmlDeviceGetGpuFabricInfoV(nvmlDevice_t device,
+                                         void *gpuFabricInfo)
+{
+    (void)device;
+    (void)gpuFabricInfo;
+    return NVML_ERROR_NOT_SUPPORTED;
+}
+
+nvmlReturn_t nvmlDeviceGetGpuFabricInfo(nvmlDevice_t device,
+                                        void *gpuFabricInfo)
+{
+    return nvmlDeviceGetGpuFabricInfoV(device, gpuFabricInfo);
 }

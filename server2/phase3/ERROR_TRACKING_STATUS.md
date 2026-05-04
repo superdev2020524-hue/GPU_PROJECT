@@ -1,5 +1,67 @@
 # Error tracking status (from where we left off)
 
+## Server 2 note - May 1, 2026 - cloud VM `209.160.255.101`
+
+- **Lane:** `08_server2_migration` / cloud guest passthrough branding.
+- **Plan A canary:** not applicable to this Server 2 passthrough guest lane.
+- **Current active error:** closed for the requested cloud VM verification.
+- **Target:** `root@209.160.255.101`, guest hostname `vgpu-HVM-domU`,
+  Ubuntu 24.04.3, kernel `6.17.0-22-generic`.
+- **Operations replayed from Server 2 registry:** installed the recommended
+  NVIDIA guest driver stack (`nvidia-driver-595-open` / `nvidia-smi`
+  `595.58.03`), blacklisted `nouveau`, rebuilt initramfs, rebooted, then ran
+  `VM_HOST=209.160.255.101 python3 server2/phase3/fix_pci_ids_vm.py`.
+- **Live artifact / deployed-path proof:** `lspci -nnk -s 00:05.0` uses kernel
+  driver `nvidia`; normal `nvidia-smi` resolves through the wrapper and reports
+  `HEXACORE vH100 CAP`; bypass still reports the physical board as
+  `NVIDIA H100 NVL`.
+- **Framework verification environment:** isolated venv at
+  `/opt/hexacore-framework-venv` with `torch 2.11.0+cu126`,
+  `cupy-cuda12x 14.0.1`, and `tensorflow 2.21.0`. TensorFlow requires the pip
+  NVIDIA library directories on `LD_LIBRARY_PATH` for GPU registration.
+- **Evidence for closure:** final bounded probe showed:
+  - `lspci`: `NVIDIA Corporation HEXACORE vH100 CAP`;
+  - `nvidia-smi --query-gpu=name,driver_version`: `HEXACORE vH100 CAP,
+    595.58.03`;
+  - PyTorch: `CUDA_AVAILABLE: True`, `DEVICE_NAME: HEXACORE vH100 CAP`,
+    matmul result on `cuda:0`;
+  - CuPy: `DEVICE_NAME: HEXACORE vH100 CAP`, value-checked GPU sum
+    `524800.0`;
+  - TensorFlow: `VISIBLE_GPU_COUNT: 1`, `device_name: HEXACORE vH100 CAP`,
+    created `/device:GPU:0`, matmul executed with `EXECUTION_BACKEND: GPU`.
+- **Notes:** the CuPy display name required a venv-local wrapper adjustment in
+  `cupy/cuda/runtime.py` plus `cupy/cuda/__init__.py` because CuPy's default
+  `cp.cuda.runtime` binding bypasses the C preload's CUDA Runtime name hook.
+  Backups were kept beside those files with `.hexacore.bak` suffixes.
+
+## Server 2 note - May 1, 2026
+
+- **Lane:** `08_server2_migration`.
+- **Plan A canary:** not applicable to Server 2 passthrough lane; Server 1 root
+  `phase3/` remains protected and was not edited for this Server 2 work.
+- **Preparation completed this session:** modular guest bundle + runbook under
+  `server2/phase3/VERIFICATION/08_server2_migration/` (`guest_bundle/`,
+  `SINGLE_ATTEMPT_RUNBOOK.md`, `MODULES.md`,
+  `scripts/sync_nvidia_smi_wrapper_payload.py`) for **single-pass SSH on the
+  cloud VM**; dom0 steps remain operator-owned per `HOST2_PASSTHROUGH_FAST_PATH.md`.
+- **Current active error:** `S2-M08-E1` no reachable Server 2 **guest** SSH path
+  from this assistant environment yet (historic lab IPs `10.25.33.20` /
+  `10.25.33.21` were unreachable from workstation and Server 1 host).
+- **Candidate list:** cloud VM IP/bastion/VPN not shared; allowlist gap; GPU not
+  attached at hypervisor (would surface as MOD-04 failure after bundle run).
+- **Last proven checkpoint:** historical Apr 18/22 Server 2 passthrough
+  validation only; no current live checkpoint in this workspace.
+- **Live artifact / deployed-path proof:** pending SSH to the Server 2 VM you
+  designate after granting access.
+- **Exact bounded repro used for conclusion:** prior attempt — workstation SSH
+  to `10.25.33.20` / `10.25.33.21` and ping from `10.25.33.10` failed; replace
+  with your cloud VM endpoint when opening access.
+- **Evidence for the current step:** repository artifacts above + updated M08
+  registry files.
+- **Why active remains active:** guest-side automation is ready, but live
+  verification requires a reachable VM SSH target from this environment (or a
+  delegate transcript you accept as proof).
+
 *Updated: Apr 22, 2026 — current Server 2 passthrough path validated on the live VM.*
 
 ## Server 2 note - Apr 18, 2026

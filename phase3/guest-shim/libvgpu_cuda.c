@@ -5318,6 +5318,10 @@ CUresult cuGetExportTable(const void **ppExportTable, const void *pExportTableId
         0xd4, 0x08, 0x20, 0x55, 0xbd, 0xe6, 0x70, 0x4b,
         0x8d, 0x34, 0xba, 0x12, 0x3c, 0x66, 0xe1, 0xf2
     };
+    static const unsigned char k_uuid_unknown_cuda_129_optional[16] = {
+        0xf8, 0xcf, 0xf9, 0x51, 0x21, 0x46, 0x8b, 0x4e,
+        0xb9, 0xe2, 0xfb, 0x46, 0x9e, 0x7c, 0x0d, 0xd9
+    };
     static const void *g_cudart_interface[13] = {
         (const void *)(uintptr_t)(sizeof(void *) * 13), /* slot 0: table size in bytes */
         (const void *)dark_get_module_from_cubin,        /* slot 1 */
@@ -5398,6 +5402,10 @@ CUresult cuGetExportTable(const void **ppExportTable, const void *pExportTableId
     } else if (memcmp(pExportTableId, k_uuid_anti_zluda, sizeof(k_uuid_anti_zluda)) == 0) {
         *ppExportTable = (const void *)g_anti_zluda;
         g_dark_integrity_check_table_addr = (const void *)g_anti_zluda;
+    } else if (memcmp(pExportTableId, k_uuid_unknown_cuda_129_optional,
+                      sizeof(k_uuid_unknown_cuda_129_optional)) == 0) {
+        *ppExportTable = NULL;
+        return CUDA_ERROR_NOT_SUPPORTED;
     } else {
         char unknown_msg[256];
         int unknown_len = snprintf(unknown_msg, sizeof(unknown_msg),
@@ -7712,27 +7720,58 @@ CUresult cuMemsetD8Async(CUdeviceptr dstDevice, unsigned char uc, size_t N, CUst
     return cuMemsetD8_v2(dstDevice, uc, N);
 }
 
+CUresult cuMemsetD16_v2(CUdeviceptr dstDevice, unsigned short us, size_t N)
+{
+    CUresult rc = ensure_init();
+    if (rc != CUDA_SUCCESS) return rc;
+
+    if (N == 0) return CUDA_SUCCESS;
+    if ((dstDevice & 1U) != 0) return CUDA_ERROR_INVALID_VALUE;
+
+    for (size_t i = 0; i < N; ++i) {
+        rc = cuMemsetD8_v2(dstDevice + (CUdeviceptr)(i * sizeof(unsigned short)),
+                           (unsigned char)(us & 0xffU),
+                           sizeof(unsigned short));
+        if (rc != CUDA_SUCCESS) return rc;
+    }
+    return CUDA_SUCCESS;
+}
+
+CUresult cuMemsetD16(CUdeviceptr dstDevice, unsigned short us, size_t N)
+{
+    return cuMemsetD16_v2(dstDevice, us, N);
+}
+
+CUresult cuMemsetD16Async(CUdeviceptr dstDevice, unsigned short us, size_t N, CUstream hStream)
+{
+    (void)hStream;
+    return cuMemsetD16_v2(dstDevice, us, N);
+}
+
 CUresult cuMemsetD2D8(CUdeviceptr dstDevice, size_t dstPitch, unsigned char uc,
                       size_t Width, size_t Height)
 {
-    (void)dstDevice;
-    (void)dstPitch;
-    (void)uc;
-    (void)Width;
-    (void)Height;
-    return log_not_supported_copy_path("cuMemsetD2D8");
+    if (Width == 0 || Height == 0) {
+        return CUDA_SUCCESS;
+    }
+    if (dstPitch < Width) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    for (size_t row = 0; row < Height; ++row) {
+        CUresult rc = cuMemsetD8_v2(dstDevice + (CUdeviceptr)(row * dstPitch), uc, Width);
+        if (rc != CUDA_SUCCESS) {
+            return rc;
+        }
+    }
+    return CUDA_SUCCESS;
 }
 
 CUresult cuMemsetD2D8Async(CUdeviceptr dstDevice, size_t dstPitch, unsigned char uc,
                            size_t Width, size_t Height, CUstream hStream)
 {
-    (void)dstDevice;
-    (void)dstPitch;
-    (void)uc;
-    (void)Width;
-    (void)Height;
     (void)hStream;
-    return log_not_supported_copy_path("cuMemsetD2D8Async");
+    return cuMemsetD2D8(dstDevice, dstPitch, uc, Width, Height);
 }
 
 static CUresult log_not_supported_object_path(const char *name)
@@ -8283,6 +8322,12 @@ CUresult cuMemsetD32_v2(CUdeviceptr dstDevice, unsigned int ui, size_t N)
 
 CUresult cuMemsetD32(CUdeviceptr dstDevice, unsigned int ui, size_t N)
 {
+    return cuMemsetD32_v2(dstDevice, ui, N);
+}
+
+CUresult cuMemsetD32Async(CUdeviceptr dstDevice, unsigned int ui, size_t N, CUstream hStream)
+{
+    (void)hStream;
     return cuMemsetD32_v2(dstDevice, ui, N);
 }
 
@@ -9306,6 +9351,95 @@ CUresult cuLaunchKernel(CUfunction f,
                         lp.total_param_bytes = 32;
                         break;
                     }
+                    if (scanned_num_params >= 4 &&
+                        function_name_cache_lookup(lp.function_handle,
+                                                   cached_name,
+                                                   sizeof(cached_name)) &&
+                        strstr(cached_name, "cupy_arange__float_float_float32")) {
+                        /* CuPy 1-D contiguous arange kernel:
+                         * (float start, float step,
+                         *  CArray<float,1,true,true> out,
+                         *  CIndexer<1,true> indexer). */
+                        lp.num_params = 4;
+                        use_raw_param_buffer = 1;
+                        param_offsets[0] = 0;
+                        param_sizes[0] = 4;
+                        param_offsets[1] = 4;
+                        param_sizes[1] = 4;
+                        param_offsets[2] = 8;
+                        param_sizes[2] = 32;
+                        param_offsets[3] = 40;
+                        param_sizes[3] = 24;
+                        lp.total_param_bytes = 64;
+                        break;
+                    }
+                    if (scanned_num_params >= 4 &&
+                        function_name_cache_lookup(lp.function_handle,
+                                                   cached_name,
+                                                   sizeof(cached_name)) &&
+                        strstr(cached_name, "cupy_add__float32_float_float32")) {
+                        /* CuPy 1-D contiguous add kernel:
+                         * (CArray<float,1,true,true> in,
+                         *  float scalar,
+                         *  CArray<float,1,true,true> out,
+                         *  CIndexer<1,true> indexer). */
+                        lp.num_params = 4;
+                        use_raw_param_buffer = 1;
+                        param_offsets[0] = 0;
+                        param_sizes[0] = 32;
+                        param_offsets[1] = 32;
+                        param_sizes[1] = 4;
+                        param_offsets[2] = 40;
+                        param_sizes[2] = 32;
+                        param_offsets[3] = 72;
+                        param_sizes[3] = 24;
+                        lp.total_param_bytes = 96;
+                        break;
+                    }
+                    if (scanned_num_params == 2 &&
+                        function_name_cache_lookup(lp.function_handle,
+                                                   cached_name,
+                                                   sizeof(cached_name)) &&
+                        strstr(cached_name, "EigenMetaKernel")) {
+                        /* TensorFlow Eigen GPU: library-loaded kernels often get
+                         * cuFuncGetParamInfo -> NOT_SUPPORTED on the host. Many
+                         * EigenMetaKernel launches use exactly two kernelParams
+                         * entries (device pointer + element count) with compact
+                         * raw packing; legacy 8-byte slots corrupt the launch.
+                         */
+                        lp.num_params = 2;
+                        use_raw_param_buffer = 1;
+                        param_offsets[0] = 0;
+                        param_sizes[0] = 8;
+                        param_offsets[1] = 8;
+                        param_sizes[1] = 4;
+                        lp.total_param_bytes = 16;
+                        break;
+                    }
+                    if (scanned_num_params == 3 &&
+                        function_name_cache_lookup(lp.function_handle,
+                                                   cached_name,
+                                                   sizeof(cached_name)) &&
+                        strstr(cached_name, "EigenMetaKernel") &&
+                        strstr(cached_name, "TensorAssignOp") &&
+                        strstr(cached_name, "scalar_const_op")) {
+                        /* TensorAssignOp + scalar_const_op (1-D etc.):
+                         * (device pointer, scalar float, element count). TensorFlow
+                         * passes a compact ABI here; copying 8-byte legacy slots
+                         * smears stack bytes into the scalar/count fields and can
+                         * trigger CUDA_ERROR_ILLEGAL_ADDRESS on repeat launches.
+                         */
+                        lp.num_params = 3;
+                        use_raw_param_buffer = 1;
+                        param_offsets[0] = 0;
+                        param_sizes[0] = 8;
+                        param_offsets[1] = 8;
+                        param_sizes[1] = 4;
+                        param_offsets[2] = 12;
+                        param_sizes[2] = 4;
+                        lp.total_param_bytes = 16;
+                        break;
+                    }
                     /* Generic PTX functions can load and resolve successfully while
                      * cuFuncGetParamInfo remains unavailable on the host. In that case,
                      * preserve the already-scanned kernelParams and let the host driver
@@ -9588,8 +9722,52 @@ DEFINE_CUDA_NOT_SUPPORTED_STUB(cuLinkAddFile)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemHostGetDevicePointer_v2)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemHostGetFlags)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemHostRegister_v2)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuPointerGetAttribute)
-DEFINE_CUDA_NOT_SUPPORTED_STUB(cuPointerGetAttributes)
+
+__attribute__((visibility("default"))) CUresult cuPointerGetAttribute(void *data, int attribute, CUdeviceptr ptr)
+{
+    if (!data || !ptr) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    switch (attribute) {
+        case 1: /* CU_POINTER_ATTRIBUTE_CONTEXT */
+            *(void **)data = NULL;
+            return CUDA_SUCCESS;
+        case 2: /* CU_POINTER_ATTRIBUTE_MEMORY_TYPE */
+            *(unsigned int *)data = 1; /* CU_MEMORYTYPE_HOST */
+            return CUDA_SUCCESS;
+        case 3: /* CU_POINTER_ATTRIBUTE_DEVICE_POINTER */
+            *(CUdeviceptr *)data = 0;
+            return CUDA_SUCCESS;
+        case 4: /* CU_POINTER_ATTRIBUTE_HOST_POINTER */
+            *(void **)data = (void *)(uintptr_t)ptr;
+            return CUDA_SUCCESS;
+        case 8: /* CU_POINTER_ATTRIBUTE_IS_MANAGED */
+            *(unsigned int *)data = 0;
+            return CUDA_SUCCESS;
+        case 9: /* CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL */
+            *(int *)data = 0;
+            return CUDA_SUCCESS;
+        default:
+            return CUDA_ERROR_NOT_SUPPORTED;
+    }
+}
+
+__attribute__((visibility("default"))) CUresult cuPointerGetAttributes(unsigned int numAttributes, int *attributes, void **data, CUdeviceptr ptr)
+{
+    if ((numAttributes > 0 && (!attributes || !data)) || !ptr) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+
+    for (unsigned int i = 0; i < numAttributes; i++) {
+        CUresult rc = cuPointerGetAttribute(data[i], attributes[i], ptr);
+        if (rc != CUDA_SUCCESS) {
+            return rc;
+        }
+    }
+    return CUDA_SUCCESS;
+}
+
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemAllocAsync)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemAllocAsync_ptsz)
 DEFINE_CUDA_NOT_SUPPORTED_STUB(cuMemAllocFromPoolAsync)

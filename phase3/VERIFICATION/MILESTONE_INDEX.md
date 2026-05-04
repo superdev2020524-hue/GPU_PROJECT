@@ -2,6 +2,25 @@
 
 This index maps the Phase 3 roadmap to verification folders.
 
+## Latest 00-07 Re-Verification
+
+Date: 2026-05-04
+
+Status: **Milestones 00 through 07 pass on the live system for the documented
+gate scope.**
+
+Readable report:
+`REVERIFY_00_07_REPORT_2026-05-04.md`
+
+Self-verification guide for recording a client report video:
+`SELF_VERIFICATION_GUIDE_00_07.md`
+
+Important boundary: this proves the checked-in 00-07 gates, including Ollama,
+raw CUDA, API consistency, memory/sync cleanup, PyTorch, CuPy, TensorFlow,
+same-VM concurrency, cross-VM concurrency, and malformed-request rejection. It is
+not a blanket claim that every possible CUDA application or every model shape has
+been tested.
+
 ## 00 - Preserve Ollama Baseline
 
 Folder: `00_preserve_ollama_baseline/`
@@ -64,6 +83,13 @@ Folder: `05_second_framework_gate/`
 Purpose: validate a second independent non-Ollama stack such as TensorFlow,
 CuPy, ONNX Runtime, or another agreed runtime.
 
+**2026-04-29 update:** the **CuPy** lane remains closed; **TensorFlow** bounded
+GPU training (`TensorFlow` **2.16.2** / CUDA **12.3** wheels, checked-in
+`tests/second_framework_gate/tensorflow_mnist_probe.py`) passes on VM-10 with
+mediated **`GPU:0`** after **`EigenMetaKernel`** launch-layout fixes in
+`guest-shim/libvgpu_cuda.c`. Serial preservation **00–07** after that shim deploy
+is recorded in **`ERROR_TRACKING_STATUS.md`** (session **serial preservation**).
+
 ## 06 - Multi-Process And Multi-VM
 
 Folder: `06_multiprocess_multivm/`
@@ -71,12 +97,22 @@ Folder: `06_multiprocess_multivm/`
 Purpose: prove virtualization behavior under concurrency, priority, fairness,
 memory pressure, cancellation, cleanup, and mediator health.
 
+Scope note: M06 documented concurrency evidence centers on Ollama, raw CUDA,
+PyTorch, and CuPy; TensorFlow concurrency was not part of the original M06 gate
+set. After **`M05-E5`** closure, an additional **two-process CuPy** check was run
+during serial preservation without regression.
+
 ## 07 - Security And Isolation
 
 Folder: `07_security_isolation/`
 
 Purpose: define and test tenant assumptions, malformed requests, bounds,
 MMIO/BAR policy, IOMMU expectations, quarantine behavior, and safe recovery.
+
+Historical scope note: the original M07 write-up predated TensorFlow GPU being
+in scope. **`M05-E5`** is now closed; serial re-preservation re-ran
+**`malformed_socket_probe.py`** after TensorFlow/shim work. Full TensorFlow-targeted
+security fuzzing remains optional if the product requires it.
 
 ## 08 - Server 2 Migration
 

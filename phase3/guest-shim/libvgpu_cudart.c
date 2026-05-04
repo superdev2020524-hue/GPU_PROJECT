@@ -278,6 +278,15 @@ static int ensure_transport_connected(void) {
 /* CUDA Runtime API types */
 typedef int cudaError_t;
 
+#define cudaMemoryTypeUnregistered 0
+
+typedef struct {
+    int type;
+    int device;
+    void *devicePointer;
+    void *hostPointer;
+} cudaPointerAttributes;
+
 /* CUDA internal types for fat binary registration */
 typedef struct {
     unsigned int x, y, z;
@@ -1164,6 +1173,20 @@ cudaError_t cudaHostRegister(void *ptr, size_t size, unsigned int flags) {
 cudaError_t cudaHostUnregister(void *ptr) {
     (void)ptr;
     return cudaErrorNotSupported;
+}
+
+cudaError_t cudaPointerGetAttributes(cudaPointerAttributes *attributes, const void *ptr) {
+    if (!attributes || !ptr) return cudaErrorInvalidValue;
+    memset(attributes, 0, sizeof(*attributes));
+    attributes->type = cudaMemoryTypeUnregistered;
+    attributes->device = -1;
+    attributes->hostPointer = (void *)ptr;
+    attributes->devicePointer = NULL;
+    return cudaSuccess;
+}
+
+cudaError_t cudaPointerGetAttributes_v2(cudaPointerAttributes *attributes, const void *ptr) {
+    return cudaPointerGetAttributes(attributes, ptr);
 }
 
 /* ================================================================

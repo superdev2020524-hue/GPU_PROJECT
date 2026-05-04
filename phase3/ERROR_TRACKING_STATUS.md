@@ -1,5 +1,143 @@
 # Error tracking status (from where we left off)
 
+## Session 2026-05-04 (fresh 00-07 re-verification)
+
+- **Lane:** serial preservation and re-verification for Milestones `00` through
+  `07`.
+- **Plan A state:** **pass** on VM-10:
+  `/tmp/20260504_reverify_m00_planA.json`.
+- **Active error:** none.
+- **Candidate list:** residual `cuFuncGetParamInfo(0x00bc)` unsupported noise
+  remains candidate-only; it did not break any gate in this run. Test-6 did not
+  have the older `/mnt/m04-pytorch` framework directory mounted, so an isolated
+  CuPy venv was rebuilt at `/home/test-6/m06-cupy-venv` before the Test-6 and
+  cross-VM checks.
+- **Last proven checkpoint:** M07 post-malformed known-good CuPy passed on both
+  VM-10 and VM-6.
+- **Live artifact / deployed-path proof:** no runtime code was changed during
+  this session. The live mediator stayed running through the malformed-socket
+  probe, and the post-probe mediator summary recorded `sync FAILED=0`,
+  `CUDA_ERROR_ILLEGAL_ADDRESS=0`, and `Recovering primary context=0`.
+- **Bounded repro used:** the checked-in milestone gates and probes:
+  Plan A/B/C Ollama, general CUDA gate, API source audit, M03 async/post-kill
+  probes, PyTorch probe, CuPy probe, TensorFlow MNIST-shaped GPU probe, M06
+  same-VM and cross-VM CuPy/PyTorch probes, and M07 malformed socket probe.
+- **Evidence:**
+  - M00 Plan A: `/tmp/20260504_reverify_m00_planA.json` -> pass.
+  - M00 Plan B: `/tmp/20260504_reverify_m00_planB.json` -> pass.
+  - M00 Plan C: `/tmp/20260504_reverify_m00_planC.json` -> pass.
+  - M01 raw CUDA:
+    `/tmp/20260504_reverify_m01_general_cuda.json` -> pass,
+    5 Driver API and 5 Runtime API repetitions.
+  - M02 API/source audit:
+    `/tmp/20260504_reverify_m02_api_coverage_source_audit.json` -> pass,
+    `protocol_ids=87`, `executor_case_ids=87`, `missing_cases=[]`.
+  - M03 async stream/event:
+    `/tmp/20260504_reverify_m03_async_stream_event.log` -> pass.
+  - M03 post-kill recovery:
+    `/tmp/20260504_reverify_m03_post_kill_async.log` -> pass.
+  - M04 PyTorch: `/tmp/20260504_reverify_m04_pytorch.json` -> pass.
+  - M05 CuPy: `/tmp/20260504_reverify_m05_cupy.json` -> pass.
+  - M05 TensorFlow:
+    `/tmp/20260504_reverify_m05_tensorflow.json` -> pass,
+    `used_gpu_for_training=True`.
+  - M06 same-VM CuPy/CuPy:
+    `/tmp/20260504_reverify_m06_two_process_cupy.json` -> pass.
+  - M06 same-VM PyTorch/CuPy:
+    `/tmp/20260504_reverify_m06_mixed_pytorch_cupy.json` -> pass.
+  - M06 Test-6 CuPy:
+    `/tmp/20260504_reverify_m06_test6_cupy_single.json` -> pass.
+  - M06 cross-VM concurrent CuPy:
+    `/tmp/20260504_reverify_m06_cross_vm_cupy.json` -> pass.
+  - M07 malformed socket:
+    `/tmp/20260504_reverify_m07_malformed_socket.json` -> pass.
+  - M07 post-probe VM-10 CuPy:
+    `/tmp/20260504_reverify_m07_post_test10_cupy.json` -> pass.
+  - M07 post-probe VM-6 CuPy:
+    `/tmp/20260504_reverify_m07_post_test6_cupy.json` -> pass.
+- **Why no active error remains:** every required gate in the `00 -> 07` chain
+  passed on the live system, and the M07 malformed probe did not poison either
+  VM's known-good framework path.
+- **Human-readable reports added:**
+  `VERIFICATION/REVERIFY_00_07_REPORT_2026-05-04.md` and
+  `VERIFICATION/SELF_VERIFICATION_GUIDE_00_07.md`.
+
+## Session 2026-04-30 (Milestone 07 refresh and final closure)
+
+- **Lane:** `07_security_isolation`.
+- **Current `Plan A` state:** **pass** after the final guest-shim correction:
+  `/tmp/m07_final_after_tf_3param_planA.json` -> `overall_pass=True`.
+- **Active error:** none.
+- **Closed active blocker found during refresh:** `M07-E3` TensorFlow preservation
+  regression. After M07 quarantine/rate-limit probes, the TensorFlow preservation
+  rerun failed with `CUDA_ERROR_ILLEGAL_ADDRESS` on a repeat
+  `TensorAssignOp + scalar_const_op` three-parameter `EigenMetaKernel`, followed
+  by primary-context recovery and `CUDA_ERROR_CONTEXT_IS_DESTROYED`.
+- **Root cause:** the previous TensorFlow three-parameter launch heuristic packed
+  this kernel shape as `8+8+8`; the compact ABI is
+  `(device pointer, scalar float, element count)` -> `8+4+4`.
+- **Fix/deploy proof:** `guest-shim/libvgpu_cuda.c` now uses offsets `0/8/12`,
+  sizes `8/4/4`, total `16` for `TensorAssignOp + scalar_const_op`; VM-10 live
+  `/opt/vgpu/lib/libvgpu-cuda.so.1` ->
+  `fea57a74687e289ebd9b62f4716e7ff3abe255ff77579a28c5ce622c3f51998f`.
+- **M07 live gate proof:** malformed socket probe
+  `/tmp/m07_final_after_tf_3param_malformed.json` -> `overall_pass=True`;
+  mediator PID `1846882` remained alive; no primary-context recovery was logged
+  after the final malformed run.
+- **Quarantine/rate-limit proof:** VM-6 quarantine rejected VM-6 raw CUDA with
+  `VM_QUARANTINED` while VM-10 CuPy still passed; clearing quarantine restored
+  VM-6 raw CUDA. VM-6 rate limit rejected raw CUDA with `RATE_LIMITED`; restoring
+  unlimited mode restored VM-6 raw CUDA.
+- **Serial preservation after the final change:**
+  - M00 Plan A: `/tmp/m07_final_after_tf_3param_planA.json` -> pass.
+  - M01 raw CUDA: `/tmp/m07_final_after_tf_3param_m01.json` -> pass (3/3 Driver,
+    3/3 Runtime).
+  - M03 async/mixed: `/tmp/m07_final_after_tf_3param_m03_async.log` ->
+    `ASYNC_STREAM_EVENT_PROBE PASS bytes=4194304`.
+  - M04 PyTorch: `/tmp/m07_final_after_tf_3param_pytorch.json` -> pass.
+  - M05 CuPy: `/tmp/m07_final_after_tf_3param_cupy.json` -> pass.
+  - M05 TensorFlow:
+    `/tmp/m07_current_preserve_tensorflow_after_3param_fix.json` -> pass,
+    `used_gpu_for_training=True`.
+  - M06 two-process CuPy:
+    `/tmp/m07_final_after_tf_3param_m06_two_cupy/child_1.log` and `child_2.log`
+    -> both pass.
+- **Candidates carried forward:** guest BAR `0666` policy remains a documented
+  engineering trust assumption; full production security/IOMMU proof and
+  TensorFlow-specific security fuzzing remain out of M07's defined gate.
+- **Why M07 is closed:** malformed inputs fail closed, targeted policy rejection
+  and recovery are proven, cross-VM non-poisoning is proven, and final
+  preservation is green after the last guest-shim change.
+
+## Session 2026-04-29 (serial preservation **00–07** after TensorFlow / `M05-E5`)
+
+- **Lane:** serial regression chain across **`VERIFICATION/00`**–**`07`** after **`guest-shim/libvgpu_cuda.c`** TensorFlow **`EigenMetaKernel`** launch fixes (mediator PID **`1045424`** on dom0 at end of run).
+- **Current `Plan A` state:** **`pass`**, **`Plan B`:** **`pass`**, **`Plan C`:** **`pass`** on VM-10 in one session:
+  - **`/tmp/m00_planA_serial_after_m05_tf_20260429.json`**
+  - **`/tmp/m00_planB_serial_after_m05_tf_20260429.json`**
+  - **`/tmp/m00_planC_serial_after_m05_tf_20260429.json`**
+- **Milestone 01 (raw CUDA):** workstation **`tests/general_cuda_gate/run_general_cuda_gate.py`** → **`/tmp/m01_serial_after_m05_tf_20260429.json`** **`overall_pass=true`** (5× Driver + 5× Runtime repetitions).
+- **Milestone 02 (API audit):** no executable gate; closure remains the checked-in source audit and **`ACTIVE_ERROR.md`** “none”. **M01** + framework probes re-prove mediated behavior after shim change.
+- **Milestone 03 (memory/sync):** VM-10 **`async_stream_event_probe.c`** built to **`/tmp/async_stream_event_probe`** → **`PASS`** **4 MiB** path (**`M03_rc=0`**).
+- **Milestone 04 (PyTorch):** VM-10 **`/mnt/m04-pytorch/venv`** **`pytorch_probe.py`** → **`overall_pass=true`**.
+- **Milestone 05 (second framework):** VM-10 **`cupy_probe.py`** → **`overall_pass=true`**; TensorFlow **`tf123-venv`** **`tensorflow_mnist_probe.py`** → **`overall_pass=true`**, **`used_gpu_for_training=true`**.
+- **Milestone 06 (multi-process):** two concurrent CuPy children on VM-10 → both **`overall_pass=true`** (logs under **`/tmp/m06_serial_two_cupy/`**).
+- **Milestone 07 (security/isolation):** dom0 **`malformed_socket_probe.py`** on **`/var/xen/qemu/root-2/tmp/vgpu-mediator.sock`** **`vm_id=10`** → **`/tmp/m07_serial_after_m05_tf.json`** **`overall_pass=true`**.
+- **Active error:** none promoted from this chain.
+- **Candidates:** residual **`0x00bc`** / **`cuFuncGetParamInfo`** noise; untested Eigen kernel templates outside the bounded TF graph.
+
+## Session 2026-04-29 (TensorFlow framework correction → `M05-E5` closed)
+
+- **Lane:** `05_second_framework_gate` broadened framework coverage.
+- **Current `Plan A` state:** **`pass`** on VM-10 (**`/tmp/phase1_after_tf_m05.json`** and **`/tmp/m00_planA_serial_after_m05_tf_20260429.json`**). Serial **00–07** re-preservation recorded in the session above.
+- **Active error:** none for **`M05-E5`** (TensorFlow bounded GPU training probe).
+- **Candidates:** residual TensorFlow/Eigen kernel variants beyond the exercised MNIST-style probe may still need additional `EigenMetaKernel` launch layouts; residual non-terminating `0x00bc` / `cuFuncGetParamInfo` noise; M06/M07 TensorFlow concurrency/security evidence remains out of scope until explicitly gated.
+- **Closure proof for `M05-E5`:** TensorFlow **`2.16.2`** (`tensorflow[and-cuda]` / CUDA **12.3** wheels) in **`/mnt/m04-pytorch/tf123-venv`** on VM-10; bounded probe **`tests/second_framework_gate/tensorflow_mnist_probe.py`** reports **`overall_pass=true`**, logical **`GPU:0`**, **`used_gpu_for_training=true`**; host mediator shows **`cuLaunchKernel SUCCESS`** on TensorFlow Eigen paths without **`Recovering primary context`** after fixing **`EigenMetaKernel`** launches (`two-parameter` compact ABI for all `EigenMetaKernel` with two slots; **`RAW_BUFFER`** **`24`**-byte layout for **`TensorAssignOp` + `scalar_const_op`** three-slot launches—legacy pointer-array mode had triggered **`CUDA_ERROR_ILLEGAL_ADDRESS`** and primary-context recovery, then **`CUDA_ERROR_CONTEXT_IS_DESTROYED`** on follow-on module loads).
+- **Last proven checkpoint:** `M05-E5` satisfied on VM-10 **2026-04-29** with rebuilt **`/opt/vgpu/lib/libvgpu-cuda.so.1`** from patched **`guest-shim/libvgpu_cuda.c`**.
+- **Evidence:** JSON probe output **`overall_pass: true`** (~98 s train wall clock); **`grep Recovering /tmp/mediator.log`** → **0** matches on dom0 after successful run.
+- **Why `M05-E5` is closed:** TensorFlow registers the mediated GPU and executes the bounded training graph on **`/GPU:0`** with host confirmation of successful kernel launches.
+- **Correction retained:** M06/M07 prior closures still describe **Ollama, raw CUDA, PyTorch, CuPy** unless explicitly re-run with TensorFlow—serial preservation must restate each milestone **after** shim changes per **`VERIFICATION_RULES.md`**.
+
 ## Active-error queue rule
 
 From this point forward, this file follows a strict queue discipline:
@@ -255,6 +393,63 @@ Use this section before reading the historical sessions below.
 - **Serial evidence:** Plan B passed (`/tmp/phase1_plan_b_serial_00_after_m04_64k_final.json` -> `overall_pass=True`); Plan C passed (`/tmp/phase1_plan_c_serial_00_after_m04_64k_final.json` -> `overall_pass=True`); Milestone 01 raw CUDA passed (`/tmp/phase3_general_cuda_gate_serial_01_after_m04_64k_final.json` -> `overall_pass=True`, Driver API 5/5 and Runtime API 5/5); Milestone 02 audit passed (`/tmp/phase3_api_audit_serial_02_after_m04_64k_final.json` -> `overall_pass=True`, `protocol_ids_excluding_sentinel=87`, no missing executor/matrix/gap terms); Milestone 03 passed (`/tmp/async_stream_event_probe_after_m04_64k_final.json` -> `overall_pass=True`, `pass_count=3`, `runs=3`, `bytes_per_run=4194304`, `chunk_cap_bytes=65536`).
 - **Why closed:** the required PyTorch gate and every prior milestone preservation lane passed on the same final artifact set. The M03 regression discovered during closure was not ignored; it was repaired by reducing BAR1 copy chunks to 64 KiB and then the full serial chain was rerun.
 - **Next single step:** proceed to Milestone 05, the second independent framework/runtime gate, when instructed.
+
+## Session 2026-04-29 (Milestone 05 CuPy second-framework closure)
+
+- **Lane:** `05_second_framework_gate`.
+- **Current `Plan A` state:** `pass` from the M05 entry serial chain (`/tmp/phase1_milestone_gate_serial_00_after_m04_64k_final.json` -> `overall_pass=True`).
+- **Closed errors:** `M05-E1` CuPy missing from the isolated framework environment; `M05-E2` CuPy host-pointer classification failed because Runtime/Driver pointer attributes returned unsupported; `M05-E3` CuPy elementwise add returned wrong values due to missing CuPy kernel-parameter layouts; `M05-E4` CuPy matmul/cuBLAS failed due to dynamic-linking/export/version issues and was then narrowed to the scoped CPU-prepared input matrix gate.
+- **Active error:** none for the scoped Milestone 05 CuPy gate.
+- **Candidates carried forward:** additional CuPy factory/reduction kernels may require more kernel-layout handling outside the M05 gate; TensorFlow, ONNX Runtime, and Numba remain possible later second-framework candidates; BAR1 remains the live fallback when shmem GPA resolution reports `pfn_hidden`.
+- **Last proven checkpoint:** serial preservation after M05 passed through Milestone 03, Milestone 04, and Milestone 05 after earlier `00 -> 01 -> 02` checks were green in the same closure chain.
+- **Live artifact proof:** `cupy==14.0.1` and `torch==2.5.1+cu121` are installed in `/mnt/m04-pytorch/venv`; `/opt/vgpu/lib/libvgpu-cuda.so.1` sha256 `51c47c7104a45d62773ff11481af0e33fb92fc2c7a1795bc29c6d71c6eb3a1ba`; `/opt/vgpu/lib/libvgpu-cudart.so` sha256 `364832a3aad55ffe297a0b96858d45d6fa3e51fd1badbeef04382f24e04611a4`; `/opt/vgpu/lib/libvgpu-cublas.so.12` sha256 `5202e665bac786aa648b44ce1e3ee68ea48ecbaa5fd7e6425a68f428ef160f73`.
+- **Exact bounded repro:** M03 preservation `/tmp/m03_preservation_after_m05_300/run_1.txt` through `run_3.txt` -> 3/3 pass for the 4 MiB async stream/event probe; M04 preservation `/tmp/m04_pytorch_preservation_after_m05/run_1.json` through `run_3.json` -> 3/3 pass; M05 CuPy preservation `/tmp/m05_cupy_preservation_after_m05/run_1.json` through `run_3.json` -> 3/3 pass.
+- **Evidence for current step:** the temporary post-M05 M03 timeout candidate closed after mediator restart/stale-owner cleanup and the same 64 KiB BAR1 chunked transfer passed under the observed 300s preservation envelope. The CuPy gate covers import, device count/name, CPU-to-GPU transfer, GPU-to-CPU transfer, elementwise add, matrix multiply, and repeated warm execution.
+- **Why closed:** one independent non-Ollama, non-PyTorch runtime passed the agreed gate, and the prior milestone preservation chain remained green after resolving the temporary M03 preservation candidate.
+- **Next single step:** proceed to the next roadmap milestone, likely a broader framework compatibility/coverage milestone, after confirming the desired target surface.
+
+## Session 2026-04-29 (Milestone 06 multi-process start)
+
+- **Lane:** `06_multiprocess_multivm`.
+- **Current `Plan A` state:** `pass` from the M05 entry serial chain (`/tmp/phase1_milestone_gate_serial_00_after_m04_64k_final.json` -> `overall_pass=True`).
+- **Closed errors:** none promoted in M06 so far.
+- **Active error:** none after the initial same-VM two-process, killed-process recovery, and mixed PyTorch/CuPy probes.
+- **Candidates:** Ollama plus framework concurrency may expose scheduling/fairness problems; multi-VM behavior remains unproven until a second mediated VM is available; observable priority/fairness policy is still open.
+- **Last proven checkpoint:** M05 closure plus same-VM M06 framework concurrency sentinel.
+- **Live artifact proof:** M06 registry initialized under `phase3/VERIFICATION/06_multiprocess_multivm/`; two-process CuPy orchestrator deployed to `/mnt/m04-pytorch/two_process_cupy_probe.py`; VM framework environment remains `/mnt/m04-pytorch/venv`.
+- **Exact bounded repro:** `/tmp/m06_two_process_cupy_summary.json` -> `overall_pass=True`, both child CuPy processes passed; `/tmp/m06_followup_single_cupy.json` -> `overall_pass=True`; `/tmp/m06_failed_process_recovery/summary.json` -> `overall_pass=True`, killed allocation process return code `-9`, concurrent CuPy pass, follow-up CuPy pass; `/tmp/m06_mixed_pytorch_cupy_summary.json` -> `overall_pass=True`, PyTorch child pass and CuPy child pass.
+- **Evidence for current step:** dom0 mediator health after the mixed probe showed `sync FAILED=0`, `CUDA_ERROR_ILLEGAL_ADDRESS=0`, `Unsupported CUDA protocol call=0`, `invalid handle=0`, `CUDA process cleanup=19`, `Cleaned up VM=18`, `vm_id=10=2422`, and `cuLaunchKernel SUCCESS=121`.
+- **Why no active error is promoted:** the same-VM concurrent CuPy probe, killed-process recovery probe, and mixed PyTorch/CuPy probe all passed and did not poison follow-up single-process work.
+- **Next single step:** test Ollama plus framework concurrency or prepare a second mediated VM before interpreting priority/fairness or multi-VM behavior.
+
+## Session 2026-04-29 (Milestone 06 first true multi-VM proof)
+
+- **Lane:** `06_multiprocess_multivm`.
+- **Current `Plan A` state:** `pass` from the M05 entry serial chain (`/tmp/phase1_milestone_gate_serial_00_after_m04_64k_final.json` -> `overall_pass=True`).
+- **Closed errors:** none promoted in this M06 step.
+- **Active error:** none after the first true multi-VM smoke gate.
+- **Candidates:** Ollama plus framework concurrency may still expose model-server scheduling/residency issues; heavier multi-VM framework workloads remain untested; priority/fairness is only observed through Pool A/Pool B counters, not yet proven as a policy; Test-6 does not yet have PyTorch/CuPy package capacity like Test-10.
+- **Last proven checkpoint:** one host mediator serving two mediated VMs: Test-10 (`vm_id=10`, Pool A) and Test-6 (`vm_id=6`, Pool B).
+- **Live artifact proof:** Test-6 host UUID `eb93375a-b277-cf0d-12e7-c0e7ccfcdd7f`; Test-6 platform args `-device vgpu-cuda,pool_id=B,priority=low,vm_id=6`; Test-6 guest `lspci` shows `00:05.0 ... [10de:2331]`; Test-6 `/opt/vgpu/lib/libvgpu-cuda.so.1` sha256 `51c47c7104a45d62773ff11481af0e33fb92fc2c7a1795bc29c6d71c6eb3a1ba`, `/opt/vgpu/lib/libvgpu-cudart.so` sha256 `364832a3aad55ffe297a0b96858d45d6fa3e51fd1badbeef04382f24e04611a4`, `/opt/vgpu/lib/libvgpu-cublas.so.12` sha256 `5202e665bac786aa648b44ce1e3ee68ea48ecbaa5fd7e6425a68f428ef160f73`; dom0 mediator PID `830120 ./mediator_phase3`.
+- **Exact bounded repro:** Test-6 mediated allocation/free smoke passed with `cuInit`, context setup, `cuMemAlloc_v2`, and `cuMemFree_v2` all returning success and guest transport reporting `Connected (vm_id=6) data_path=BAR1`; true multi-VM probe `/tmp/m06_true_multivm/summary.json` -> `overall_pass=True`, with Test-10 CuPy child pass and Test-6 allocation/free child pass.
+- **Evidence for current step:** dom0 mediator log showed two sockets at the same time, `/var/xen/qemu/root-2/tmp/vgpu-mediator.sock` and `/var/xen/qemu/root-6/tmp/vgpu-mediator.sock`; Test-6 traffic included `CUDA result sent vm_id=6` for init/device/alloc/free and `CUDA process cleanup vm_id=6`; post-run health showed `sync FAILED=0`, `CUDA_ERROR_ILLEGAL_ADDRESS=0`, `Unsupported CUDA protocol call=0`, `invalid handle=0`, and `cuLaunchKernel SUCCESS=134`.
+- **Why no active error is promoted:** the first true multi-VM gate passed through the single mediator without cross-VM poisoning, mediator errors, or Test-10 CuPy regression.
+- **Next single step:** decide whether M06 should next broaden Test-6 package capacity for a framework-on-both-VMs gate, run Ollama plus Test-6 CUDA concurrency, or define an explicit priority/fairness measurement gate.
+
+## Session 2026-04-29 (Milestone 06 expanded closure and preservation)
+
+- **Lane:** `06_multiprocess_multivm`.
+- **Current `Plan A` state:** `pass` after expanded M06 closure (`/tmp/m06_final_phase1_planA.json` -> `overall_pass=True`).
+- **Closed errors:** Test-6 package setup blocker from a stuck `unattended-upgrade`; Test-6 CuPy missing NVRTC (`libnvrtc.so`); Test-6 CuPy preservation wrapper parser issue caused by vGPU debug logs after JSON.
+- **Active error:** none for expanded Milestone 06.
+- **Candidates carried forward:** priority is observable through VM configuration plus Pool A/Pool B counters and per-VM ownership logs, but the mediator does not emit per-request priority labels in the current log format. Treat stronger QoS enforcement as a later milestone candidate, not an M06 blocker.
+- **Last proven checkpoint:** one host mediator serving Test-10 (`vm_id=10`, Pool A) and Test-6 (`vm_id=6`, Pool B), with same-VM CuPy/CuPy, same-VM PyTorch/CuPy, same-VM killed-process recovery, true multi-VM CuPy/CuPy, true multi-VM PyTorch/CuPy, cross-VM killed-process recovery, Ollama Plan A plus Test-6 CuPy, fairness/ownership logging, and final serial preservation all passing.
+- **Live artifact proof:** Test-6 uses `-device vgpu-cuda,pool_id=B,priority=low,vm_id=6`; Test-6 framework environment is `/opt/m06-cupy/venv` with `cupy-cuda12x==14.0.1`, `nvidia-cuda-nvrtc-cu12==12.1.105`, and `nvidia-cuda-runtime-cu12==12.1.105`; Test-10 framework environment remains `/mnt/m04-pytorch/venv`; dom0 final mediator stats showed two active sockets (`root-2` and `root-6`), `Total processed=7429`, `Pool A processed=5059`, `Pool B processed=2370`, `WFQ queue depth=0`, `CUDA busy=no`.
+- **Exact bounded repro:** Test-6 CuPy after NVRTC `/tmp/m06_test6_cupy_after_nvrtc.json` -> `overall_pass=True`; Test-10 CuPy plus Test-6 CuPy `/tmp/m06_multivm_framework/summary.json` -> `overall_pass=True`; Test-10 PyTorch plus Test-6 CuPy `/tmp/m06_multivm_mixed_framework/summary.json` -> `overall_pass=True`; cross-VM failure isolation `/tmp/m06_crossvm_failure/summary.json` -> `overall_pass=True`; Ollama Plan A plus seven Test-6 CuPy runs `/tmp/m06_ollama_test6_concurrency/summary.json` -> `overall_pass=True`; fairness delta `/tmp/m06_fairness_delta/summary.json` -> `overall_pass=True`.
+- **Serial evidence:** Plan B `/tmp/m06_final_phase1_planB.json` -> `overall_pass=True`; Plan C on Test-10 `/tmp/m06_final_phase1_planC.json` -> `overall_pass=True`; M01 `/tmp/m06_final_m01_general_cuda_gate.json` -> `overall_pass=True`, Driver API 5/5 and Runtime API 5/5; M02 `/tmp/m06_final_m02_api_audit.json` -> `overall_pass=True`, `protocol_ids_excluding_sentinel=87`, no missing executor mentions or required matrix sections; M03 `/tmp/m06_final_m03_async_preservation/summary.json` -> `overall_pass=True`, three 4 MiB async stream/event runs passed; M04 Test-10 PyTorch 3/3 pass in `/tmp/m06_final_framework_preservation/summary.json`; M05 Test-10 CuPy 3/3 pass in `/tmp/m06_final_framework_preservation/summary.json`; M06 Test-6 clean CuPy tail `/tmp/m06_final_test6_cupy_clean/summary.json` -> `overall_pass=True`, 3/3 pass.
+- **Final mediator health:** cumulative dom0 `/tmp/mediator.log` showed `sync FAILED=0`, `CUDA_ERROR_ILLEGAL_ADDRESS=0`, `Unsupported CUDA protocol call=0`, `invalid handle=0`, `vm_id=6=2395`, `vm_id=10=5587`, `CUDA process cleanup vm_id=6=24`, `CUDA process cleanup vm_id=10=47`, and `cuLaunchKernel SUCCESS=538`.
+- **Why closed:** every foreseeable M06 lane that was reachable on the current hardware/VM state was run: same-VM, multi-process, multi-framework, true multi-VM, framework-on-both-VMs, killed-process isolation, Ollama plus second-VM load, fairness/ownership observability, and serial preservation. The only remaining scheduling issue is a stronger QoS-policy question beyond M06's evidence surface.
+- **Next single step:** proceed to Milestone 07 from the roadmap, using M06's single-mediator multi-VM baseline as the preserved entry state.
 
 ## Session 2026-04-07 (fresh `Plan B` queue establishment on a `Plan A`-passing baseline)
 

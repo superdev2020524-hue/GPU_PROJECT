@@ -16,6 +16,8 @@
 #
 # Usage:
 #   sudo ./install.sh [--with-ollama] [--uninstall] [--check]
+#   sudo VGPU_BAR_ACCESS_MODE=group VGPU_BAR_GROUP=vgpu \
+#        VGPU_BAR_USERS="ollama test-10" ./install.sh [--with-ollama]
 #
 # ============================================================================
 
@@ -42,6 +44,14 @@ else
     INCLUDE_DIR="${SCRIPT_DIR}/../include"
 fi
 
+# BAR access policy:
+#   world (default): compatibility mode, resource0/resource1 -> 0666.
+#   group: hardening mode, resource0/resource1 -> root:${VGPU_BAR_GROUP} 0660.
+# Group mode narrows in-guest BAR access without changing the mediator protocol.
+VGPU_BAR_ACCESS_MODE="${VGPU_BAR_ACCESS_MODE:-world}"
+VGPU_BAR_GROUP="${VGPU_BAR_GROUP:-vgpu}"
+VGPU_BAR_USERS="${VGPU_BAR_USERS:-}"
+
 # Colours for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -53,6 +63,39 @@ log()   { echo -e "${GREEN}[vgpu-shim]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[vgpu-shim]${NC} $*"; }
 error() { echo -e "${RED}[vgpu-shim]${NC} $*" >&2; }
 info()  { echo -e "${BLUE}[vgpu-shim]${NC} $*"; }
+
+ensure_bar_group() {
+    if [[ "$VGPU_BAR_ACCESS_MODE" != "group" ]]; then
+        return 0
+    fi
+    if ! getent group "$VGPU_BAR_GROUP" >/dev/null; then
+        groupadd --system "$VGPU_BAR_GROUP"
+        log "  ✓ Created BAR access group: ${VGPU_BAR_GROUP}"
+    fi
+    for user in $VGPU_BAR_USERS; do
+        if id "$user" >/dev/null 2>&1; then
+            usermod -aG "$VGPU_BAR_GROUP" "$user"
+            log "  ✓ Added ${user} to BAR access group ${VGPU_BAR_GROUP}"
+        else
+            warn "  BAR access user ${user} does not exist yet"
+        fi
+    done
+}
+
+apply_bar_permissions() {
+    local rpath="$1"
+    if [[ "$VGPU_BAR_ACCESS_MODE" == "group" ]]; then
+        ensure_bar_group
+        chgrp "$VGPU_BAR_GROUP" "$rpath" \
+            && chmod 0660 "$rpath" \
+            && log "  ✓ ${rpath} → root:${VGPU_BAR_GROUP} 0660 (group BAR access)" \
+            || warn "  Could not apply group BAR permissions to ${rpath}"
+    else
+        chmod 0666 "$rpath" \
+            && log "  ✓ ${rpath} → 0666 (compatibility BAR access)" \
+            || warn "  Could not chmod ${rpath}"
+    fi
+}
 
 # ============================================================================
 # Check: verify VGPU-STUB PCI device is present
@@ -87,16 +130,13 @@ check_vgpu_device() {
                 warn "  BAR1 resource not found (will use BAR0 fallback)"
             fi
 
-            # Grant non-root processes read/write access to BAR0 and BAR1.
-            # Without this the ollama user (and any other non-root process)
-            # cannot open resource0/resource1 for MMIO mapping, causing
-            # cuda_transport_init() to fail → cuInit() → CUDA_ERROR_NO_DEVICE.
+            # Grant BAR0/BAR1 access according to VGPU_BAR_ACCESS_MODE.
+            # The default keeps historical compatibility; group mode narrows
+            # access to root:${VGPU_BAR_GROUP} for tenant-hardening tests.
             for res in resource0 resource1; do
                 local rpath="${dev_dir}/${res}"
                 if [[ -f "$rpath" ]]; then
-                    chmod 0666 "$rpath" \
-                        && log "  ✓ ${rpath} → 0666 (non-root MMIO access)" \
-                        || warn "  Could not chmod ${rpath}"
+                    apply_bar_permissions "$rpath"
                 fi
             done
             break
@@ -376,7 +416,24 @@ create_device_nodes() {
 create_udev_rules() {
     log "Creating udev rules..."
 
-    cat > /etc/udev/rules.d/99-vgpu-nvidia.rules <<'EOF'
+    if [[ "$VGPU_BAR_ACCESS_MODE" == "group" ]]; then
+        ensure_bar_group
+        cat > /etc/udev/rules.d/99-vgpu-nvidia.rules <<EOF
+# VGPU shim — create NVIDIA device nodes on boot
+KERNEL=="nvidia[0-9]*", RUN+="/bin/chmod 666 /dev/%k"
+KERNEL=="nvidiactl", RUN+="/bin/chmod 666 /dev/%k"
+KERNEL=="nvidia-uvm", RUN+="/bin/chmod 666 /dev/%k"
+KERNEL=="nvidia-uvm-tools", RUN+="/bin/chmod 666 /dev/%k"
+
+# Hardened BAR policy: only root and ${VGPU_BAR_GROUP} may access vGPU BARs.
+# Add service users that need CUDA transport to ${VGPU_BAR_GROUP}.
+SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{device}=="0x2331", \
+    RUN+="/bin/chgrp ${VGPU_BAR_GROUP} /sys%p/resource0 /sys%p/resource1"
+SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{device}=="0x2331", \
+    RUN+="/bin/chmod 0660 /sys%p/resource0 /sys%p/resource1"
+EOF
+    else
+        cat > /etc/udev/rules.d/99-vgpu-nvidia.rules <<'EOF'
 # VGPU shim — create NVIDIA device nodes on boot
 KERNEL=="nvidia[0-9]*", RUN+="/bin/chmod 666 /dev/%k"
 KERNEL=="nvidiactl", RUN+="/bin/chmod 666 /dev/%k"
@@ -391,6 +448,7 @@ KERNEL=="nvidia-uvm-tools", RUN+="/bin/chmod 666 /dev/%k"
 SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{device}=="0x2331", \
     RUN+="/bin/chmod 0666 /sys%p/resource0 /sys%p/resource1"
 EOF
+    fi
 
     log "  ✓ udev rules written to /etc/udev/rules.d/99-vgpu-nvidia.rules"
 }
@@ -509,7 +567,37 @@ EOF
 create_boot_service() {
     log "Creating boot service for device nodes..."
 
-    cat > /etc/systemd/system/vgpu-devices.service <<'EOF'
+    if [[ "$VGPU_BAR_ACCESS_MODE" == "group" ]]; then
+        ensure_bar_group
+        cat > /etc/systemd/system/vgpu-devices.service <<EOF
+[Unit]
+Description=Create NVIDIA device nodes and grant VGPU BAR access
+After=systemd-udev-settle.service
+Before=ollama.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '\
+    [ -e /dev/nvidia0 ] || mknod /dev/nvidia0 c 195 0; \
+    [ -e /dev/nvidiactl ] || mknod /dev/nvidiactl c 195 255; \
+    [ -e /dev/nvidia-uvm ] || mknod /dev/nvidia-uvm c 510 0; \
+    [ -e /dev/nvidia-uvm-tools ] || mknod /dev/nvidia-uvm-tools c 510 1; \
+    chmod 666 /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools 2>/dev/null || true; \
+    for dev in /sys/bus/pci/devices/*/; do \
+        v=\$(cat "\$dev/vendor" 2>/dev/null); \
+        d=\$(cat "\$dev/device" 2>/dev/null); \
+        if [ "\$v" = "0x10de" ] && [ "\$d" = "0x2331" ]; then \
+            chgrp ${VGPU_BAR_GROUP} "\${dev}resource0" "\${dev}resource1" 2>/dev/null || true; \
+            chmod 0660 "\${dev}resource0" "\${dev}resource1" 2>/dev/null || true; \
+        fi; \
+    done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        cat > /etc/systemd/system/vgpu-devices.service <<'EOF'
 [Unit]
 Description=Create NVIDIA device nodes and grant VGPU BAR access
 After=systemd-udev-settle.service
@@ -535,6 +623,7 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+    fi
 
     systemctl daemon-reload 2>/dev/null || true
     systemctl enable vgpu-devices.service 2>/dev/null || true

@@ -42,6 +42,18 @@ def api_post(url: str, payload: Dict[str, Any], timeout_sec: float) -> Tuple[int
     return run_request("POST", url, payload, timeout_sec)
 
 
+def wait_for_model_absent(ps_url: str, model_name: str, timeout_sec: float, attempts: int = 6, sleep_sec: float = 2.0) -> Tuple[int, str, bool]:
+    last_code = 0
+    last_body = ""
+    for idx in range(attempts):
+        last_code, last_body, _ = api_get(ps_url, timeout_sec)
+        if last_code == 200 and not model_in_ps(last_body, model_name):
+            return last_code, last_body, True
+        if idx + 1 < attempts:
+            time.sleep(sleep_sec)
+    return last_code, last_body, False
+
+
 def parse_response_json(raw_body: str) -> Dict[str, Any]:
     try:
         data = json.loads(raw_body)
@@ -132,11 +144,12 @@ def main() -> int:
             "options": {"temperature": 0, "seed": 1, "num_predict": 1},
         }
         code, body, wall = api_post(gen_url, unload_payload, args.timeout_sec)
-        ps_code, ps_body, _ = api_get(ps_url, 20.0)
+        ps_code, ps_body, absent_after_wait = wait_for_model_absent(ps_url, args.model, 20.0)
         report["preflight"]["forced_cold_reset"] = {
             "http_code": code,
             "wall_sec": round(wall, 3),
             "resident_after": model_in_ps(ps_body, args.model),
+            "absent_after_wait": absent_after_wait,
             "response_preview": parse_response_text(body)[:120],
         }
 
@@ -243,7 +256,7 @@ def main() -> int:
         "options": {"temperature": 0, "seed": 1, "num_predict": 1},
     }
     code, body, wall = api_post(gen_url, b4_payload, args.timeout_sec)
-    ps_code, ps_body, _ = api_get(ps_url, 20.0)
+    ps_code, ps_body, absent_after_wait = wait_for_model_absent(ps_url, args.model, 20.0)
     b4_pass = code == 200 and ps_code == 200 and not model_in_ps(ps_body, args.model)
     report["cases"]["B4_force_unload"] = {
         "http_code": code,
@@ -251,6 +264,7 @@ def main() -> int:
         "response_preview": parse_response_text(body)[:120],
         "ps_http_code": ps_code,
         "resident_after": model_in_ps(ps_body, args.model),
+        "absent_after_wait": absent_after_wait,
         "pass": b4_pass,
     }
 

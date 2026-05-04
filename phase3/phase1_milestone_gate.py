@@ -68,6 +68,22 @@ def api_get(url: str, timeout_sec: float) -> Tuple[int, str]:
     return code, body
 
 
+def wait_for_model_absent(ps_url: str, model_name: str, timeout_sec: float, attempts: int = 6, sleep_sec: float = 2.0) -> Tuple[int, str, bool]:
+    last_code = 0
+    last_body = ""
+    for idx in range(attempts):
+        last_code, last_body = api_get(ps_url, timeout_sec)
+        if last_code == 200:
+            try:
+                if not model_in_ps(json.loads(last_body), model_name):
+                    return last_code, last_body, True
+            except Exception:
+                pass
+        if idx + 1 < attempts:
+            time.sleep(sleep_sec)
+    return last_code, last_body, False
+
+
 def model_in_ps(ps_json: Dict[str, Any], model_name: str) -> bool:
     models = ps_json.get("models", [])
     for m in models:
@@ -240,7 +256,7 @@ def main() -> int:
     unload_payload = dict(unload_case.get("request", {}))
     unload_payload["model"] = model
     unload_code, unload_body, unload_wall = api_post(gen_url, unload_payload, args.timeout_sec)
-    ps2_code, ps2_body = api_get(ps_url, args.timeout_sec)
+    ps2_code, ps2_body, absent_after_wait = wait_for_model_absent(ps_url, model, args.timeout_sec)
     unload_seen = True
     try:
         unload_seen = model_in_ps(json.loads(ps2_body), model)
@@ -256,6 +272,7 @@ def main() -> int:
         "wall_sec": round(unload_wall, 3),
         "ps_http_code": ps2_code,
         "model_seen_in_ps": unload_seen,
+        "absent_after_wait": absent_after_wait,
         "expected_model_in_ps": unload_expect,
         "pass": unload_ok,
     }
