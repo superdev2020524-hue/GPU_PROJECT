@@ -76,3 +76,7 @@ Both must continue in parallel:
 
 - Track A: remove the current load / MMQ / runner failure
 - Track B: make model load fast enough to be a real product path
+
+## 8. Mar 29 Ollama bounded `Test-4` vs BAR1 narrative
+
+Operational **HTTP 200** / readable **`response`** for archival **`Test-4`** on **VM-6** is documented under **`PHASE3_NO_HTTP_TIMEOUT_STRATEGY.md` §8** and **`ERROR_TRACKING_STATUS.md`** (cold chain + resident regression). Treat **BAR1** here as a **throughput** fact for timelines, not as proof that **Stage 1** is unreachable — use §8 ordering when the client is **`curl -m` ~180** class.

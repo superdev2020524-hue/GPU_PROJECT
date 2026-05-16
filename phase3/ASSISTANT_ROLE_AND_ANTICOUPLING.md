@@ -78,7 +78,7 @@ Every substantive progress report to the user **must** include:
 | Item | Content |
 |------|--------|
 | **Checkpoints** | Which of A / B / C / D were run and **pass/fail** |
-| **Registry** | E1 / E2 / E3 / **E4** — **observed / not observed / unknown** this session (**E4** = **`rc=700`** **`CUDA_ERROR_ILLEGAL_ADDRESS`** after **`cublasGemmBatchedEx`** / **`cuCtxSynchronize`**, see **`SYSTEMATIC_ERROR_TRACKING_PLAN.md`**) |
+| **Registry** | E1 / E2 / E3 / **E4** / **E5** / **E6** / **E7** — **observed / not observed / unknown** this session (**E4** = batched **`cublasGemmBatchedEx`** + **`cuCtxSynchronize rc=700`**; **E6** = **`SIGFPE`** **`launch_fattn`**; **E7** = FA-off **`libggml`** + **`cublasGemmEx`** **`cublas_status=13`** — see **`SYSTEMATIC_ERROR_TRACKING_PLAN.md`**) |
 | **Evidence** | At least **one** host line and **one** VM line (or “host unreachable”) |
 | **Next step** | **Exactly one** next checkbox from **`SYSTEMATIC_ERROR_TRACKING_PLAN.md` §6** (or the plan’s current ordered list) |
 

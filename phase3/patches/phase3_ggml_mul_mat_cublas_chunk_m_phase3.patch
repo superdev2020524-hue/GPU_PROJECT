@@ -1,0 +1,101 @@
+diff --git a/ml/backend/ggml/ggml/src/ggml-cuda/ggml-cuda.cu b/ml/backend/ggml/ggml/src/ggml-cuda/ggml-cuda.cu
+index b8ed370..d4a1c15 100644
+--- a/ml/backend/ggml/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ml/backend/ggml/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1457,14 +1457,88 @@ static void ggml_cuda_op_mul_mat_cublas(
+             const half alpha_f16 = 1.0f;
+             const half beta_f16 = 0.0f;
+ 
+-            CUBLAS_CHECK(
+-                cublasGemmEx(ctx.cublas_handle(id), CUBLAS_OP_T, CUBLAS_OP_N,
+-                        row_diff, src1_ncols, ne10,
+-                        &alpha_f16, src0_ptr,      CUDA_R_16F, ne00,
+-                                    src1_ptr,      CUDA_R_16F, ne10,
+-                        &beta_f16,  dst_f16.get(), CUDA_R_16F, ldc,
+-                        CUBLAS_COMPUTE_16F,
+-                        CUBLAS_GEMM_DEFAULT_TENSOR_OP));
++            // Phase3 vGPU: tile m×n×K; shrink n/m/k on CUBLAS_STATUS_INVALID_VALUE (mediator span checks).
++            // On INVALID: shrink m before k so A-tail OOB does not burn log2(k) useless mediated Gemms.
++            const int64_t phase3_gemm_m_chunk = 1024;
++            const int64_t phase3_gemm_n_chunk = 64;
++            const int64_t phase3_gemm_k_chunk = 1024;
++            for (int64_t n0 = 0; n0 < src1_ncols; ) {
++                const int64_t n_rem = src1_ncols - n0;
++                int64_t n_try = std::min(phase3_gemm_n_chunk, n_rem);
++                bool n_ok = false;
++                while (!n_ok && n_try >= 1) {
++                    const int64_t n_cur = n_try;
++                    const half * src1_col = src1_ptr + n0 * ne10;
++                    bool need_smaller_n_strip = false;
++                    int64_t row0 = 0;
++                    for (; row0 < row_diff && !need_smaller_n_strip; ) {
++                        const int64_t m_rem = row_diff - row0;
++                        int64_t m_try = std::min(phase3_gemm_m_chunk, m_rem);
++                        while (m_try >= 1) {
++                            const half * src0_chunk = src0_ptr + row0 * ne00;
++                            half * dst_block = dst_f16.get() + row0 + n0 * ldc;
++                            for (int64_t pj = 0; pj < n_cur; ++pj) {
++                                CUDA_CHECK(cudaMemsetAsync(dst_block + pj * ldc, 0, (size_t)m_try * sizeof(half), stream));
++                            }
++                            int64_t k0 = 0;
++                            bool need_smaller_m = false;
++                            while (k0 < ne10 && !need_smaller_m && !need_smaller_n_strip) {
++                                const int64_t k_rem = ne10 - k0;
++                                int64_t k_try = std::min(phase3_gemm_k_chunk, k_rem);
++                                bool k_slice_ok = false;
++                                while (!k_slice_ok && k_try >= 1) {
++                                    const half * src0_k = src0_chunk + k0;
++                                    const half * src1_k = src1_col + k0;
++                                    const half beta_k = (k0 == 0) ? (half)0.0f : (half)1.0f;
++                                    cublasStatus_t k_st = cublasGemmEx(ctx.cublas_handle(id), CUBLAS_OP_T, CUBLAS_OP_N,
++                                            (int)m_try, (int)n_cur, (int)k_try,
++                                            &alpha_f16, src0_k, CUDA_R_16F, ne00,
++                                                        src1_k, CUDA_R_16F, ne10,
++                                            &beta_k,  dst_block,  CUDA_R_16F, ldc,
++                                            CUBLAS_COMPUTE_16F,
++                                            CUBLAS_GEMM_DEFAULT_TENSOR_OP);
++                                    if (k_st == CUBLAS_STATUS_SUCCESS) {
++                                        k0 += k_try;
++                                        k_slice_ok = true;
++                                    } else if (k_st == CUBLAS_STATUS_INVALID_VALUE && m_try > 1) {
++                                        need_smaller_m = true;
++                                        k_slice_ok = true;
++                                    } else if (k_st == CUBLAS_STATUS_INVALID_VALUE && k_try > 1) {
++                                        k_try /= 2;
++                                    } else if (k_st == CUBLAS_STATUS_INVALID_VALUE && m_try == 1 && k_try == 1 && n_try > 1) {
++                                        need_smaller_n_strip = true;
++                                        k_slice_ok = true;
++                                    } else {
++                                        CUBLAS_CHECK(k_st);
++                                    }
++                                }
++                            }
++                            if (need_smaller_n_strip) {
++                                break;
++                            }
++                            if (need_smaller_m) {
++                                m_try /= 2;
++                                continue;
++                            }
++                            GGML_ASSERT(k0 >= ne10);
++                            row0 += m_try;
++                            break;
++                        }
++                        if (need_smaller_n_strip) {
++                            break;
++                        }
++                    }
++                    if (need_smaller_n_strip) {
++                        GGML_ASSERT(n_try > 1);
++                        n_try /= 2;
++                        continue;
++                    }
++                    GGML_ASSERT(row0 == row_diff);
++                    n0 += n_cur;
++                    n_ok = true;
++                }
++                GGML_ASSERT(n_ok);
++            }
+ 
+             const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_F16);
+             to_fp32_cuda(dst_f16.get(), dst_dd_i, row_diff*src1_ncols, stream);

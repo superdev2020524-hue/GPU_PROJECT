@@ -272,33 +272,113 @@ static void vm_add_mem(vm_state_t *vm, uint64_t guest, CUdeviceptr host,
 
 static CUdeviceptr vm_find_mem(vm_state_t *vm, uint64_t guest)
 {
+    /* If multiple table entries contain `guest` (overlapping bookkeeping), prefer
+     * the largest span so resolved host offsets match the intended backing object. */
+    int best_i = -1;
+    size_t best_sz = 0;
     for (int i = 0; i < vm->mem_count; i++) {
-        if (vm->mem[i].guest_ptr == guest)
-            return vm->mem[i].host_ptr;
-        if (guest > vm->mem[i].guest_ptr) {
-            uint64_t off = guest - vm->mem[i].guest_ptr;
-            if (off < vm->mem[i].size) {
-                return vm->mem[i].host_ptr + off;
-            }
+        if (guest < vm->mem[i].guest_ptr)
+            continue;
+        uint64_t off = guest - vm->mem[i].guest_ptr;
+        if (off >= vm->mem[i].size)
+            continue;
+        if (vm->mem[i].size > best_sz) {
+            best_sz = vm->mem[i].size;
+            best_i = i;
         }
     }
-    return 0;
+    if (best_i < 0)
+        return 0;
+    return vm->mem[best_i].host_ptr + (guest - vm->mem[best_i].guest_ptr);
 }
 
 static mem_entry_t *vm_find_mem_entry(vm_state_t *vm, uint64_t guest)
 {
+    int best_i = -1;
+    size_t best_sz = 0;
     for (int i = 0; i < vm->mem_count; i++) {
-        if (vm->mem[i].guest_ptr == guest) {
-            return &vm->mem[i];
-        }
-        if (guest > vm->mem[i].guest_ptr) {
-            uint64_t off = guest - vm->mem[i].guest_ptr;
-            if (off < vm->mem[i].size) {
-                return &vm->mem[i];
-            }
+        if (guest < vm->mem[i].guest_ptr)
+            continue;
+        uint64_t off = guest - vm->mem[i].guest_ptr;
+        if (off >= vm->mem[i].size)
+            continue;
+        if (vm->mem[i].size > best_sz) {
+            best_sz = vm->mem[i].size;
+            best_i = i;
         }
     }
-    return NULL;
+    return best_i < 0 ? NULL : &vm->mem[best_i];
+}
+
+/* cuBLAS column-major storage spans for cublasGemmEx (op(A) is m×k, op(B) is k×n, C is m×n). */
+static size_t cuda_executor_cuda_data_type_elem_size(cudaDataType_t t)
+{
+    switch ((int)t) {
+    case CUDA_R_16F:
+        return 2;
+    case CUDA_R_32F:
+        return 4;
+    case CUDA_R_64F:
+        return 8;
+    case CUDA_R_8I:
+    case CUDA_R_8U:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int cuda_executor_gemmex_required_storage_bytes(
+    int32_t transa,
+    int32_t transb,
+    int32_t m,
+    int32_t n,
+    int32_t k,
+    int32_t lda,
+    int32_t ldb,
+    int32_t ldc,
+    cudaDataType_t atype,
+    cudaDataType_t btype,
+    cudaDataType_t ctype,
+    size_t *out_a,
+    size_t *out_b,
+    size_t *out_c)
+{
+    size_t sa = cuda_executor_cuda_data_type_elem_size(atype);
+    size_t sb = cuda_executor_cuda_data_type_elem_size(btype);
+    size_t sc = cuda_executor_cuda_data_type_elem_size(ctype);
+    if (m <= 0 || n <= 0 || k <= 0 || lda <= 0 || ldb <= 0 || ldc <= 0 || sa == 0 || sb == 0 ||
+        sc == 0) {
+        return -1;
+    }
+    cublasOperation_t ta = (cublasOperation_t)transa;
+    cublasOperation_t tb = (cublasOperation_t)transb;
+    size_t elems_a, elems_b, elems_c;
+
+    /* Column-major minimal spans (Fortran / cuBLAS): last index (col-1)*ld + (row-1) for M×N
+     * with ld >= M. Full ld*N over-estimates when ldc > m (e.g. chunked Gemm row blocks into a
+     * larger ldc buffer) and false-positive OOBs the Phase3 mediator — see ERROR_TRACKING E7. */
+    if (ta == CUBLAS_OP_T) {
+        elems_a = (size_t)(m - 1) * (size_t)lda + (size_t)k;
+    } else if (ta == CUBLAS_OP_N) {
+        elems_a = (size_t)(k - 1) * (size_t)lda + (size_t)m;
+    } else {
+        return -1;
+    }
+
+    if (tb == CUBLAS_OP_N) {
+        elems_b = (size_t)(n - 1) * (size_t)ldb + (size_t)k;
+    } else if (tb == CUBLAS_OP_T) {
+        elems_b = (size_t)(k - 1) * (size_t)ldb + (size_t)n;
+    } else {
+        return -1;
+    }
+
+    elems_c = (size_t)(n - 1) * (size_t)ldc + (size_t)m;
+    *out_a = elems_a * sa;
+    *out_b = elems_b * sb;
+    *out_c = elems_c * sc;
+    return 0;
 }
 
 static void vm_remove_mem(vm_state_t *vm, uint64_t guest)
@@ -1118,12 +1198,16 @@ int cuda_executor_call(cuda_executor_t *exec,
     }
 
     case CUDA_CALL_CTX_SYNCHRONIZE:
-        if (vm->ctx_valid) {
-            cuCtxSetCurrent(vm->ctx);
-            rc = cuCtxSynchronize();
-            if (rc == CUDA_SUCCESS) {
-                vm_drain_pending_async_htod(vm, NULL, 1);
-            }
+        /* Match stream/mem paths: bind primary context before sync. If ctx_valid was
+         * cleared without a full guest reconnect, skipping the body left rc=CUDA_SUCCESS
+         * and falsely reported a successful sync to the mediator. */
+        rc = ensure_vm_context(exec, vm);
+        if (rc != CUDA_SUCCESS)
+            break;
+        cuCtxSetCurrent(vm->ctx);
+        rc = cuCtxSynchronize();
+        if (rc == CUDA_SUCCESS) {
+            vm_drain_pending_async_htod(vm, NULL, 1);
         }
         break;
 
@@ -1145,7 +1229,20 @@ int cuda_executor_call(cuda_executor_t *exec,
         fprintf(stderr, "[cuda-executor] cuMemAlloc: allocating %llu bytes on physical GPU (vm=%u)\n",
                 (unsigned long long)bytesize, call->vm_id);
 
-        /* Use primary context for allocation (per-VM cuCtxCreate can fail and cause "unable to allocate CUDA0 buffer") */
+        /* Align with CUDA_CALL_CUBLAS_CREATE: set runtime device before driver alloc.
+         * Guest stacks mix cuda_runtime + cuMemAlloc; omitting cudaSetDevice(0) has
+         * produced host cuMemAlloc failures on short-lived mediated sessions while
+         * the same size succeeds after cudaSetDevice in the cublas path. */
+        rc = ensure_vm_context(exec, vm);
+        if (rc != CUDA_SUCCESS) {
+            fprintf(stderr,
+                    "[cuda-executor] cuMemAlloc: ensure_vm_context failed: rc=%d (%s) (vm=%u)\n",
+                    (int)rc,
+                    host_cuda_error_name(rc),
+                    call->vm_id);
+            break;
+        }
+        (void)cudaSetDevice(0);
         cuCtxSetCurrent(exec->primary_ctx);
 
         CUdeviceptr dptr = 0;
@@ -1157,6 +1254,7 @@ int cuda_executor_call(cuda_executor_t *exec,
                     call->vm_id, (unsigned long long)bytesize);
             cuda_executor_recover_primary_context(exec, vm->vm_id,
                                                   "cuMemAlloc hit CUDA_ERROR_ILLEGAL_ADDRESS");
+            (void)cudaSetDevice(0);
             cuCtxSetCurrent(exec->primary_ctx);
             dptr = 0;
             rc = cuMemAlloc(&dptr, (size_t)bytesize);
@@ -2096,6 +2194,91 @@ int cuda_executor_call(cuda_executor_t *exec,
             break;
         }
 
+        {
+            size_t need_a = 0, need_b = 0, need_c = 0;
+            if (cuda_executor_gemmex_required_storage_bytes(
+                    gemm->transa,
+                    gemm->transb,
+                    gemm->m,
+                    gemm->n,
+                    gemm->k,
+                    gemm->lda,
+                    gemm->ldb,
+                    gemm->ldc,
+                    (cudaDataType_t)gemm->Atype,
+                    (cudaDataType_t)gemm->Btype,
+                    (cudaDataType_t)gemm->Ctype,
+                    &need_a,
+                    &need_b,
+                    &need_c) != 0) {
+                fprintf(stderr,
+                        "[cuda-executor] vm_id=%u GEMM_EX invalid dims/trans/types m=%d n=%d k=%d "
+                        "lda=%d ldb=%d ldc=%d trans=(%d,%d) Atype=%d Btype=%d Ctype=%d\n",
+                        vm->vm_id,
+                        gemm->m,
+                        gemm->n,
+                        gemm->k,
+                        gemm->lda,
+                        gemm->ldb,
+                        gemm->ldc,
+                        gemm->transa,
+                        gemm->transb,
+                        gemm->Atype,
+                        gemm->Btype,
+                        gemm->Ctype);
+                result->num_results = 1;
+                result->results[0] = (uint64_t)CUBLAS_STATUS_INVALID_VALUE;
+                rc = CUDA_SUCCESS;
+                break;
+            }
+            uint64_t off_a = gemm->a - entry_a->guest_ptr;
+            uint64_t off_b = gemm->b - entry_b->guest_ptr;
+            uint64_t off_c = gemm->c - entry_c->guest_ptr;
+            if (off_a > entry_a->size || off_b > entry_b->size || off_c > entry_c->size ||
+                entry_a->size - off_a < need_a || entry_b->size - off_b < need_b ||
+                entry_c->size - off_c < need_c) {
+                fprintf(stderr,
+                        "[cuda-executor] vm_id=%u GEMM_EX buffer OOB trans=(%d,%d) m=%d n=%d k=%d "
+                        "lda=%d ldb=%d ldc=%d compute=%d algo=%d\n"
+                        "  A guest=0x%llx off=%llu need=%llu avail=%llu base_guest=0x%llx size=%llu\n"
+                        "  B guest=0x%llx off=%llu need=%llu avail=%llu base_guest=0x%llx size=%llu\n"
+                        "  C guest=0x%llx off=%llu need=%llu avail=%llu base_guest=0x%llx size=%llu\n",
+                        vm->vm_id,
+                        gemm->transa,
+                        gemm->transb,
+                        gemm->m,
+                        gemm->n,
+                        gemm->k,
+                        gemm->lda,
+                        gemm->ldb,
+                        gemm->ldc,
+                        gemm->computeType,
+                        gemm->algo,
+                        (unsigned long long)gemm->a,
+                        (unsigned long long)off_a,
+                        (unsigned long long)need_a,
+                        (unsigned long long)(entry_a->size - off_a),
+                        (unsigned long long)entry_a->guest_ptr,
+                        (unsigned long long)entry_a->size,
+                        (unsigned long long)gemm->b,
+                        (unsigned long long)off_b,
+                        (unsigned long long)need_b,
+                        (unsigned long long)(entry_b->size - off_b),
+                        (unsigned long long)entry_b->guest_ptr,
+                        (unsigned long long)entry_b->size,
+                        (unsigned long long)gemm->c,
+                        (unsigned long long)off_c,
+                        (unsigned long long)need_c,
+                        (unsigned long long)(entry_c->size - off_c),
+                        (unsigned long long)entry_c->guest_ptr,
+                        (unsigned long long)entry_c->size);
+                result->num_results = 1;
+                result->results[0] = (uint64_t)CUBLAS_STATUS_INVALID_VALUE;
+                rc = CUDA_SUCCESS;
+                break;
+            }
+        }
+
         cuCtxSetCurrent(exec->primary_ctx);
         {
             float alpha = gemm->alpha_f32;
@@ -2171,11 +2354,14 @@ int cuda_executor_call(cuda_executor_t *exec,
                             entry_a ? entry_a->size : 0u,
                             entry_b ? entry_b->size : 0u,
                             entry_c ? entry_c->size : 0u);
+                    /* Do not call cuda_executor_recover_primary_context here: it runs
+                     * vm_discard_runtime_state (clears mem/cublas/stream tables) while the
+                     * guest still holds the same handles. GGML then issues further CUDA
+                     * RPCs (e.g. CUDA_CALL_CTX_SYNCHRONIZE) in the same inference slice —
+                     * host/guest desync and follow-up sync errors (see ERROR_TRACKING_STATUS
+                     * E7 correlation: call_id=0x26 result.status=709 vs guest STATUS_ERROR).
+                     * Allocator paths (MEM_ALLOC) retry recovery independently when stuck. */
                     cublas_rc = CUBLAS_STATUS_EXECUTION_FAILED;
-                    if (ec == CUDA_ERROR_ILLEGAL_ADDRESS) {
-                        cuda_executor_recover_primary_context(exec, vm->vm_id,
-                                                             "cublas GemmEx sync hit CUDA_ERROR_ILLEGAL_ADDRESS");
-                    }
                 }
             }
         }
@@ -2402,12 +2588,10 @@ int cuda_executor_call(cuda_executor_t *exec,
                             vm->vm_id, hdr->m, hdr->n, hdr->k, hdr->lda, hdr->ldb, hdr->ldc, bc,
                             (unsigned)hdr->Atype, (unsigned)hdr->Btype, (unsigned)hdr->Ctype,
                             hdr->computeType, hdr->algo, hdr->alpha_f32, hdr->beta_f32);
-                    /* Guest must not treat SUCCESS if context is poisoned (E4 / rc=700). */
+                    /* Guest must not treat SUCCESS if context is poisoned (E4 / rc=700).
+                     * Avoid cuda_executor_recover_primary_context here — same host/guest
+                     * handle desync as CUDA_CALL_CUBLAS_GEMM_EX (E7 / follow-up 0x26). */
                     cublas_rc = CUBLAS_STATUS_EXECUTION_FAILED;
-                    if (ec == CUDA_ERROR_ILLEGAL_ADDRESS) {
-                        cuda_executor_recover_primary_context(exec, vm->vm_id,
-                                                             "cublas GEMM sync hit CUDA_ERROR_ILLEGAL_ADDRESS");
-                    }
                 }
             }
         }

@@ -1,0 +1,16 @@
+--- a/ml/backend/ggml/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ml/backend/ggml/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -299,6 +299,13 @@         total_vram += prop.totalGlobalMem;
+         total_vram += prop.totalGlobalMem;
+         info.devices[id].integrated = false; // Temporarily disabled due to issues with corrupted output (e.g. #15034)
+         info.devices[id].nsm        = prop.multiProcessorCount;
++        // Phase3 vGPU: cudaDeviceProp can report multiProcessorCount==0 (struct / shim skew).
++        // launch_fattn uses nsm in max_blocks; zero -> host SIGFPE (SYSTEMATIC_ERROR_TRACKING_PLAN E6).
++        if (info.devices[id].nsm <= 0) {
++            GGML_LOG_WARN("%s: device %d: multiProcessorCount=%d invalid; using fallback 132 (Phase3)\n",
++                __func__, id, prop.multiProcessorCount);
++            info.devices[id].nsm = 132;
++        }
+         info.devices[id].smpb       = prop.sharedMemPerBlock;
+         info.devices[id].warp_size  = prop.warpSize;
+ #if defined(GGML_USE_HIP)

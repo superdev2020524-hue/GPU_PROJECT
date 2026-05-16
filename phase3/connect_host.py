@@ -94,9 +94,10 @@ def connect_and_run_sshpass(command: str):
 
 
 def connect_and_run_pexpect(command):
-    """Legacy pexpect path (StrictHostKeyChecking + host-key yes + marker)."""
+    """Pexpect path (-tt TTY): works with XCP-ng dom0 banner + bracketed root prompt."""
+    shell_prompt = re.compile(r"\[.*\][#\$]\s*")
     ssh_cmd = (
-        "ssh -n "
+        "ssh -tt "
         + " ".join(shlex.quote(x) for x in _ssh_base_args())
         + f" {shlex.quote(MEDIATOR_USER + '@' + MEDIATOR_HOST)}"
     )
@@ -109,8 +110,7 @@ def connect_and_run_pexpect(command):
             "Are you sure you want to continue connecting",
             "password:",
             "Password:",
-            r"\$",
-            "#",
+            shell_prompt,
             pexpect.EOF,
             pexpect.TIMEOUT,
         ]
@@ -118,18 +118,20 @@ def connect_and_run_pexpect(command):
         if index == 0:
             child.sendline("yes")
             index = child.expect(
-                ["password:", "Password:", r"\$", "#", pexpect.EOF, pexpect.TIMEOUT],
+                ["password:", "Password:", shell_prompt, pexpect.EOF, pexpect.TIMEOUT],
                 timeout=PROMPT_TIMEOUT_SEC,
             )
         if index in [1, 2]:
             child.sendline(MEDIATOR_PASSWORD)
-            child.expect(
-                [r"\[.*[#\$]", r"\$", "#", pexpect.EOF, pexpect.TIMEOUT],
+            idx_pw = child.expect(
+                [shell_prompt, "Permission denied", pexpect.EOF, pexpect.TIMEOUT],
                 timeout=PROMPT_TIMEOUT_SEC,
             )
-        elif index in [3, 4]:
+            if idx_pw != 0:
+                return child.before or "", -1
+        elif index == 3:
             pass  # already at shell
-        elif index in [5, 6]:
+        elif index in [4, 5]:
             return child.before or "", -1
 
         if child.isalive():

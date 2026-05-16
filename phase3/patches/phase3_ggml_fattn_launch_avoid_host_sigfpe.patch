@@ -1,0 +1,55 @@
+diff --git a/ml/backend/ggml/ggml/src/ggml-cuda/fattn-common.cuh b/ml/backend/ggml/ggml/src/ggml-cuda/fattn-common.cuh
+index 8dc82a9..a6cea0d 100644
+--- a/ml/backend/ggml/ggml/src/ggml-cuda/fattn-common.cuh
++++ b/ml/backend/ggml/ggml/src/ggml-cuda/fattn-common.cuh
+@@ -907,12 +907,18 @@ void launch_fattn(
+     if (stream_k) {
+         // For short contexts it can be faster to have the SMs work on whole tiles because this lets us skip the fixup.
+         const int max_blocks = max_blocks_per_sm*nsm;
+-        const int tiles_nwaves = (ntiles_total + max_blocks - 1) / max_blocks;
+-        const int tiles_efficiency_percent = 100 * ntiles_total / (max_blocks*tiles_nwaves);
++        // Phase3 (E6): nsm can be 0 under vGPU → max_blocks==0 → idiv SIGFPE. Avoid dividing by max_blocks when 0;
++        //   use one-SM block budget without rewriting nsm (avoids CUDA_ERROR_INVALID_VALUE from skewed launch geometry).
++        const int mb_eff = max_blocks > 0 ? max_blocks : max_blocks_per_sm;
++        const int tiles_nwaves = mb_eff > 0
++            ? std::max(1, (ntiles_total + mb_eff - 1) / mb_eff)
++            : 1;
++        const int tiles_eff_denom = std::max(1, mb_eff * tiles_nwaves);
++        const int tiles_efficiency_percent = (100 * ntiles_total) / tiles_eff_denom;
+ 
+-        const int nblocks_stream_k = max_blocks;
++        const int nblocks_stream_k = mb_eff;
+ 
+-        const bool use_stream_k = cc >= GGML_CUDA_CC_ADA_LOVELACE || tiles_efficiency_percent < 75;
++        const bool use_stream_k = max_blocks > 0 && (cc >= GGML_CUDA_CC_ADA_LOVELACE || tiles_efficiency_percent < 75);
+ 
+         blocks_num.x = use_stream_k ? nblocks_stream_k : ntiles_total;
+         blocks_num.y = 1;
+@@ -920,20 +926,23 @@ void launch_fattn(
+ 
+         dst_tmp_meta.alloc(blocks_num.x*ncols * (2*2 + DV) * sizeof(float));
+     } else {
+-        const int ntiles_KQ = (K->ne[1] + nbatch_fa - 1) / nbatch_fa; // Max. number of parallel blocks limited by tensor size.
++        const int ntiles_KQ = nbatch_fa > 0 ? (K->ne[1] + nbatch_fa - 1) / nbatch_fa : 0; // Max. number of parallel blocks limited by tensor size.
+ 
+         // parallel_blocks must not be larger than what the tensor size allows:
+         parallel_blocks = std::min(parallel_blocks, ntiles_KQ);
+ 
+         // If ntiles_total % blocks_per_wave != 0 then some efficiency is lost due to tail effects.
+         // Test whether parallel_blocks can be set to a higher value for better efficiency.
+-        const int blocks_per_wave = nsm * max_blocks_per_sm;
++        const int blocks_per_wave = std::max(max_blocks_per_sm, nsm * max_blocks_per_sm);
+         int nwaves_best = 0;
+         int efficiency_percent_best = 0;
+         for (int parallel_blocks_test = parallel_blocks; parallel_blocks_test <= ntiles_KQ; ++parallel_blocks_test) {
+             const int nblocks_total = ntiles_total * parallel_blocks_test;
+-            const int nwaves = (nblocks_total + blocks_per_wave - 1) / blocks_per_wave;
+-            const int efficiency_percent = 100 * nblocks_total / (nwaves*blocks_per_wave);
++            const int nwaves = blocks_per_wave > 0
++                ? std::max(1, (nblocks_total + blocks_per_wave - 1) / blocks_per_wave)
++                : 1;
++            const int wave_denom = std::max(1, nwaves * blocks_per_wave);
++            const int efficiency_percent = (100 * nblocks_total) / wave_denom;
+ 
+             // Stop trying configurations with more waves if we already have good efficiency to avoid excessive overhead.
+             if (efficiency_percent_best >= 95 && nwaves > nwaves_best) {

@@ -17,6 +17,7 @@ import sys
 import subprocess
 import shutil
 import shlex
+import tempfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
@@ -58,21 +59,83 @@ def scp_file(local_path, remote_path, recursive=False):
         return r.returncode == 0
     try:
         import pexpect
-        scp_cmd = "scp -o StrictHostKeyChecking=no -o ConnectTimeout=15"
+        scp_cmd = (
+            "scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 "
+            "-o ServerAliveInterval=15 -o ServerAliveCountMax=8"
+        )
         if recursive:
             scp_cmd += " -r"
         scp_cmd += " " + shlex.quote(local_path) + " " + shlex.quote(dest)
-        # Long timeout for full tree (600+ files, ~5MB)
-        c = pexpect.spawn(scp_cmd, timeout=1200, encoding="utf-8")
-        idx = c.expect(["password:", "Password:", pexpect.EOF, pexpect.TIMEOUT], timeout=30)
+        # Full tree can be slow on lossy links; allow up to 2h for EOF.
+        xfer_timeout = int(os.environ.get("DEPLOY_SCP_TIMEOUT_SEC", "7200"))
+        c = pexpect.spawn(scp_cmd, timeout=xfer_timeout, encoding="utf-8")
+        idx = c.expect(["password:", "Password:", pexpect.EOF, pexpect.TIMEOUT], timeout=120)
         if idx in (0, 1):
             c.sendline(VM_PASSWORD)
-        idx2 = c.expect([pexpect.EOF, pexpect.TIMEOUT], timeout=1200)
+        idx2 = c.expect([pexpect.EOF, pexpect.TIMEOUT], timeout=xfer_timeout)
         c.close()
         # Success only if we got EOF (transfer finished), not TIMEOUT
         return idx2 == 0 and (c.exitstatus is None or c.exitstatus == 0)
     except Exception:
         return False
+
+
+def deploy_phase3_tree_tarball(max_attempts: int = 4) -> bool:
+    """
+    Pack repo root as one .tgz and SCP it once, then extract on the guest.
+    More reliable than recursive SCP on lossy links (fewer SSH round-trips).
+    """
+    parent = os.path.dirname(SCRIPT_DIR)
+    name = os.path.basename(SCRIPT_DIR)
+    remote_tgz = f"{REMOTE_HOME}/phase3_deploy.tgz"
+
+    for attempt in range(1, max_attempts + 1):
+        fd, tgz = tempfile.mkstemp(suffix=".tgz", prefix="phase3_deploy_")
+        os.close(fd)
+        try:
+            print(f"  (tarball attempt {attempt}/{max_attempts}) packing {parent}/{name} ...")
+            r = subprocess.run(
+                [
+                    "tar",
+                    "czf",
+                    tgz,
+                    "--exclude=__pycache__",
+                    "--exclude=*.pyc",
+                    "-C",
+                    parent,
+                    name,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if r.returncode != 0:
+                print(r.stderr or r.stdout or "tar failed")
+                continue
+            if not scp_file(tgz, remote_tgz, recursive=False):
+                print("  SCP of tarball failed, retrying...")
+                continue
+            extract = (
+                f"rm -f {remote_tgz}.partial && "
+                f"mv {remote_tgz} {remote_tgz}.partial && "
+                f"rm -rf {REMOTE_HOME}/phase3.old && "
+                f"test -d {REMOTE_PHASE3} && mv {REMOTE_PHASE3} {REMOTE_HOME}/phase3.old || true && "
+                f"mkdir -p {REMOTE_PHASE3} && "
+                f"tar xzf {remote_tgz}.partial -C {REMOTE_HOME} && "
+                f"rm -f {remote_tgz}.partial"
+            )
+            ok, out, err = run_ssh(extract, timeout_sec=180)
+            if not ok:
+                print(out or err or "extract failed")
+                continue
+            print("  Tarball deploy OK.")
+            return True
+        finally:
+            try:
+                os.unlink(tgz)
+            except OSError:
+                pass
+    return False
 
 
 def main():
@@ -84,9 +147,9 @@ def main():
     if not os.path.isdir(local_phase3):
         print(f"ERROR: Local phase3 not found: {local_phase3}")
         return 1
-    print("Step 1: Copying phase3 tree to VM (SCP)...")
-    if not scp_file(local_phase3, REMOTE_HOME + "/", recursive=True):
-        print("ERROR: SCP deploy failed.")
+    print("Step 1: Copying phase3 tree to VM (single tarball + extract)...")
+    if not deploy_phase3_tree_tarball():
+        print("ERROR: Tarball deploy failed after retries.")
         return 1
     print("  Done.\n")
 
@@ -112,6 +175,11 @@ def main():
         f"echo {VM_PASSWORD} | sudo -S cp {REMOTE_PHASE3}/guest-shim/libvgpu-cuda.so.1 /opt/vgpu/lib/",
         f"echo {VM_PASSWORD} | sudo -S cp {REMOTE_PHASE3}/guest-shim/libvgpu-cudart.so /opt/vgpu/lib/",
         f"echo {VM_PASSWORD} | sudo -S cp {REMOTE_PHASE3}/guest-shim/libvgpu-nvml.so /opt/vgpu/lib/",
+        # Loader also resolves shims from /usr/lib64 (e.g. unversioned libvgpu-cuda.so). Keep both in sync.
+        f"echo {VM_PASSWORD} | sudo -S cp {REMOTE_PHASE3}/guest-shim/libvgpu-cuda.so.1 /usr/lib64/",
+        f"echo {VM_PASSWORD} | sudo -S cp {REMOTE_PHASE3}/guest-shim/libvgpu-cuda.so.1 /usr/lib64/libvgpu-cuda.so",
+        f"echo {VM_PASSWORD} | sudo -S cp {REMOTE_PHASE3}/guest-shim/libvgpu-nvml.so /usr/lib64/",
+        f"echo {VM_PASSWORD} | sudo -S ln -sf /opt/vgpu/lib/libvgpu-cuda.so.1 /opt/vgpu/lib/libvgpu-cuda.so",
         f"echo {VM_PASSWORD} | sudo -S ln -sf /opt/vgpu/lib/libvgpu-cuda.so.1 /opt/vgpu/lib/libcuda.so.1",
         f"echo {VM_PASSWORD} | sudo -S ln -sf /opt/vgpu/lib/libvgpu-cudart.so /opt/vgpu/lib/libcudart.so.12",
         f"echo {VM_PASSWORD} | sudo -S ln -sf /opt/vgpu/lib/libvgpu-nvml.so /opt/vgpu/lib/libnvidia-ml.so.1",
@@ -143,7 +211,7 @@ def main():
                 f"echo {VM_PASSWORD} | sudo -S mkdir -p {override_dir} && "
                 f"echo {VM_PASSWORD} | sudo -S mv {REMOTE_HOME}/vgpu.conf {override_dir}/vgpu.conf && "
                 f"echo {VM_PASSWORD} | sudo -S systemctl daemon-reload",
-                timeout_sec=30,
+                timeout_sec=120,
             )
             if not ok:
                 print("WARNING: vgpu.conf install failed:", err or out)
@@ -156,7 +224,7 @@ def main():
     print("Step 5: Restarting Ollama...")
     ok, out, err = run_ssh(
         f"echo {VM_PASSWORD} | sudo -S systemctl restart ollama.service 2>&1",
-        timeout_sec=30,
+        timeout_sec=120,
     )
     print(out or err)
     if not ok:

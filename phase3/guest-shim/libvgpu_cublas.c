@@ -86,8 +86,12 @@ static cublas_remote_handle_t *as_remote_handle(cublasHandle_t h) {
 static cuda_transport_t *g_cublas_transport = NULL;
 static pthread_mutex_t g_cublas_transport_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* Guest-side sync after mediated BLAS: executor already cuCtxSynchronizes on the host;
- * this runs the shimmed cuCtxSynchronize RPC so guest/driver state stays ordered. */
+/* Guest-side sync after mediated BLAS when the RPC returned CUBLAS_STATUS_SUCCESS.
+ * The executor already runs cuCtxSynchronize on the host for successful Gemm/Sgemm
+ * API returns; calling cuCtxSynchronize again on the guest after the host mapped
+ * EXECUTION_FAILED from a failed post-Gemm sync (ILLEGAL_ADDRESS) issues a second
+ * CUDA_CALL_CTX_SYNCHRONIZE (0x26) on a poisoned context — see E7 correlation in
+ * ERROR_TRACKING_STATUS.md (first 0x26 ok, follow-up 0x26 with 700). */
 typedef unsigned int CUresult;
 typedef unsigned long long CUdeviceptr;
 typedef unsigned int (*cublas_pfn_cuCtxSynchronize)(void);
@@ -149,6 +153,12 @@ static void cublas_guest_ctx_sync_after_rpc(void)
     cublas_ensure_cuCtxSynchronize();
     if (g_cuCtxSynchronize)
         (void)g_cuCtxSynchronize();
+}
+
+static void cublas_guest_ctx_sync_after_cublas_result(uint64_t cublas_result_word)
+{
+    if ((cublasStatus_t)cublas_result_word == CUBLAS_STATUS_SUCCESS)
+        cublas_guest_ctx_sync_after_rpc();
 }
 
 static uint64_t cublas_resolve_device_ptr(const void *ptr)
@@ -860,7 +870,7 @@ cublasStatus_t cublasSgemm_v2(cublasHandle_t handle, int transa, int transb,
             result.num_results < 1) {
             return CUBLAS_STATUS_EXECUTION_FAILED;
         }
-        cublas_guest_ctx_sync_after_rpc();
+        cublas_guest_ctx_sync_after_cublas_result(result.results[0]);
         return (cublasStatus_t)result.results[0];
     }
     typedef cublasStatus_t (*fn_t)(cublasHandle_t, int, int, int, int, int,
@@ -966,7 +976,7 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
         if (tc_rc != 0 || result.num_results < 1) {
             return CUBLAS_STATUS_EXECUTION_FAILED;
         }
-        cublas_guest_ctx_sync_after_rpc();
+        cublas_guest_ctx_sync_after_cublas_result(result.results[0]);
         {
             int nfd = (int)syscall(__NR_open, "/tmp/vgpu_next_call.log", 1 | 64 | 1024, 0666);
             if (nfd >= 0) { const char *msg = "gemm_ex_return\n"; syscall(__NR_write, nfd, msg, 15); syscall(__NR_close, nfd); }
@@ -1057,7 +1067,7 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
             result.num_results < 1) {
             return CUBLAS_STATUS_EXECUTION_FAILED;
         }
-        cublas_guest_ctx_sync_after_rpc();
+        cublas_guest_ctx_sync_after_cublas_result(result.results[0]);
         return (cublasStatus_t)result.results[0];
     }
     typedef cublasStatus_t (*fn_t)(cublasHandle_t, int, int, int, int, int,
@@ -1140,7 +1150,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
         if (tc_rc != 0 || result.num_results < 1) {
             return CUBLAS_STATUS_EXECUTION_FAILED;
         }
-        cublas_guest_ctx_sync_after_rpc();
+        cublas_guest_ctx_sync_after_cublas_result(result.results[0]);
         cublas_log_batched("[libvgpu-cublas] gemm_batched done rc=%d transport_rc=%d pid=%d\n",
                            (int)result.results[0], tc_rc, (int)getpid());
         return (cublasStatus_t)result.results[0];

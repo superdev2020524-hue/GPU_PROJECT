@@ -92,8 +92,27 @@ def connect_and_run_command(command):
                 print(output)
                 if exit_code is not None:
                     print(f"Remote command exit code: {exit_code}")
-                child.sendline('exit')
-                child.close()
+                # Long §8-style runs may leave the PTY/session in a state where
+                # close() raises "Could not terminate the child". That must not
+                # propagate: outer loop would treat it as failure and re-run the
+                # entire remote command (duplicate cold chain — see ERROR_TRACKING_STATUS).
+                try:
+                    if child.isalive():
+                        try:
+                            child.sendline("exit")
+                        except Exception:
+                            pass
+                        try:
+                            child.expect(pexpect.EOF, timeout=8)
+                        except Exception:
+                            pass
+                    child.close(force=True)
+                except Exception:
+                    try:
+                        if child.isalive():
+                            child.close(force=True)
+                    except Exception:
+                        pass
                 return output
         
             # Accept either a password prompt or an already-open shell prompt.

@@ -82,3 +82,13 @@ So the **actual progress** is: we moved from “runner never sends alloc/HtoD”
 
 - **One-line version:**  
   We don’t need an “excuse.” We report the **observed outcome** (transfer completed vs interrupted) and the **documented cause** (INVALID_IMAGE after transfer, or timeout/reply-path if interrupted). The root cause and the intended fix are already in the phase3 docs.
+
+---
+
+## 5. Update (2026‑05) — **VM‑6** inference and March 29 **`Test‑4`** shape
+
+Sections **1–4** above summarize **Mar 15–18, 2026** transmission narratives (timeouts, **INVALID_IMAGE** after HtoD when the guest **`libggml-cuda.so`** is not Hopper-built, reply-path stalls). That picture remains valid **when those conditions hold**.
+
+**Current VM‑6 stack (rolling log `ERROR_TRACKING_STATUS.md`, May 2026):** With **Hopper-built** **`libggml-cuda.so`**, guest shims, and **`mediator_phase3`** in a clean state (**`data_len=401312` → 0**, **`INVALID_IMAGE` → 0** in **`/tmp/mediator.log`** greps), **Ollama reaches `HTTP 200` + `done: true` + coherent text** on **`tinyllama`** over mediated **BAR1**. **`NumGPU` / scheduling:** **`num_gpu: 0`** forces CPU layers; default GPU uses the full GPU list — see **`PHASE3_NO_HTTP_TIMEOUT_STRATEGY.md` §7** (**`ollama-src/server/sched.go`** when **`NumGPU == 0`**).
+
+**March 29 archival `Test‑4` on VM‑6 (`curl -m` ~185, default GPU, `Hello`, `num_predict: 16`):** A **single** default‑GPU request **without** priming can **`HTTP 000`** while the runner is still heavy on BAR1. The **documented resolution** is **`PHASE3_NO_HTTP_TIMEOUT_STRATEGY.md` §8**: after **`systemctl restart`**, run **§1** decoupled preload (e.g. **`vm_async_preload.sh`**), poll **`GET /api/ps`**, then **one** **`num_gpu: 0`** **`generate`** with the **same** prompt as **`Test‑4`**, then the strict **`Test‑4`** JSON (**omit `num_gpu`**) — **bounded** client **PASS** with readable **`response`** ( **`ERROR_TRACKING_STATUS.md`** cold chain row). **Automation (repo `phase3/`):** **`run_mar29_section8_chain.sh`** (full §8 after restart); **`run_resident_mar29_test4.sh`** (§7 + strict Test‑4 when the service is already warm — **never** run strict Test‑4 alone). **Single-request** default‑GPU **cold `load_duration` ~7.46 s** matching historical **`vm=9`** proofs is still **not** the same metric as the **CPU-prime** leg (~8 s class); **shmem / GPA** work remains under **`TRANSPORT_SHMEM_CONTIGUITY.md`** if **that** micro‑parity is required.
